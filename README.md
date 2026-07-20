@@ -7,7 +7,7 @@ RP2A03 Synth is a WiP NES VST3/CLAP plugin for modern DAWs, The goal is to have 
 
 - `rp2a03_core` — Core NES APU DSP: channels, timers, frame sequencer and BlipBuf integration.
 - `rp2a03_common` — Shared utilities and types used across crates.
-- `rp2a03_nih` — Plugin crate (CLAP / VST3) exposing the synth (`NES Multi-Synth`). See [rp2a03_nih/src/lib.rs](rp2a03_nih/src/lib.rs).
+- `rp2a03_nice` — Plugin crate (CLAP / VST3) exposing the synth (`NES Multi-Synth`). See [rp2a03_nih/src/lib.rs](rp2a03_nice/src/lib.rs).
 - `xtask` — Workspace helper tasks and build automation.
 
 **Building**
@@ -23,7 +23,7 @@ cargo build --release
 Build only the plugin crate:
 
 ```
-cargo build --release -p rp2a03_nih
+cargo build --release -p rp2a03_nice
 ```
 
 Release artifacts and bundled plugin outputs can be found under `target/` (for example `target/bundled/` and `target/release/`).

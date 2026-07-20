@@ -11,20 +11,7 @@ use rp2a03_core::nes_noise::NoiseChannel;
 use rp2a03_core::nes_square::SquareChannel;
 use rp2a03_core::nes_triangle::TriangleChannel;
 
-// ---------------------------------------------------------------------
-// Helper: MIDI note -> NES period
-// ---------------------------------------------------------------------
-
-/// NES pulse frequency = CPU_CLOCK / (16 * (real_period + 1)).
-/// Solve for real_period given a target frequency in Hz.
-pub fn period_for_frequency(freq_hz: f64) -> u16 {
-    let p = (NTSC_CPU_CLOCK / (16.0 * freq_hz)) - 1.0;
-    p.round().clamp(0.0, 0x7FF as f64) as u16
-}
-
-pub fn midi_note_to_freq(note: u8) -> f64 {
-    440.0 * 2f64.powf((note as f64 - 69.0) / 12.0)
-}
+mod midi_helper;
 const BLIP_BUFFER_SIZE: i32 = 4096;
 /// Scale factor so that a full 0–15 swing maps to the full i16 range.
 /// 32767 / 15 ≈ 2184
@@ -105,19 +92,20 @@ impl NesSynth {
 
         match mode {
             ChannelMode::Square => {
-                let period = period_for_frequency(midi_note_to_freq(note));
+                let period = midi_helper::period_for_frequency(midi_helper::midi_note_to_freq(note));
                 let duty = self.params.duty.value() as u8;
                 self.square.set_enabled(true);
                 // 0x30 = Constant volume (0x10) + Length counter halt (0x20)
                 self.square.write_reg0((duty << 6) | 0x30 | (volume & 0x0F));
+                // 0x08 = Sweep negate true. This is required to prevent the APU from muting 
+                // the channel when the period is > 1023 (i.e. low notes).
+                self.square.write_reg1(0x08);
                 self.square.write_reg2((period & 0xFF) as u8);
                 self.square.write_reg3((0x1Fu8 << 3) | ((period >> 8) as u8 & 0x07));
             }
             ChannelMode::Triangle => {
-                let freq = midi_note_to_freq(note);
-                // Triangle formula: Freq = CPU / (32 * (P + 1))
-                let p = (NTSC_CPU_CLOCK / (32.0 * freq)) - 1.0;
-                let period = p.round().clamp(0.0, 0x7FF as f64) as u16;
+                let freq = midi_helper::midi_note_to_freq(note);
+                let period = midi_helper::period_for_frequency(freq);
                 
                 self.triangle.set_enabled(true);
                 // 0x80 = Control flag (halts length counter) + 0x7F = max linear counter reload
@@ -126,8 +114,7 @@ impl NesSynth {
                 self.triangle.write_reg3((0x1Fu8 << 3) | ((period >> 8) as u8 & 0x07));
             }
             ChannelMode::Noise => {
-                // Map MIDI note (0-127) to the 16 available noise periods (0-15)
-                let period_idx = (note % 16) as u8;
+                let period_idx = midi_helper::noise_period_for_midi_note(note);
                 let mode_bit = if self.params.noise_mode.value() { 0x80 } else { 0x00 };
 
                 self.noise.set_enabled(true);
