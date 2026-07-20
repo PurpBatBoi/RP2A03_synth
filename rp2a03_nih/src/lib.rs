@@ -3,10 +3,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use rp2a03_core::blip_buf::BlipBuf;
-use rp2a03_core::nes_square::{
-    midi_note_to_freq, period_for_frequency, FrameSequencer, FrameTick, SquareChannel,
-    NTSC_CPU_CLOCK,
-};
+use rp2a03_core::nes_core::{FrameSequencer, FrameTick, NTSC_CPU_CLOCK};
+use rp2a03_core::nes_square::{midi_note_to_freq, period_for_frequency, SquareChannel};
 
 const BLIP_BUFFER_SIZE: i32 = 4096;
 /// Scale factor so that a full 0–15 swing maps to the full i16 range.

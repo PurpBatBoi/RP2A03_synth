@@ -1,149 +1,10 @@
+//! nes_square.rs
 //! NES 2A03 Square/Pulse channel.
 //!
-//! Direct translation of the chip logic from MesenCE's SquareChannel.h /
-//! ApuEnvelope.h / ApuLengthCounter.h — with all the emulator-only plumbing
-//! (NesConsole bus access, mixer delta events, cycle-batched `Run(targetCycle)`
-//! catch-up) stripped out and replaced with a simple "clock one NES cycle at a
-//! time" model, which is what you actually want when driving this from a
-//! plugin's audio callback instead of a CPU bus.
-//!
-//! NTSC CPU clock: 1_789_773 Hz. The square timer ticks once per CPU cycle.
+//! Direct translation of the chip logic from MesenCE's SquareChannel.h,
+//! adapted for standalone cycle-by-cycle audio synthesis.
 
-pub const NTSC_CPU_CLOCK: f64 = 1_789_773.0;
-
-// ---------------------------------------------------------------------
-// Length counter
-// ---------------------------------------------------------------------
-
-const LENGTH_TABLE: [u8; 32] = [
-    10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96, 22,
-    192, 24, 72, 26, 16, 28, 32, 30,
-];
-
-#[derive(Default)]
-pub struct LengthCounter {
-    enabled: bool,
-    halt: bool,
-    counter: u8,
-    reload_value: u8,
-    previous_value: u8,
-    new_halt_value: bool,
-}
-
-impl LengthCounter {
-    /// Called from the 0x4000/0x4004 write (bit 5 = halt/loop flag).
-    /// Note: the real hardware doesn't apply the new halt flag immediately —
-    /// it's staged and applied in `reload()`, which the frame sequencer calls
-    /// right after ticking the length counter. This ordering matters (it's
-    /// what MesenCE's comment about "len_reload_timing" tests is about).
-    pub fn set_halt_pending(&mut self, halt: bool) {
-        self.new_halt_value = halt;
-    }
-
-    /// 0x4003/0x4007 write, value = reg >> 3 (5-bit index into the table).
-    pub fn load(&mut self, index: u8) {
-        if self.enabled {
-            self.reload_value = LENGTH_TABLE[index as usize];
-            self.previous_value = self.counter;
-        }
-    }
-
-    /// Call once per CPU cycle-batch, after the frame sequencer's tick for
-    /// this step (mirrors NesApu::Run's ordering: reload happens after tick).
-    pub fn reload(&mut self) {
-        if self.reload_value != 0 {
-            if self.counter == self.previous_value {
-                self.counter = self.reload_value;
-            }
-            self.reload_value = 0;
-        }
-        self.halt = self.new_halt_value;
-    }
-
-    pub fn tick(&mut self) {
-        if self.counter > 0 && !self.halt {
-            self.counter -= 1;
-        }
-    }
-
-    pub fn set_enabled(&mut self, enabled: bool) {
-        if !enabled {
-            self.counter = 0;
-        }
-        self.enabled = enabled;
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    pub fn is_halted(&self) -> bool {
-        self.halt
-    }
-
-    /// True = channel audible (nonzero counter).
-    pub fn status(&self) -> bool {
-        self.counter > 0
-    }
-}
-
-// ---------------------------------------------------------------------
-// Envelope
-// ---------------------------------------------------------------------
-
-#[derive(Default)]
-pub struct Envelope {
-    constant_volume: bool,
-    volume: u8,
-    start: bool,
-    divider: i8,
-    counter: u8,
-    pub length_counter: LengthCounter,
-}
-
-impl Envelope {
-    /// 0x4000/0x4004 write.
-    pub fn init(&mut self, reg_value: u8) {
-        self.length_counter.set_halt_pending((reg_value & 0x20) != 0);
-        self.constant_volume = (reg_value & 0x10) != 0;
-        self.volume = reg_value & 0x0F;
-    }
-
-    /// Called on 0x4003/0x4007 write — restarts the envelope.
-    pub fn restart(&mut self) {
-        self.start = true;
-    }
-
-    pub fn tick(&mut self) {
-        if !self.start {
-            self.divider -= 1;
-            if self.divider < 0 {
-                self.divider = self.volume as i8;
-                if self.counter > 0 {
-                    self.counter -= 1;
-                } else if self.length_counter.is_halted() {
-                    self.counter = 15;
-                }
-            }
-        } else {
-            self.start = false;
-            self.counter = 15;
-            self.divider = self.volume as i8;
-        }
-    }
-
-    pub fn volume(&self) -> u8 {
-        if self.length_counter.status() {
-            if self.constant_volume {
-                self.volume
-            } else {
-                self.counter
-            }
-        } else {
-            0
-        }
-    }
-}
+use crate::nes_core::{Envelope, NTSC_CPU_CLOCK};
 
 // ---------------------------------------------------------------------
 // Square channel
@@ -156,6 +17,7 @@ const DUTY_SEQUENCES: [[u8; 8]; 4] = [
     [1, 1, 1, 1, 1, 1, 0, 0],
 ];
 
+#[derive(Default, Clone, Debug)]
 pub struct SquareChannel {
     pub envelope: Envelope,
     is_channel1: bool,
@@ -291,6 +153,7 @@ impl SquareChannel {
 
     pub fn set_enabled(&mut self, enabled: bool) {
         self.envelope.length_counter.set_enabled(enabled);
+        self.update_output();
     }
 
     pub fn status(&self) -> bool {
@@ -299,21 +162,24 @@ impl SquareChannel {
 
     // --- Frame sequencer callbacks ---
     // Call these from your frame sequencer at the standard NTSC timing
-    // (see FrameSequencer below): tick_envelope on every quarter frame,
+    // (see FrameSequencer in nes_core.rs): tick_envelope on every quarter frame,
     // tick_length_counter + tick_sweep on every half frame. reload_length_counter
     // must run right after tick_length_counter, per-frame, before the audio
-    // channels are clocked (mirrors NesApu::Run's ordering).
+    // channels are clocked.
 
     pub fn tick_envelope(&mut self) {
         self.envelope.tick();
+        self.update_output();
     }
 
     pub fn tick_length_counter(&mut self) {
         self.envelope.length_counter.tick();
+        self.update_output();
     }
 
     pub fn reload_length_counter(&mut self) {
         self.envelope.length_counter.reload();
+        self.update_output();
     }
 
     pub fn tick_sweep(&mut self) {
@@ -354,51 +220,6 @@ impl SquareChannel {
 }
 
 // ---------------------------------------------------------------------
-// Frame sequencer (drives envelope/length/sweep timing)
-// ---------------------------------------------------------------------
-
-/// NTSC 4-step frame sequencer cycle counts (from ApuFrameCounter.h,
-/// _stepCyclesNtsc[0]). 5-step mode and IRQ generation are omitted here —
-/// you don't need APU frame IRQs in a synth plugin, just the quarter/half
-/// frame ticks that drive envelope/sweep/length timing.
-const STEP_CYCLES_NTSC: [u32; 4] = [7457, 14913, 22371, 29830];
-
-#[derive(Default)]
-pub struct FrameSequencer {
-    cycle: u32,
-    step: usize,
-}
-
-pub enum FrameTick {
-    None,
-    Quarter,
-    Half,
-}
-
-impl FrameSequencer {
-    /// Call once per CPU cycle. Returns which kind of tick (if any) landed
-    /// on this cycle so you can dispatch to your channels.
-    pub fn clock(&mut self) -> FrameTick {
-        self.cycle += 1;
-        if self.cycle >= STEP_CYCLES_NTSC[self.step] {
-            let tick = match self.step {
-                0 | 2 => FrameTick::Quarter,
-                1 | 3 => FrameTick::Half,
-                _ => unreachable!(),
-            };
-            self.step += 1;
-            if self.step == 4 {
-                self.step = 0;
-                self.cycle = 0;
-            }
-            tick
-        } else {
-            FrameTick::None
-        }
-    }
-}
-
-// ---------------------------------------------------------------------
 // Helper: MIDI note -> NES period
 // ---------------------------------------------------------------------
 
@@ -416,6 +237,9 @@ pub fn midi_note_to_freq(note: u8) -> f64 {
 // ---------------------------------------------------------------------
 // Example: wiring it up in a plugin process() loop
 // ---------------------------------------------------------------------
+//
+// use crate::nes_core::{FrameSequencer, FrameTick, NTSC_CPU_CLOCK};
+// use crate::nes_square::{SquareChannel, midi_note_to_freq, period_for_frequency};
 //
 // struct PulseOscillator {
 //     square: SquareChannel,
