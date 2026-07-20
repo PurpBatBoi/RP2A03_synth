@@ -1,16 +1,26 @@
-// blip_buf 1.1.0 - Rust port
-// Original: http://www.slack.net/~ant/
+/*
+ * blip_buf 1.1.0 - Rust Port
+ * 
+ * Ported to Rust from the original C library by Shay Green
+ * Original C Library: http://www.slack.net/~ant/
+ * 
+ * --- Original Copyright Notice ---
+ * Copyright (C) 2003-2009 Shay Green.
+ * 
+ * This library is free software; you can redistribute it and/or modify it 
+ * under the terms of the GNU Lesser General Public License as published 
+ * by the Free Software Foundation; either version 2.1 of the License, or 
+ * (at your option) any later version.
+ * 
+ * This library is distributed in the hope that it will be useful, but 
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY 
+ * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public 
+ * License along with this module; if not, write to the Free Software 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
 
-// Library Copyright (C) 2003-2009 Shay Green. This library is free software;
-// you can redistribute it and/or modify it under the terms of the GNU Lesser
-// General Public License as published by the Free Software Foundation; either
-// version 2.1 of the License, or (at your option) any later version. This
-// library is distributed in the hope that it will be useful, but WITHOUT ANY
-// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
-// A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more
-// details. You should have received a copy of the GNU Lesser General Public
-// License along with this module; if not, write to the Free Software Foundation,
-// Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+// Note: This implementation was produced with the assistance of AI translation 
+// tools based on the original C source code.
 
 type FixedT = u64;
 const PRE_SHIFT: u32 = 32;
