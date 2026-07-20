@@ -1,3 +1,4 @@
+// rp2a03_nice\src\lib.rs
 use nice_plug::prelude::*;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -15,7 +16,7 @@ mod midi_helper;
 const BLIP_BUFFER_SIZE: i32 = 4096;
 /// Scale factor so that a full 0–15 swing maps to the full i16 range.
 /// 32767 / 15 ≈ 2184
-const AMPLITUDE_SCALE: i32 = 2184;
+const AMPLITUDE_SCALE: i32 = 1500; // More conservative scaling to prevent clipping
 
 #[derive(Enum, PartialEq, Clone, Copy)]
 enum ChannelMode {
@@ -87,10 +88,10 @@ impl NesSynth {
         // Square: volume 0, length counter halt, no sweep
         self.square.write_reg0(0x30);
         self.square.write_reg1(0x08);
-        
+
         // Triangle: linear counter halt (disables length counter)
         self.triangle.write_reg0(0x80);
-        
+
         // Noise: volume 0, length counter halt, load noise length 0
         self.noise.write_reg0(0x30);
         self.noise.write_reg3(0x00);
@@ -112,7 +113,7 @@ impl NesSynth {
                 self.square.set_enabled(true);
                 // 0x30 = Constant volume (0x10) + Length counter halt (0x20)
                 self.square.write_reg0((duty << 6) | 0x30 | (volume & 0x0F));
-                // 0x08 = Sweep negate true. This is required to prevent the APU from muting 
+                // 0x08 = Sweep negate true. This is required to prevent the APU from muting
                 // the channel when the period is > 1023 (i.e. low notes).
                 self.square.write_reg1(0x08);
                 self.square.write_reg2((period & 0xFF) as u8);
@@ -121,7 +122,7 @@ impl NesSynth {
             ChannelMode::Triangle => {
                 let freq = midi_helper::midi_note_to_freq(note);
                 let period = midi_helper::period_for_frequency(freq);
-                
+
                 self.triangle.set_enabled(true);
                 // 0x80 = Control flag (halts length counter) + 0x7F = max linear counter reload
                 self.triangle.write_reg0(0x80 | 0x7F);
@@ -155,7 +156,7 @@ impl NesSynth {
         let mode = self.params.mode.value();
 
         for clock in 0..clocks_needed {
-            // 1. Tick frame sequencer (envelopes, length counters, sweep)
+            // 1. Tick frame sequencer
             match self.frame_seq.clock() {
                 FrameTick::Quarter => {
                     self.square.tick_envelope();
@@ -170,23 +171,24 @@ impl NesSynth {
                 }
                 FrameTick::None => {}
             }
-            
+
             // 2. Reload length counters
             self.square.reload_length_counter();
             self.triangle.reload_length_counter();
             self.noise.reload_length_counter();
 
-            // 3. Clock the channel timers
-            self.square.clock();
-            self.triangle.clock();
-            self.noise.clock();
+            // 3. Run the channels (not clock!)
+            let target = clock + 1;
+            self.square.run(target);
+            self.triangle.run(target);
+            self.noise.run(target);
 
-            // 4. Consume deltas from ALL channels (prevents massive DC buildup in unused channels)
+            // 4. Consume deltas from ALL channels
             let sq_delta = self.square.take_delta();
             let tri_delta = self.triangle.take_delta();
             let noise_delta = self.noise.take_delta();
 
-            // 5. Submit only the active channel's delta to the BLEP synth
+            // 5. Submit only the active channel's delta
             let active_delta = match mode {
                 ChannelMode::Square => sq_delta,
                 ChannelMode::Triangle => tri_delta,
@@ -199,6 +201,17 @@ impl NesSynth {
         }
 
         self.blip.end_frame(clocks_needed);
+
+        // IMPORTANT: each channel's ApuTimer tracks its own `previous_cycle` relative
+        // to the `target_cycle` values passed into `run()` above. Since `clock` (and
+        // therefore `target`) restarts at 0 on every call to `generate_samples`, the
+        // channel timers must be told the "frame" ended here too - otherwise their
+        // `previous_cycle` stays at wherever it was left from the last buffer, and
+        // `cycles_to_run = target_cycle - previous_cycle` goes negative on the next
+        // call, silently stalling the timer until `target_cycle` catches back up.
+        self.square.end_frame();
+        self.triangle.end_frame();
+        self.noise.end_frame();
 
         let mut buf_i16 = vec![0i16; sample_count as usize];
         self.blip.read_samples(&mut buf_i16, sample_count, false);
@@ -252,7 +265,7 @@ impl Plugin for NesSynth {
                         egui::Frame::new()
                             .inner_margin(egui::Margin::same(20))
                             .show(ui, |ui| {
-let mut selected_mode = params.mode.value() as usize;
+                                let mut selected_mode = params.mode.value() as usize;
                                 let prev_duty = params.duty.value() as f32;
                                 let prev_vol = params.volume.value() as f32;
                                 let mut noise_mode = params.noise_mode.value();

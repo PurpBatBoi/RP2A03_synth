@@ -1,11 +1,7 @@
-//! nes_triangle.rs
+//! rp2a03_core\src\nes_triangle.rs
 //! NES 2A03 Triangle channel.
-//! 
-//! The triangle channel produces a 32-step pseudo-triangle wave.
-//! Unlike pulse channels, it operates at CPU speed (not CPU/2), 
-//! and volume is not envelope-controlled (it is purely on or off based on sequence).
 
-use crate::nes_core::LengthCounter; // Adjust import path as needed
+use crate::nes_core::{ApuTimer, LengthCounter};
 
 const TRIANGLE_SEQUENCE: [u8; 32] = [
     15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
@@ -15,8 +11,7 @@ const TRIANGLE_SEQUENCE: [u8; 32] = [
 #[derive(Default)]
 pub struct TriangleChannel {
     pub length_counter: LengthCounter,
-    timer: u16,
-    period: u16,
+    timer: ApuTimer,
 
     linear_counter: u8,
     linear_counter_reload: u8,
@@ -49,7 +44,6 @@ impl TriangleChannel {
 
     // --- Register writes ---
 
-    /// 0x4008: Linear counter load + control flag (which maps to length counter halt)
     pub fn write_reg0(&mut self, value: u8) {
         self.linear_control_flag = (value & 0x80) != 0;
         self.linear_counter_reload = value & 0x7F;
@@ -57,16 +51,16 @@ impl TriangleChannel {
         self.update_output();
     }
 
-    /// 0x400A: Timer low 8 bits
     pub fn write_reg2(&mut self, value: u8) {
-        self.period = (self.period & 0xFF00) | (value as u16);
+        let period = (self.timer.get_period() & 0xFF00) | (value as u16);
+        self.timer.set_period(period);
         self.update_output();
     }
 
-    /// 0x400B: Length counter load + Timer high 3 bits
     pub fn write_reg3(&mut self, value: u8) {
         self.length_counter.load(value >> 3);
-        self.period = (self.period & 0x00FF) | (((value & 0x07) as u16) << 8);
+        let period = (self.timer.get_period() & 0x00FF) | (((value & 0x07) as u16) << 8);
+        self.timer.set_period(period);
         self.linear_reload_flag = true;
         self.update_output();
     }
@@ -104,18 +98,38 @@ impl TriangleChannel {
         self.update_output();
     }
 
-    /// Clock the timer by one NES CPU cycle.
-    pub fn clock(&mut self) {
-        if self.timer == 0 {
-            self.timer = self.period;
+    pub fn end_frame(&mut self) {
+        self.timer.end_frame();
+    }
 
-            // Sequencer is clocked if both length and linear counters are non-zero.
-            if self.length_counter.status() && self.linear_counter > 0 {
-                self.sequence_position = self.sequence_position.wrapping_add(1) & 0x1F;
-                self.update_output();
+    /// Run the triangle channel up to target_cycle
+    pub fn run(&mut self, target_cycle: u32) {
+        // The closure passed to `timer.run` can't borrow `self` while `self.timer`
+        // is already mutably borrowed, so we snapshot the fields it needs into
+        // locals, let the timer mutate the local sequence position, then write
+        // the result back (and update the output) once the timer call returns.
+        let length_active = self.length_counter.status();
+        let linear_counter = self.linear_counter;
+        let mut sequence_position = self.sequence_position;
+        let mut expired = false;
+
+        self.timer.run(target_cycle, || {
+            // Sequencer is clocked if both length and linear counters are non-zero
+            if length_active && linear_counter > 0 {
+                sequence_position = sequence_position.wrapping_add(1) & 0x1F;
+                expired = true;
             }
-        } else {
-            self.timer -= 1;
+        });
+
+        self.sequence_position = sequence_position;
+        if expired {
+            self.update_output();
         }
+    }
+
+    /// Simplified single-cycle clock
+    pub fn clock(&mut self) {
+        let prev = self.timer.get_timer();
+        self.run(prev as u32 + 1);
     }
 }

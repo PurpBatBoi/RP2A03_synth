@@ -1,4 +1,4 @@
-//! nes_core.rs
+//! rp2a03_core\src\nes_core.rs
 //! Core shared components for NES 2A03 APU channels.
 
 pub const NTSC_CPU_CLOCK: f64 = 1_789_773.0;
@@ -115,6 +115,89 @@ impl Envelope {
         } else {
             0
         }
+    }
+}
+
+/// APU Timer - matches C++ ApuTimer::Run() behavior exactly
+#[derive(Default, Clone, Debug)]
+pub struct ApuTimer {
+    timer: u16,
+    period: u16,
+    previous_cycle: u32,
+}
+
+impl ApuTimer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_period(&mut self, period: u16) {
+        self.period = period;
+    }
+
+    pub fn get_period(&self) -> u16 {
+        self.period
+    }
+
+    pub fn get_timer(&self) -> u16 {
+        self.timer
+    }
+
+    pub fn set_timer(&mut self, timer: u16) {
+        self.timer = timer;
+    }
+
+    pub fn end_frame(&mut self) {
+        self.previous_cycle = 0;
+    }
+
+    pub fn reset(&mut self) {
+        self.timer = 0;
+        self.period = 0;
+        self.previous_cycle = 0;
+    }
+
+    /// Run the timer up to target_cycle, calling the provided closure
+    /// each time the timer expires. Returns whether any expirations occurred.
+    ///
+    /// Matches C++ ApuTimer::Run() behavior:
+    /// ```cpp
+    /// while(cyclesToRun > _timer) {
+    ///     _previousCycle += _timer + 1;
+    ///     _timer = _period;
+    ///     // [action happens here]
+    ///     return true;
+    /// }
+    /// _timer -= cyclesToRun;
+    /// _previousCycle = targetCycle;
+    /// return false;
+    /// ```
+    pub fn run<F>(&mut self, target_cycle: u32, mut on_expire: F) -> bool
+    where
+        F: FnMut(),
+    {
+        let mut cycles_to_run = (target_cycle - self.previous_cycle) as i32;
+        let mut expired = false;
+
+        while cycles_to_run > 0 {
+            if cycles_to_run > self.timer as i32 {
+                // Timer expired
+                self.previous_cycle += (self.timer + 1) as u32;
+                self.timer = self.period;
+                
+                on_expire();
+                expired = true;
+
+                cycles_to_run = (target_cycle - self.previous_cycle) as i32;
+            } else {
+                // Timer didn't expire
+                self.timer -= cycles_to_run as u16;
+                self.previous_cycle = target_cycle;
+                cycles_to_run = 0;
+            }
+        }
+
+        expired
     }
 }
 
