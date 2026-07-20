@@ -4,23 +4,29 @@ use std::sync::Arc;
 
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::nes_core::{FrameSequencer, FrameTick, NTSC_CPU_CLOCK};
+use rp2a03_core::nes_noise::NoiseChannel;
 use rp2a03_core::nes_square::{midi_note_to_freq, period_for_frequency, SquareChannel};
+use rp2a03_core::nes_triangle::TriangleChannel;
 
 const BLIP_BUFFER_SIZE: i32 = 4096;
 /// Scale factor so that a full 0–15 swing maps to the full i16 range.
 /// 32767 / 15 ≈ 2184
 const AMPLITUDE_SCALE: i32 = 2184;
 
-struct NesSynth {
-    params: Arc<NesSynthParams>,
-    square: SquareChannel,
-    frame_seq: FrameSequencer,
-    sample_rate: f32,
-    blip: BlipBuf,
+#[derive(Enum, PartialEq, Clone, Copy)]
+enum ChannelMode {
+    #[name = "Pulse/Square"]
+    Square,
+    #[name = "Triangle"]
+    Triangle,
+    #[name = "Noise"]
+    Noise,
 }
 
 #[derive(Params)]
 struct NesSynthParams {
+    #[id = "mode"]
+    pub mode: EnumParam<ChannelMode>,
     #[id = "duty"]
     pub duty: IntParam,
     #[id = "volume"]
@@ -30,10 +36,21 @@ struct NesSynthParams {
 impl Default for NesSynthParams {
     fn default() -> Self {
         Self {
+            mode: EnumParam::new("Mode", ChannelMode::Square),
             duty: IntParam::new("Duty", 2, IntRange::Linear { min: 0, max: 3 }),
             volume: IntParam::new("Volume", 15, IntRange::Linear { min: 0, max: 15 }),
         }
     }
+}
+
+struct NesSynth {
+    params: Arc<NesSynthParams>,
+    square: SquareChannel,
+    triangle: TriangleChannel,
+    noise: NoiseChannel,
+    frame_seq: FrameSequencer,
+    sample_rate: f32,
+    blip: BlipBuf,
 }
 
 impl Default for NesSynth {
@@ -44,6 +61,8 @@ impl Default for NesSynth {
         Self {
             params: Arc::new(NesSynthParams::default()),
             square: SquareChannel::new(true),
+            triangle: TriangleChannel::new(),
+            noise: NoiseChannel::new(),
             frame_seq: FrameSequencer::default(),
             sample_rate: 44100.0,
             blip,
@@ -53,20 +72,54 @@ impl Default for NesSynth {
 
 impl NesSynth {
     fn note_on(&mut self, note: u8, velocity: f32) {
-        let period = period_for_frequency(midi_note_to_freq(note));
-        let duty = self.params.duty.value() as u8;
+        let mode = self.params.mode.value();
         let volume = ((self.params.volume.value() as f32) * velocity).round() as u8;
 
-        self.square.set_enabled(true);
-        self.square
-            .write_reg0((duty << 6) | 0x10 | (volume & 0x0F));
-        self.square.write_reg2((period & 0xFF) as u8);
-        self.square
-            .write_reg3((0x1Fu8 << 3) | ((period >> 8) as u8 & 0x07));
+        // Ensure all are muted before we activate the selected one
+        self.square.set_enabled(false);
+        self.triangle.set_enabled(false);
+        self.noise.set_enabled(false);
+
+        match mode {
+            ChannelMode::Square => {
+                let period = period_for_frequency(midi_note_to_freq(note));
+                let duty = self.params.duty.value() as u8;
+                self.square.set_enabled(true);
+                // 0x30 = Constant volume (0x10) + Length counter halt (0x20)
+                self.square.write_reg0((duty << 6) | 0x30 | (volume & 0x0F));
+                self.square.write_reg2((period & 0xFF) as u8);
+                self.square.write_reg3((0x1Fu8 << 3) | ((period >> 8) as u8 & 0x07));
+            }
+            ChannelMode::Triangle => {
+                let freq = midi_note_to_freq(note);
+                // Triangle formula: Freq = CPU / (32 * (P + 1))
+                let p = (NTSC_CPU_CLOCK / (32.0 * freq)) - 1.0;
+                let period = p.round().clamp(0.0, 0x7FF as f64) as u16;
+                
+                self.triangle.set_enabled(true);
+                // 0x80 = Control flag (halts length counter) + 0x7F = max linear counter reload
+                self.triangle.write_reg0(0x80 | 0x7F);
+                self.triangle.write_reg2((period & 0xFF) as u8);
+                self.triangle.write_reg3((0x1Fu8 << 3) | ((period >> 8) as u8 & 0x07));
+            }
+            ChannelMode::Noise => {
+                // Map MIDI note (0-127) to the 16 available noise periods (0-15)
+                let period_idx = (note % 16) as u8;
+                
+                self.noise.set_enabled(true);
+                // 0x30 = Constant volume (0x10) + Length counter halt (0x20)
+                self.noise.write_reg0(0x30 | (volume & 0x0F));
+                // Mode bit (0x80) gives a metallic sound; keep it off (0x00) for standard noise
+                self.noise.write_reg2(period_idx);
+                self.noise.write_reg3(0x1F << 3);
+            }
+        }
     }
 
     fn note_off(&mut self) {
         self.square.set_enabled(false);
+        self.triangle.set_enabled(false);
+        self.noise.set_enabled(false);
     }
 
     /// Run enough NES CPU clocks to produce `sample_count` output samples,
@@ -74,25 +127,49 @@ impl NesSynth {
     fn generate_samples(&mut self, output: &mut [f32]) {
         let sample_count = output.len() as i32;
         let clocks_needed = self.blip.clocks_needed(sample_count) as u32;
+        let mode = self.params.mode.value();
 
         for clock in 0..clocks_needed {
+            // 1. Tick frame sequencer (envelopes, length counters, sweep)
             match self.frame_seq.clock() {
-                FrameTick::Quarter => self.square.tick_envelope(),
+                FrameTick::Quarter => {
+                    self.square.tick_envelope();
+                    self.triangle.tick_linear_counter();
+                    self.noise.tick_envelope();
+                }
                 FrameTick::Half => {
                     self.square.tick_length_counter();
                     self.square.tick_sweep();
+                    self.triangle.tick_length_counter();
+                    self.noise.tick_length_counter();
                 }
                 FrameTick::None => {}
             }
+            
+            // 2. Reload length counters
             self.square.reload_length_counter();
-            self.square.clock();
+            self.triangle.reload_length_counter();
+            self.noise.reload_length_counter();
 
-            // take_delta() returns the change in output level since last call.
-            // That's exactly what BlipBuf wants.
-            let delta = self.square.take_delta();
-            if delta != 0 {
-                self.blip
-                    .add_delta(clock, delta as i32 * AMPLITUDE_SCALE);
+            // 3. Clock the channel timers
+            self.square.clock();
+            self.triangle.clock();
+            self.noise.clock();
+
+            // 4. Consume deltas from ALL channels (prevents massive DC buildup in unused channels)
+            let sq_delta = self.square.take_delta();
+            let tri_delta = self.triangle.take_delta();
+            let noise_delta = self.noise.take_delta();
+
+            // 5. Submit only the active channel's delta to the BLEP synth
+            let active_delta = match mode {
+                ChannelMode::Square => sq_delta,
+                ChannelMode::Triangle => tri_delta,
+                ChannelMode::Noise => noise_delta,
+            };
+
+            if active_delta != 0 {
+                self.blip.add_delta(clock, active_delta as i32 * AMPLITUDE_SCALE);
             }
         }
 
@@ -108,7 +185,7 @@ impl NesSynth {
 }
 
 impl Plugin for NesSynth {
-    const NAME: &'static str = "NES Square Synth";
+    const NAME: &'static str = "NES Multi-Synth";
     const VENDOR: &'static str = "Your Name";
     const URL: &'static str = "https://example.com";
     const EMAIL: &'static str = "you@example.com";
@@ -147,6 +224,8 @@ impl Plugin for NesSynth {
     fn reset(&mut self) {
         self.frame_seq = FrameSequencer::default();
         self.square = SquareChannel::new(true);
+        self.triangle = TriangleChannel::new();
+        self.noise = NoiseChannel::new();
         self.blip.clear();
     }
 
@@ -215,8 +294,8 @@ impl Plugin for NesSynth {
 }
 
 impl ClapPlugin for NesSynth {
-    const CLAP_ID: &'static str = "com.example.nes-square-synth";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("NES square channel synth");
+    const CLAP_ID: &'static str = "com.example.nes-synth";
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("NES multi-channel synth");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
@@ -227,7 +306,7 @@ impl ClapPlugin for NesSynth {
 }
 
 impl Vst3Plugin for NesSynth {
-    const VST3_CLASS_ID: [u8; 16] = *b"NesSquareSynth01";
+    const VST3_CLASS_ID: [u8; 16] = *b"NesSynth00000001";
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
         &[Vst3SubCategory::Instrument, Vst3SubCategory::Synth];
 }
