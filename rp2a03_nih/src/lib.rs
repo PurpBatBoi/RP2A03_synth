@@ -1,4 +1,4 @@
-use nih_plug::prelude::*;
+use nice_plug::prelude::*;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -311,5 +311,5 @@ impl Vst3Plugin for NesSynth {
         &[Vst3SubCategory::Instrument, Vst3SubCategory::Synth];
 }
 
-nih_export_clap!(NesSynth);
-nih_export_vst3!(NesSynth);
+nice_export_clap!(NesSynth);
+nice_export_vst3!(NesSynth);

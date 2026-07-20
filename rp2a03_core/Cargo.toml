@@ -7,5 +7,5 @@ edition = "2021"
 crate-type = ["lib"]
 
 [dependencies]
-# Intentionally no nih_plug dependency here -- this crate is pure chip DSP,
+# Intentionally no nice_plug dependency here -- this crate is pure chip DSP,
 # shared between rp2a03_nih and (eventually) rp2a03_fl. Keep it that way.
