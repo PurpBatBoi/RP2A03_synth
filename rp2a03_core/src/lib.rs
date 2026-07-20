@@ -1,2 +1,2 @@
 pub mod nes_square;
-pub mod blip;
+pub mod blip_buf;
