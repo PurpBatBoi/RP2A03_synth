@@ -1779,7 +1779,7 @@ name = "rp2a03_core"
 version = "0.1.0"
 
 [[package]]
-name = "rp2a03_nih"
+name = "rp2a03_nice"
 version = "0.1.0"
 dependencies = [
  "egui",
