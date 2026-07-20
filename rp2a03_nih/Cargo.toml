@@ -9,4 +9,7 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 # Change nice_plug to nice_plug and update the git URL
 nice-plug = { git = "https://codeberg.org/RustAudio/nice-plug.git", features = ["assert_process_allocs"] }
+nice-plug-egui = { git = "https://codeberg.org/RustAudio/nice-plug.git" }
+egui = { version = "0.35.0", features = ["default_fonts"] }
 rp2a03_core = { path = "../rp2a03_core" }
+rp2a03_common = { path = "../rp2a03_common" }

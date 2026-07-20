@@ -2,6 +2,9 @@ use nice_plug::prelude::*;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use nice_plug_egui::{create_egui_editor, EguiState};
+use egui;
+
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::nes_core::{FrameSequencer, FrameTick, NTSC_CPU_CLOCK};
 use rp2a03_core::nes_noise::NoiseChannel;
@@ -15,16 +18,18 @@ const AMPLITUDE_SCALE: i32 = 2184;
 
 #[derive(Enum, PartialEq, Clone, Copy)]
 enum ChannelMode {
-    #[name = "Pulse/Square"]
+    #[name = "2A03 Square"]
     Square,
-    #[name = "Triangle"]
+    #[name = "2A03 Triangle"]
     Triangle,
-    #[name = "Noise"]
+    #[name = "2A03 Noise"]
     Noise,
 }
 
 #[derive(Params)]
 struct NesSynthParams {
+    #[persist = "editor-state"]
+    pub editor_state: Arc<EguiState>,
     #[id = "mode"]
     pub mode: EnumParam<ChannelMode>,
     #[id = "duty"]
@@ -36,6 +41,7 @@ struct NesSynthParams {
 impl Default for NesSynthParams {
     fn default() -> Self {
         Self {
+            editor_state: EguiState::from_size(400, 300),
             mode: EnumParam::new("Mode", ChannelMode::Square),
             duty: IntParam::new("Duty", 2, IntRange::Linear { min: 0, max: 3 }),
             volume: IntParam::new("Volume", 15, IntRange::Linear { min: 0, max: 15 }),
@@ -185,10 +191,10 @@ impl NesSynth {
 }
 
 impl Plugin for NesSynth {
-    const NAME: &'static str = "NES Multi-Synth";
-    const VENDOR: &'static str = "Your Name";
-    const URL: &'static str = "https://example.com";
-    const EMAIL: &'static str = "you@example.com";
+    const NAME: &'static str = "RP2A03 Synth";
+    const VENDOR: &'static str = "PurpBatBoi";
+    const URL: &'static str = "";
+    const EMAIL: &'static str = "";
     const VERSION: &'static str = "0.1.0";
 
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
@@ -206,6 +212,76 @@ impl Plugin for NesSynth {
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        let params = self.params.clone();
+        let egui_state = params.editor_state.clone();
+
+        create_egui_editor(
+            egui_state.clone(),
+            (),
+            nice_plug_egui::EguiSettings::default(),
+            |egui_ctx, _queue, _state| {
+                egui_ctx.set_theme(egui::Theme::Dark);
+                egui_ctx.set_style_of(egui::Theme::Dark, rp2a03_common::gui::rp2a03_style());
+            },
+            move |ui, setter, _queue, _state| {
+                nice_plug_egui::resizable_window::ResizableWindow::new("NES Synth Editor")
+                    .min_size(egui::Vec2::new(300.0, 200.0))
+                    .show(ui, egui_state.as_ref(), |ui| {
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::same(20))
+                            .show(ui, |ui| {
+                                let mut selected_mode = params.mode.value() as usize;
+                                let prev_duty = params.duty.value() as f32;
+                                let prev_vol = params.volume.value() as f32;
+                                
+                                let mut new_duty = prev_duty;
+                                let mut new_vol = prev_vol;
+
+                                let responses = rp2a03_common::gui::draw_synth_ui(
+                                    ui,
+                                    &mut selected_mode,
+                                    &mut new_duty,
+                                    &mut new_vol,
+                                );
+
+                                if responses.mode.changed {
+                                    let new_mode = match selected_mode {
+                                        0 => ChannelMode::Square,
+                                        1 => ChannelMode::Triangle,
+                                        2 => ChannelMode::Noise,
+                                        _ => ChannelMode::Square,
+                                    };
+                                    setter.begin_set_parameter(&params.mode);
+                                    setter.set_parameter(&params.mode, new_mode);
+                                    setter.end_set_parameter(&params.mode);
+                                }
+
+                                if responses.duty.drag_started {
+                                    setter.begin_set_parameter(&params.duty);
+                                }
+                                if new_duty != prev_duty {
+                                    setter.set_parameter(&params.duty, new_duty as i32);
+                                }
+                                if responses.duty.drag_stopped {
+                                    setter.end_set_parameter(&params.duty);
+                                }
+
+                                if responses.volume.drag_started {
+                                    setter.begin_set_parameter(&params.volume);
+                                }
+                                if new_vol != prev_vol {
+                                    setter.set_parameter(&params.volume, new_vol as i32);
+                                }
+                                if responses.volume.drag_stopped {
+                                    setter.end_set_parameter(&params.volume);
+                                }
+                            });
+                    });
+            },
+        )
     }
 
     fn initialize(
