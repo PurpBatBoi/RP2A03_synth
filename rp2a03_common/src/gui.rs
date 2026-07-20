@@ -31,6 +31,7 @@ pub struct SynthUiResponses {
     pub mode: ParamResponse,
     pub duty: ParamResponse,
     pub volume: ParamResponse,
+    pub noise_mode: ParamResponse,
 }
 
 pub fn draw_synth_ui(
@@ -38,11 +39,11 @@ pub fn draw_synth_ui(
     mode: &mut usize,
     duty: &mut f32,
     volume: &mut f32,
+    noise_mode: &mut bool,
 ) -> SynthUiResponses {
     let mut mode_changed = false;
 
     ui.vertical(|ui| {
-        // Mode dropdown
         let mode_text = match *mode {
             0 => "2A03 Square",
             1 => "2A03 Triangle",
@@ -68,19 +69,25 @@ pub fn draw_synth_ui(
 
         let mut duty_response = None;
         let mut volume_response = None;
+        let mut noise_mode_changed = false;
 
         ui.horizontal(|ui| {
-            // Duty Knob
-            duty_response = Some(ui.add(
-                crate::knob::Knob::new(duty, 0.0, 3.0, crate::knob::KnobStyle::Wiper)
-                    .with_label("Duty", crate::knob::LabelPosition::Bottom)
-                    .with_step(1.0)
-                    .with_size(35.0),
-            ));
+            if *mode == 2 {
+                // Noise mode: swap the Duty knob for a metallic-mode toggle
+                if ui.checkbox(noise_mode, "Metallic").changed() {
+                    noise_mode_changed = true;
+                }
+            } else {
+                duty_response = Some(ui.add(
+                    crate::knob::Knob::new(duty, 0.0, 3.0, crate::knob::KnobStyle::Wiper)
+                        .with_label("Duty", crate::knob::LabelPosition::Bottom)
+                        .with_step(1.0)
+                        .with_size(35.0),
+                ));
+            }
 
             ui.add_space(30.0);
 
-            // Volume Knob
             volume_response = Some(ui.add(
                 crate::knob::Knob::new(volume, 0.0, 15.0, crate::knob::KnobStyle::Wiper)
                     .with_label("Volume", crate::knob::LabelPosition::Bottom)
@@ -92,11 +99,18 @@ pub fn draw_synth_ui(
         SynthUiResponses {
             mode: ParamResponse {
                 changed: mode_changed,
-                drag_started: false, // Dropdowns don't drag
+                drag_started: false,
                 drag_stopped: false,
             },
-            duty: ParamResponse::from_response(&duty_response.unwrap()),
+            duty: duty_response
+                .map(|r| ParamResponse::from_response(&r))
+                .unwrap_or(ParamResponse { changed: false, drag_started: false, drag_stopped: false }),
             volume: ParamResponse::from_response(&volume_response.unwrap()),
+            noise_mode: ParamResponse {
+                changed: noise_mode_changed,
+                drag_started: false,
+                drag_stopped: false,
+            },
         }
     })
     .inner

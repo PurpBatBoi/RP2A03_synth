@@ -36,6 +36,8 @@ struct NesSynthParams {
     pub duty: IntParam,
     #[id = "volume"]
     pub volume: IntParam,
+    #[id = "noise_mode"]
+    pub noise_mode: BoolParam,
 }
 
 impl Default for NesSynthParams {
@@ -45,6 +47,7 @@ impl Default for NesSynthParams {
             mode: EnumParam::new("Mode", ChannelMode::Square),
             duty: IntParam::new("Duty", 2, IntRange::Linear { min: 0, max: 3 }),
             volume: IntParam::new("Volume", 15, IntRange::Linear { min: 0, max: 15 }),
+            noise_mode: BoolParam::new("Metallic", false),
         }
     }
 }
@@ -111,12 +114,12 @@ impl NesSynth {
             ChannelMode::Noise => {
                 // Map MIDI note (0-127) to the 16 available noise periods (0-15)
                 let period_idx = (note % 16) as u8;
-                
+                let mode_bit = if self.params.noise_mode.value() { 0x80 } else { 0x00 };
+
                 self.noise.set_enabled(true);
                 // 0x30 = Constant volume (0x10) + Length counter halt (0x20)
                 self.noise.write_reg0(0x30 | (volume & 0x0F));
-                // Mode bit (0x80) gives a metallic sound; keep it off (0x00) for standard noise
-                self.noise.write_reg2(period_idx);
+                self.noise.write_reg2(mode_bit | period_idx);
                 self.noise.write_reg3(0x1F << 3);
             }
         }
@@ -233,10 +236,11 @@ impl Plugin for NesSynth {
                         egui::Frame::new()
                             .inner_margin(egui::Margin::same(20))
                             .show(ui, |ui| {
-                                let mut selected_mode = params.mode.value() as usize;
+let mut selected_mode = params.mode.value() as usize;
                                 let prev_duty = params.duty.value() as f32;
                                 let prev_vol = params.volume.value() as f32;
-                                
+                                let mut noise_mode = params.noise_mode.value();
+
                                 let mut new_duty = prev_duty;
                                 let mut new_vol = prev_vol;
 
@@ -245,6 +249,7 @@ impl Plugin for NesSynth {
                                     &mut selected_mode,
                                     &mut new_duty,
                                     &mut new_vol,
+                                    &mut noise_mode,
                                 );
 
                                 if responses.mode.changed {
@@ -277,6 +282,12 @@ impl Plugin for NesSynth {
                                 }
                                 if responses.volume.drag_stopped {
                                     setter.end_set_parameter(&params.volume);
+                                }
+
+                                if responses.noise_mode.changed {
+                                    setter.begin_set_parameter(&params.noise_mode);
+                                    setter.set_parameter(&params.noise_mode, noise_mode);
+                                    setter.end_set_parameter(&params.noise_mode);
                                 }
                             });
                     });

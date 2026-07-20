@@ -75,12 +75,23 @@ impl NoiseChannel {
         self.update_output();
     }
 
-    /// 0x400E: Mode flag + Period index
+/// 0x400E: Mode flag + Period index
     pub fn write_reg2(&mut self, value: u8) {
         let period_index = (value & 0x0F) as usize;
         self.period = NOISE_PERIOD_NTSC[period_index] - 1;
         self.mode_flag = (value & 0x80) != 0;
         self.update_output();
+    }
+
+    /// Toggle "metallic" mode independently of the period index.
+    /// Maps directly to bit 7 of $400E without disturbing the selected period.
+    pub fn set_mode_flag(&mut self, metallic: bool) {
+        self.mode_flag = metallic;
+        self.update_output();
+    }
+
+    pub fn mode_flag(&self) -> bool {
+        self.mode_flag
     }
 
     /// 0x400F: Length counter load + Envelope restart
