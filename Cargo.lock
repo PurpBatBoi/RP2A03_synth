@@ -3,13 +3,6 @@
 version = 4
 
 [[package]]
-name = "RP2A03-SYNTH"
-version = "0.1.0"
-dependencies = [
- "nih_plug",
-]
-
-[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -503,6 +496,22 @@ source = "git+https://github.com/nicokoch/reflink.git?rev=e8d93b465f5d9ad340cd05
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "rp2a03_common"
+version = "0.1.0"
+
+[[package]]
+name = "rp2a03_core"
+version = "0.1.0"
+
+[[package]]
+name = "rp2a03_nih"
+version = "0.1.0"
+dependencies = [
+ "nih_plug",
+ "rp2a03_core",
 ]
 
 [[package]]
