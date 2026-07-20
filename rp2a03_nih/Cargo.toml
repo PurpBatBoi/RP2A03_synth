@@ -1,0 +1,11 @@
+[package]
+name = "rp2a03_nih"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
+rp2a03_core = { path = "../rp2a03_core" }

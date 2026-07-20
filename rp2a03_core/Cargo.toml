@@ -1,0 +1,11 @@
+[package]
+name = "rp2a03_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+# Intentionally no nih_plug dependency here -- this crate is pure chip DSP,
+# shared between rp2a03_nih and (eventually) rp2a03_fl. Keep it that way.

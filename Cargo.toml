@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "rp2a03_core",
+    "rp2a03_common",
+    "rp2a03_nih",
+    "xtask",
+]
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
