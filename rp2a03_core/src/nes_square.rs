@@ -172,31 +172,14 @@ impl SquareChannel {
     }
 
     pub fn end_frame(&mut self) {
-        self.timer.end_frame();
+        // No-op: the per-cycle tick() timer has no cross-buffer state to reset.
     }
 
-    /// Run the square channel up to target_cycle
-    pub fn run(&mut self, target_cycle: u32) {
-        // The closure passed to `timer.run` can't borrow `self` while `self.timer`
-        // is already mutably borrowed, so we mutate a local copy of `duty_pos`
-        // and write it back (and update the output) once the timer call returns.
-        let mut duty_pos = self.duty_pos;
-        let mut expired = false;
-
-        self.timer.run(target_cycle, || {
-            duty_pos = duty_pos.wrapping_sub(1) & 0x07;
-            expired = true;
-        });
-
-        self.duty_pos = duty_pos;
-        if expired {
+    /// Advance the square channel by exactly one CPU cycle.
+    pub fn clock(&mut self) {
+        if self.timer.tick() {
+            self.duty_pos = self.duty_pos.wrapping_sub(1) & 0x07;
             self.update_output();
         }
-    }
-
-    /// Simplified single-cycle clock
-    pub fn clock(&mut self) {
-        let prev = self.timer.get_timer();
-        self.run(prev as u32 + 1);
     }
 }

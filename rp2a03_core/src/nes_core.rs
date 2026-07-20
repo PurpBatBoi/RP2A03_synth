@@ -118,12 +118,13 @@ impl Envelope {
     }
 }
 
-/// APU Timer - matches C++ ApuTimer::Run() behavior exactly
+/// APU Timer - simple per-cycle timer, matching TetaNES's `Timer::tick()` design.
+/// Call `tick()` once per CPU cycle; it returns `true` on the cycle it fires
+/// (counter reaches zero and reloads to `period`).
 #[derive(Default, Clone, Debug)]
 pub struct ApuTimer {
-    timer: u16,
+    counter: u16,
     period: u16,
-    previous_cycle: u32,
 }
 
 impl ApuTimer {
@@ -140,64 +141,28 @@ impl ApuTimer {
     }
 
     pub fn get_timer(&self) -> u16 {
-        self.timer
+        self.counter
     }
 
     pub fn set_timer(&mut self, timer: u16) {
-        self.timer = timer;
-    }
-
-    pub fn end_frame(&mut self) {
-        self.previous_cycle = 0;
+        self.counter = timer;
     }
 
     pub fn reset(&mut self) {
-        self.timer = 0;
+        self.counter = 0;
         self.period = 0;
-        self.previous_cycle = 0;
     }
 
-    /// Run the timer up to target_cycle, calling the provided closure
-    /// each time the timer expires. Returns whether any expirations occurred.
-    ///
-    /// Matches C++ ApuTimer::Run() behavior:
-    /// ```cpp
-    /// while(cyclesToRun > _timer) {
-    ///     _previousCycle += _timer + 1;
-    ///     _timer = _period;
-    ///     // [action happens here]
-    ///     return true;
-    /// }
-    /// _timer -= cyclesToRun;
-    /// _previousCycle = targetCycle;
-    /// return false;
-    /// ```
-    pub fn run<F>(&mut self, target_cycle: u32, mut on_expire: F) -> bool
-    where
-        F: FnMut(),
-    {
-        let mut cycles_to_run = (target_cycle - self.previous_cycle) as i32;
-        let mut expired = false;
-
-        while cycles_to_run > 0 {
-            if cycles_to_run > self.timer as i32 {
-                // Timer expired
-                self.previous_cycle += (self.timer + 1) as u32;
-                self.timer = self.period;
-                
-                on_expire();
-                expired = true;
-
-                cycles_to_run = (target_cycle - self.previous_cycle) as i32;
-            } else {
-                // Timer didn't expire
-                self.timer -= cycles_to_run as u16;
-                self.previous_cycle = target_cycle;
-                cycles_to_run = 0;
-            }
+    /// Advance the timer by exactly one CPU cycle.
+    /// Returns `true` on the cycle the timer fires (reaches zero and reloads).
+    pub fn tick(&mut self) -> bool {
+        if self.counter == 0 {
+            self.counter = self.period;
+            true
+        } else {
+            self.counter -= 1;
+            false
         }
-
-        expired
     }
 }
 

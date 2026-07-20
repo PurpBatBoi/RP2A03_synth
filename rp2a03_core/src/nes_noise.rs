@@ -110,37 +110,21 @@ impl NoiseChannel {
     }
 
     pub fn end_frame(&mut self) {
-        self.timer.end_frame();
+        // No-op: the per-cycle tick() timer has no cross-buffer state to reset.
     }
 
-    /// Run the noise channel up to target_cycle
-    pub fn run(&mut self, target_cycle: u32) {
-        // The closure passed to `timer.run` can't borrow `self` while `self.timer`
-        // is already mutably borrowed, so we pull the fields it needs into locals,
-        // let the timer mutate those locals, then write the results back afterward.
-        let mode_flag = self.mode_flag;
-        let mut shift_register = self.shift_register;
-        let mut expired = false;
-
-        self.timer.run(target_cycle, || {
+    /// Advance the noise channel by exactly one CPU cycle.
+    pub fn clock(&mut self) {
+        if self.timer.tick() {
             // Perform the LFSR feedback
-            let feedback_bit = if mode_flag { 6 } else { 1 };
-            let feedback = (shift_register & 0x01) ^ ((shift_register >> feedback_bit) & 0x01);
+            let feedback_bit = if self.mode_flag { 6 } else { 1 };
+            let feedback = (self.shift_register & 0x01)
+                ^ ((self.shift_register >> feedback_bit) & 0x01);
 
-            shift_register >>= 1;
-            shift_register |= feedback << 14;
-            expired = true;
-        });
+            self.shift_register >>= 1;
+            self.shift_register |= feedback << 14;
 
-        self.shift_register = shift_register;
-        if expired {
             self.update_output();
         }
-    }
-
-    /// Simplified single-cycle clock
-    pub fn clock(&mut self) {
-        let prev = self.timer.get_timer();
-        self.run(prev as u32 + 1);
     }
 }

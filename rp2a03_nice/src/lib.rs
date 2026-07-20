@@ -177,11 +177,10 @@ impl NesSynth {
             self.triangle.reload_length_counter();
             self.noise.reload_length_counter();
 
-            // 3. Run the channels (not clock!)
-            let target = clock + 1;
-            self.square.run(target);
-            self.triangle.run(target);
-            self.noise.run(target);
+            // 3. Advance the channels by one cycle each
+            self.square.clock();
+            self.triangle.clock();
+            self.noise.clock();
 
             // 4. Consume deltas from ALL channels
             let sq_delta = self.square.take_delta();
@@ -201,17 +200,6 @@ impl NesSynth {
         }
 
         self.blip.end_frame(clocks_needed);
-
-        // IMPORTANT: each channel's ApuTimer tracks its own `previous_cycle` relative
-        // to the `target_cycle` values passed into `run()` above. Since `clock` (and
-        // therefore `target`) restarts at 0 on every call to `generate_samples`, the
-        // channel timers must be told the "frame" ended here too - otherwise their
-        // `previous_cycle` stays at wherever it was left from the last buffer, and
-        // `cycles_to_run = target_cycle - previous_cycle` goes negative on the next
-        // call, silently stalling the timer until `target_cycle` catches back up.
-        self.square.end_frame();
-        self.triangle.end_frame();
-        self.noise.end_frame();
 
         let mut buf_i16 = vec![0i16; sample_count as usize];
         self.blip.read_samples(&mut buf_i16, sample_count, false);
@@ -382,10 +370,10 @@ impl Plugin for NesSynth {
                     break;
                 }
                 match event {
-                    NoteEvent::NoteOn { note, velocity, .. } => {
+                    NoteEvent::NoteOn { timing, note, velocity, .. } => {
                         self.note_on(note, velocity);
                     }
-                    NoteEvent::NoteOff { .. } => {
+                    NoteEvent::NoteOff { timing, note, .. } => {
                         self.note_off();
                     }
                     _ => {}

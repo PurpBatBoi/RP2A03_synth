@@ -99,37 +99,17 @@ impl TriangleChannel {
     }
 
     pub fn end_frame(&mut self) {
-        self.timer.end_frame();
+        // No-op: the per-cycle tick() timer has no cross-buffer state to reset.
     }
 
-    /// Run the triangle channel up to target_cycle
-    pub fn run(&mut self, target_cycle: u32) {
-        // The closure passed to `timer.run` can't borrow `self` while `self.timer`
-        // is already mutably borrowed, so we snapshot the fields it needs into
-        // locals, let the timer mutate the local sequence position, then write
-        // the result back (and update the output) once the timer call returns.
-        let length_active = self.length_counter.status();
-        let linear_counter = self.linear_counter;
-        let mut sequence_position = self.sequence_position;
-        let mut expired = false;
-
-        self.timer.run(target_cycle, || {
-            // Sequencer is clocked if both length and linear counters are non-zero
-            if length_active && linear_counter > 0 {
-                sequence_position = sequence_position.wrapping_add(1) & 0x1F;
-                expired = true;
-            }
-        });
-
-        self.sequence_position = sequence_position;
-        if expired {
+    /// Advance the triangle channel by exactly one CPU cycle.
+    pub fn clock(&mut self) {
+        // Sequencer is clocked if both length and linear counters are non-zero.
+        // `tick()` runs first unconditionally (short-circuit `&&` still evaluates
+        // the left side), so the timer always advances even when gated.
+        if self.timer.tick() && self.length_counter.status() && self.linear_counter > 0 {
+            self.sequence_position = self.sequence_position.wrapping_add(1) & 0x1F;
             self.update_output();
         }
-    }
-
-    /// Simplified single-cycle clock
-    pub fn clock(&mut self) {
-        let prev = self.timer.get_timer();
-        self.run(prev as u32 + 1);
     }
 }
