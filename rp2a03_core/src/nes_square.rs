@@ -4,7 +4,7 @@
 //! Direct translation of the chip logic from MesenCE's SquareChannel.h,
 //! adapted for standalone cycle-by-cycle audio synthesis.
 
-use crate::nes_core::{Envelope, NTSC_CPU_CLOCK};
+use crate::nes_core::Envelope;
 
 // ---------------------------------------------------------------------
 // Square channel
@@ -218,18 +218,4 @@ impl SquareChannel {
         }
     }
 }
-
-// ---------------------------------------------------------------------
-// Helper: MIDI note -> NES period
-// ---------------------------------------------------------------------
-
-/// NES pulse frequency = CPU_CLOCK / (16 * (real_period + 1)).
-/// Solve for real_period given a target frequency in Hz.
-pub fn period_for_frequency(freq_hz: f64) -> u16 {
-    let p = (NTSC_CPU_CLOCK / (16.0 * freq_hz)) - 1.0;
-    p.round().clamp(0.0, 0x7FF as f64) as u16
-}
-
-pub fn midi_note_to_freq(note: u8) -> f64 {
-    440.0 * 2f64.powf((note as f64 - 69.0) / 12.0)
-}
+

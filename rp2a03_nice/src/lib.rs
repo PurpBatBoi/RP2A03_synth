@@ -8,9 +8,23 @@ use egui;
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::nes_core::{FrameSequencer, FrameTick, NTSC_CPU_CLOCK};
 use rp2a03_core::nes_noise::NoiseChannel;
-use rp2a03_core::nes_square::{midi_note_to_freq, period_for_frequency, SquareChannel};
+use rp2a03_core::nes_square::SquareChannel;
 use rp2a03_core::nes_triangle::TriangleChannel;
 
+// ---------------------------------------------------------------------
+// Helper: MIDI note -> NES period
+// ---------------------------------------------------------------------
+
+/// NES pulse frequency = CPU_CLOCK / (16 * (real_period + 1)).
+/// Solve for real_period given a target frequency in Hz.
+pub fn period_for_frequency(freq_hz: f64) -> u16 {
+    let p = (NTSC_CPU_CLOCK / (16.0 * freq_hz)) - 1.0;
+    p.round().clamp(0.0, 0x7FF as f64) as u16
+}
+
+pub fn midi_note_to_freq(note: u8) -> f64 {
+    440.0 * 2f64.powf((note as f64 - 69.0) / 12.0)
+}
 const BLIP_BUFFER_SIZE: i32 = 4096;
 /// Scale factor so that a full 0–15 swing maps to the full i16 range.
 /// 32767 / 15 ≈ 2184
