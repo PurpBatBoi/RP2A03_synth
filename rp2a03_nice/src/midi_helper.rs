@@ -18,10 +18,16 @@ pub fn period_for_frequency(freq_hz: f64) -> u16 {
 }
 
 /// Computes the Noise period index (0-15) for a given MIDI note, mimicking FamiStudio.
-/// Maps MIDI notes to the 16 available APU noise periods.
-/// Higher notes = higher pitch (lower period).
+///
+/// FamiStudio's noise mapping (descending, with +12 octave correction applied):
+///   C0 → 0xE,  C#0 → 0xD,  D0 → 0xC,  D#0 → 0xB,
+///   E0 → 0xA,  F0  → 0x9,  F#0 → 0x8,  G0  → 0x7,
+///   G#0 → 0x6, A0  → 0x5,  A#0 → 0x4,  B0  → 0x3,
+///   C1 → 0x2,  C#1 → 0x1,  D1  → 0x0,  D#1 → 0xF
 pub fn noise_period_for_midi_note(note: u8) -> u8 {
-    // In FamiTracker/FamiStudio, the 16 periods are mapped to consecutive notes.
-    // We map note % 16 inverted, so higher note = higher pitch (lower period index).
-    (15 - (note % 16)) as u8
+    // FamiStudio D1 = period 0, and periods descend as notes go lower.
+    // After applying the +12 octave correction (Reaper→FamiStudio),
+    // FamiStudio's D1 is at internal note 38, so:
+    //   period = (38 - (note + 12)) % 16 = (26 - note) % 16
+    ((26 - note as i16).rem_euclid(16)) as u8
 }

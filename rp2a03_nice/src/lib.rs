@@ -68,7 +68,7 @@ impl Default for NesSynth {
         let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE).expect("failed to create BlipBuf");
         blip.set_rates(NTSC_CPU_CLOCK, 44100.0);
 
-        Self {
+        let mut synth = Self {
             params: Arc::new(NesSynthParams::default()),
             square: SquareChannel::new(true),
             triangle: TriangleChannel::new(),
@@ -76,11 +76,26 @@ impl Default for NesSynth {
             frame_seq: FrameSequencer::default(),
             sample_rate: 44100.0,
             blip,
-        }
+        };
+        synth.apply_default_state();
+        synth
     }
 }
 
 impl NesSynth {
+    fn apply_default_state(&mut self) {
+        // Square: volume 0, length counter halt, no sweep
+        self.square.write_reg0(0x30);
+        self.square.write_reg1(0x08);
+        
+        // Triangle: linear counter halt (disables length counter)
+        self.triangle.write_reg0(0x80);
+        
+        // Noise: volume 0, length counter halt, load noise length 0
+        self.noise.write_reg0(0x30);
+        self.noise.write_reg3(0x00);
+    }
+
     fn note_on(&mut self, note: u8, velocity: f32) {
         let mode = self.params.mode.value();
         let volume = ((self.params.volume.value() as f32) * velocity).round() as u8;
@@ -315,6 +330,7 @@ let mut selected_mode = params.mode.value() as usize;
         self.triangle = TriangleChannel::new();
         self.noise = NoiseChannel::new();
         self.blip.clear();
+        self.apply_default_state();
     }
 
     fn process(
