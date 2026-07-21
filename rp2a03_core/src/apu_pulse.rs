@@ -283,7 +283,9 @@ impl Pulse {
     // ── Clocking ────────────────────────────
 
     /// Clock the pulse timer. When the timer expires, the duty sequencer advances.
+    /// Also applies any pending length counter reload (must happen each cycle).
     pub fn clock(&mut self) {
+        self.length.reload();
         if self.timer.clock() {
             self.duty.clock();
         }

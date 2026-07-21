@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "rp2a03_core",
+    "rp2a03_niceplug",
+    "xtask",
 ]
 
 resolver = "2"
