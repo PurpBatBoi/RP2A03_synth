@@ -1,5 +1,5 @@
-mod apu_core;
-use apu_core::ApuTimer;
+mod apu_primitives;
+use apu_primitives::ApuTimer;
 
 fn main() {
     let mut timer = ApuTimer::new(4);
