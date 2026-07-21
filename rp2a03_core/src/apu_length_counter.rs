@@ -1,9 +1,8 @@
-// rp2a03_core\src\apu_length_counter.rs
-// Adapted from TetaNES: https://github.com/lukexor/tetanes/blob/main/tetanes-core/src/apu/length_counter.rs
-//
-// APU Length Counter implementation.
-//
-// See: <https://www.nesdev.org/wiki/APU_Length_Counter>
+//! rp2a03_core\src\apu_length_counter.rs
+//! 
+//! Adapted from TetaNES: https://github.com/lukexor/tetanes/blob/main/tetanes-core/src/apu/length_counter.rs
+//! APU Length Counter implementation.
+//! See: <https://www.nesdev.org/wiki/APU_Length_Counter>
 
 #[derive(Debug, Clone)]
 pub struct LengthCounter {

@@ -1,10 +1,11 @@
-// rp2a03_core\src\apu_pulse.rs
-// Adapted from TetaNES: https://github.com/lukexor/tetanes/blob/main/tetanes-core/src/apu/pulse.rs
-// Implementation based on the info from NESdev, Blaarg's "apu_ref" and Brad Taylor's "2A03 technical reference"
-//
-// APU Pulse Channel implementation.
-//
-// See: <https://www.nesdev.org/wiki/APU_Pulse>
+//! rp2a03_core\src\apu_pulse.rs
+//! 
+//! Adapted from TetaNES: https://github.com/lukexor/tetanes/blob/main/tetanes-core/src/apu/pulse.rs
+//! Implementation based on the info from NESdev, Blaarg's "apu_ref" and Brad Taylor's "2A03 technical reference"
+//!
+//! APU Pulse Channel implementation.
+//!
+//! See: <https://www.nesdev.org/wiki/APU_Pulse>
 
 use crate::apu_envelope::Envelope;
 use crate::apu_length_counter::LengthCounter;
