@@ -3,8 +3,9 @@ use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::blip_buf::BlipBuf;
 use std::sync::Arc;
 
+use rp2a03_core::NTSC_CPU_CLOCK;
+
 const BLIP_BUFFER_SIZE: u32 = 4096;
-const NTSC_CPU_CLOCK: f64 = 1789773.0;
 const AMPLITUDE_SCALE: i32 = 1500;
 
 pub struct Rp2a03Plugin {
@@ -64,8 +65,7 @@ impl Default for Rp2a03Params {
 
 impl Rp2a03Plugin {
     fn freq_to_period(freq: f32) -> u16 {
-        let cpu_freq = 1789773.0;
-        let t = (cpu_freq / (16.0 * freq)) - 0.5;
+        let t = (NTSC_CPU_CLOCK as f32 / (16.0 * freq)) - 0.5;
         t.round().clamp(0.0, 2047.0) as u16
     }
 
@@ -200,7 +200,8 @@ impl Plugin for Rp2a03Plugin {
                 match event {
                     NoteEvent::NoteOn { note, velocity: _, .. } => {
                         self.midi_note_id = note;
-                        let freq = util::midi_note_to_freq(note);
+                        let effective_note = note.saturating_add(12);
+                        let freq = util::midi_note_to_freq(effective_note);
                         let period = Self::freq_to_period(freq);
 
                         self.pulse.set_enabled(true);
