@@ -1,12 +1,6 @@
-[workspace]
-resolver = "2"
-members = [
-    "rp2a03_core",
-    "rp2a03_common",
-    "rp2a03_nice",
-    "xtask",
-]
+[package]
+name = "RP2A03-SYNTH"
+version = "0.1.0"
+edition = "2024"
 
-[profile.release]
-lto = "thin"
-strip = "symbols"
+[dependencies]
