@@ -1,13 +1,18 @@
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
+use rp2a03_core::blip_buf::BlipBuf;
 use std::sync::Arc;
+
+const BLIP_BUFFER_SIZE: u32 = 4096;
+const NTSC_CPU_CLOCK: f64 = 1789773.0;
+const AMPLITUDE_SCALE: i32 = 1500;
 
 pub struct Rp2a03Plugin {
     params: Arc<Rp2a03Params>,
     pulse: Pulse,
+    blip: BlipBuf,
     sample_rate: f32,
-    
-    apu_cycle_accumulator: f32,
+    last_output: i16,
     midi_note_id: u8,
     gate: bool,
 }
@@ -25,12 +30,15 @@ impl Default for Rp2a03Plugin {
     fn default() -> Self {
         let mut pulse = Pulse::new(PulseChannel::One);
         pulse.set_enabled(true);
+        let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE);
+        blip.set_rates(NTSC_CPU_CLOCK, 44100.0);
+
         Self {
             params: Arc::new(Rp2a03Params::default()),
             pulse,
+            blip,
             sample_rate: 44100.0,
-            
-            apu_cycle_accumulator: 0.0,
+            last_output: 0,
             midi_note_id: 0,
             gate: false,
         }
@@ -42,7 +50,7 @@ impl Default for Rp2a03Params {
         Self {
             volume: IntParam::new(
                 "Volume",
-                12,
+                15,
                 IntRange::Linear { min: 0, max: 15 },
             ),
             duty: IntParam::new(
@@ -59,6 +67,47 @@ impl Rp2a03Plugin {
         let cpu_freq = 1789773.0;
         let t = (cpu_freq / (16.0 * freq)) - 0.5;
         t.round().clamp(0.0, 2047.0) as u16
+    }
+
+    fn generate_samples(&mut self, output: &mut [f32]) {
+        let sample_count = output.len() as u32;
+        if sample_count == 0 {
+            return;
+        }
+
+        let clocks_needed = self.blip.clocks_needed(sample_count);
+
+        let volume = self.params.volume.value() as u8;
+        let duty = self.params.duty.value() as u8;
+        let actual_vol = if self.gate { volume } else { 0 };
+
+        // Set Duty (bits 6,7), Halt Length Counter (bit 5), Constant Volume (bit 4)
+        self.pulse.write_ctrl((duty << 6) | 0x20 | 0x10 | actual_vol);
+
+        for clock in 0..clocks_needed {
+            self.pulse.clock();
+
+            let current_output = if self.gate && !self.pulse.is_muted() {
+                self.pulse.output() as i16
+            } else {
+                0
+            };
+
+            let delta = current_output as i32 - self.last_output as i32;
+            if delta != 0 {
+                self.blip.add_delta(clock, delta * AMPLITUDE_SCALE);
+                self.last_output = current_output;
+            }
+        }
+
+        self.blip.end_frame(clocks_needed);
+
+        let mut buf_i16 = vec![0i16; sample_count as usize];
+        self.blip.read_samples(&mut buf_i16, false);
+
+        for (i, sample) in buf_i16.iter().enumerate() {
+            output[i] = *sample as f32 / 32768.0;
+        }
     }
 }
 
@@ -94,9 +143,12 @@ impl Plugin for Rp2a03Plugin {
         _context: &mut impl InitContext<Self>,
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
+        self.blip = BlipBuf::new(BLIP_BUFFER_SIZE);
+        self.blip.set_rates(NTSC_CPU_CLOCK, buffer_config.sample_rate as f64);
         self.pulse.reset();
         self.pulse.set_enabled(true);
         self.pulse.write_sweep(0x08);
+        self.last_output = 0;
         true
     }
 
@@ -104,7 +156,8 @@ impl Plugin for Rp2a03Plugin {
         self.pulse.reset();
         self.pulse.set_enabled(true);
         self.pulse.write_sweep(0x08);
-        self.apu_cycle_accumulator = 0.0;
+        self.blip.clear();
+        self.last_output = 0;
         self.midi_note_id = 0;
         self.gate = false;
     }
@@ -115,65 +168,66 @@ impl Plugin for Rp2a03Plugin {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        let num_samples = buffer.samples();
         let mut next_event = context.next_event();
-        let apu_freq = 1789773.0 / 2.0;
-        let cycles_per_sample = apu_freq / self.sample_rate;
+        let mut sample_pos: usize = 0;
+        let mut mono_buf = vec![0.0f32; num_samples];
 
-        for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
+        loop {
+            // Find where the next MIDI event lands (or end of buffer)
+            let chunk_end = if let Some(ref event) = next_event {
+                (event.timing() as usize).min(num_samples)
+            } else {
+                num_samples
+            };
+
+            // Generate audio up to that point
+            if chunk_end > sample_pos {
+                self.generate_samples(&mut mono_buf[sample_pos..chunk_end]);
+                sample_pos = chunk_end;
+            }
+
+            if sample_pos >= num_samples {
+                break;
+            }
+
+            // Dispatch all MIDI events at this timing
             while let Some(event) = next_event {
-                if event.timing() > sample_id as u32 {
+                if event.timing() as usize > sample_pos {
+                    next_event = Some(event);
                     break;
                 }
-
                 match event {
                     NoteEvent::NoteOn { note, velocity: _, .. } => {
                         self.midi_note_id = note;
                         let freq = util::midi_note_to_freq(note);
                         let period = Self::freq_to_period(freq);
-                        
+
                         self.pulse.set_enabled(true);
-                        self.pulse.write_sweep(0x08); // Negate true to prevent period > 1023 muting
+                        self.pulse.write_sweep(0x08);
                         self.pulse.write_timer_lo((period & 0xFF) as u8);
-                        // D7..D3 = length counter load index (0xF8 = index 31), D2..D0 = period hi
                         self.pulse.write_timer_hi(0xF8 | (((period >> 8) & 0x07) as u8));
-                        
+
                         self.gate = true;
                     }
                     NoteEvent::NoteOff { note, .. } if note == self.midi_note_id => {
                         self.gate = false;
                     }
-                    _ => (),
+                    _ => {}
                 }
                 next_event = context.next_event();
             }
 
-            let volume = self.params.volume.value() as u8;
-            let duty = self.params.duty.value() as u8;
-            let actual_vol = if self.gate { volume } else { 0 };
-            
-            // Set Duty (bits 6,7), Halt Length Counter (bit 5), Constant Volume (bit 4)
-            self.pulse.write_ctrl((duty << 6) | 0x20 | 0x10 | actual_vol);
-
-            self.apu_cycle_accumulator += cycles_per_sample;
-            while self.apu_cycle_accumulator >= 1.0 {
-                self.pulse.clock();
-                self.apu_cycle_accumulator -= 1.0;
+            if next_event.is_none() && sample_pos < num_samples {
+                self.generate_samples(&mut mono_buf[sample_pos..num_samples]);
+                break;
             }
+        }
 
-            // Output clean centered bipolar audio when gate is on, 0.0 when gate is off
-            let output_scaled = if self.gate && !self.pulse.is_muted() {
-                let amp = (volume as f32 / 15.0) * 0.25;
-                if self.pulse.output() > 0.0 {
-                    amp
-                } else {
-                    -amp
-                }
-            } else {
-                0.0
-            };
-
-            for sample in channel_samples {
-                *sample = output_scaled;
+        // Copy mono buffer to all stereo output channels
+        for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
+            for out_sample in channel_samples {
+                *out_sample = mono_buf[sample_id];
             }
         }
 
@@ -233,4 +287,3 @@ mod tests {
         assert!(non_zero_samples > 0, "Pulse channel should produce non-zero samples when note is played");
     }
 }
-
