@@ -370,10 +370,10 @@ impl Plugin for NesSynth {
                     break;
                 }
                 match event {
-                    NoteEvent::NoteOn { timing, note, velocity, .. } => {
+                    NoteEvent::NoteOn { note, velocity, .. } => {
                         self.note_on(note, velocity);
                     }
-                    NoteEvent::NoteOff { timing, note, .. } => {
+                    NoteEvent::NoteOff { .. } => {
                         self.note_off();
                     }
                     _ => {}
