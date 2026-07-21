@@ -1,6 +1,7 @@
 // rp2a03_core\src\apu_timer.rs
 // Implementation based on the info from NESdev, Blaarg's "apu_ref" and Brad Taylor's "2A03 technical reference"
 
+#[derive(Debug, Clone)]
 pub struct ApuTimer {
     period: u16,
     counter: u16,
@@ -23,7 +24,7 @@ impl ApuTimer {
         self.period
     }
 
-    fn reload(&mut self) {
+    pub fn restart(&mut self) {
         self.counter = self.period;
     }
 
@@ -32,7 +33,7 @@ impl ApuTimer {
             self.counter -= 1;
             false
         } else {
-            self.reload();
+            self.restart();
             true
         }
     }
