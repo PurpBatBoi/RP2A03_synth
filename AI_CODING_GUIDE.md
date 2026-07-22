@@ -6,23 +6,43 @@ This document defines how AI models should approach writing code, fixing bugs, a
 
 ```
 RP2A03-SYNTH/
+├── .cargo/              # Cargo configuration for the workspace
+├── Ideas-ref-folder/    # Reference code (read-only, never modify)
+│   ├── dn-famitracker-source/   # DN-FamiTracker C++ source
+│   ├── famistudio-code/         # FamiStudio C# source
+│   ├── rp2a_old/                 # Old GUI reference and legacy code
+│   ├── sflt-gui-source/          # SFLT plugin GUI source
+│   └── sflt-source/              # SFLT plugin core source
 ├── rp2a03_core/         # Pure NES APU emulation library (no plugin deps)
+│   ├── Cargo.toml
 │   └── src/
-│       ├── apu_pulse.rs     # Pulse channel hardware emulation
-│       ├── apu_timer.rs     # 11-bit hardware timer (CPU clock rate)
-│       ├── apu_envelope.rs  # 4-bit volume envelope
-│       ├── lfo.rs           # Software LFO engine (FamiTracker vibrato/tremolo)
-│       ├── sequence.rs      # FamiTracker sequence engine (volume/duty envelopes)
-│       └── blip_buf.rs      # Band-limited audio resampling
+│       ├── apu_envelope.rs     # 4-bit volume envelope
+│       ├── apu_frame_counter.rs# Frame counter + timing logic
+│       ├── apu_length_counter.rs# Length counter behavior
+│       ├── apu_noise.rs        # Noise channel hardware emulation
+│       ├── apu_pulse.rs        # Pulse channel hardware emulation
+│       ├── apu_timer.rs        # 11-bit hardware timer (CPU clock rate)
+│       ├── apu_triangle.rs     # Triangle channel hardware emulation
+│       ├── blip_buf.rs         # Band-limited audio resampling
+│       ├── lfo.rs              # Software LFO engine (FamiTracker vibrato/tremolo)
+│       ├── lib.rs              # Library entry point and public API
+│       └── sequence.rs         # FamiTracker sequence engine (volume/duty envelopes)
 ├── rp2a03_niceplug/     # VST/CLAP plugin wrapper using nice-plug framework
+│   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs           # Plugin struct, params, egui editor, audio loop
+│       ├── lib.rs           # Plugin struct, params, audio loop
 │       └── midi.rs          # MIDI event handling, CC mapping, modulation
-└── Ideas-ref-folder/    # Reference code (read-only, never modify)
-    ├── dn-famitracker-source/   # DN-FamiTracker C++ source
-    ├── famistudio-code/         # FamiStudio C# source
-    ├── sflt-source/             # SFLT plugin source
-    └── rp2a_old/gui-code/       # Old egui GUI reference code
+├── rp2a03_ui/           # UI-specific plugin code and editor integration
+│   ├── Cargo.toml
+│   └── src/
+│       ├── editor.rs       # Egui editor implementation and window handling
+│       ├── lib.rs          # UI crate entry point and integration
+│       ├── state.rs        # UI state and parameter synchronization
+│       └── widgets.rs      # Custom egui widget definitions
+├── target/              # Build artifacts and intermediate files
+├── xtask/               # Workspace tooling crates
+│   └── src/
+└── Cargo.toml           # Workspace manifest
 ```
 
 ## Core Rules
