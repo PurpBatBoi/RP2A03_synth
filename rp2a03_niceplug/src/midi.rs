@@ -184,11 +184,11 @@ impl MidiHandler {
                 let speed = value >> 1; // 0..127 -> 0..63
                 self.lfo.set_tremolo(self.lfo.tremolo_depth, speed);
             }
-            // CC 07: Volume MSB
+            // CC 07: Volume MSB — maps to APU 15-value volume system
             7 => {
                 self.cc_volume = value;
             }
-            // CC 11: Expression MSB
+            // CC 11: Expression MSB — plugin-level continuous gain multiplier
             11 => {
                 self.cc_expression = value;
             }
@@ -210,7 +210,7 @@ impl MidiHandler {
         sample_rate: f32,
         num_samples: usize,
     ) -> f32 {
-        let master_gain = (self.cc_volume as f32 / 127.0) * (self.cc_expression as f32 / 127.0);
+        let master_gain = self.cc_expression as f32 / 127.0;
 
         if !self.gate {
             let ctrl_byte = (param_duty << 6) | 0x30 | 0;
@@ -229,8 +229,9 @@ impl MidiHandler {
             self.lfo_sample_counter -= samples_per_tick;
         }
 
-        // 1. Calculate APU Volume (scaled by velocity & Tremolo)
-        let vel_scaled_vol = (param_volume as u32 * self.current_velocity as u32 / 127) as u8;
+        // 1. Calculate APU Volume (scaled by CC7, velocity & Tremolo)
+        let cc7_scaled = (param_volume as u32 * self.cc_volume as u32 / 127) as u32;
+        let vel_scaled_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
         let tremolo_sub = self.lfo.tremolo_volume_delta();
         let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
         let ctrl_byte = (param_duty << 6) | 0x30 | apu_vol;
