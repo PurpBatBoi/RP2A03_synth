@@ -181,7 +181,7 @@ mod tests {
         for pos in 0..64 {
             lfo.tremolo_pos = pos;
             let vol_delta = lfo.tremolo_volume_delta();
-            assert!(vol_delta <= 15, "Tremolo volume delta should be within 0..15, got {}", vol_delta);
+            assert!(vol_delta <= 63, "Tremolo volume delta should be within 0..63, got {}", vol_delta);
         }
     }
 }

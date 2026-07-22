@@ -2,11 +2,13 @@
 //!
 //! Encapsulates monophonic note priority, MIDI velocity scaling,
 //! fine pitch tuning, CC mappings (CC 01, 02, 03, 04, 07, 11, 14),
+//! FamiTracker-style volume/duty sequence playback,
 //! and invokes `rp2a03_core::lfo::SoftwareLfo` for APU modulation.
 
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::lfo::{SoftwareLfo, DEFAULT_LFO_SPEED};
+use rp2a03_core::sequence::{Sequence, SequencePlayer};
 use rp2a03_core::NTSC_CPU_CLOCK;
 
 /// Converts MIDI note number to frequency in Hz.
@@ -34,9 +36,9 @@ pub struct MidiHandler {
     pub gate: bool,
     /// Current active note velocity (0..127)
     pub current_velocity: u8,
-    /// MIDI CC 07 (Volume MSB, 0..127, default 127)
+    /// MIDI CC 07 (Volume MSB, 0..127, default 127) — scales APU 15-value volume
     pub cc_volume: u8,
-    /// MIDI CC 11 (Expression MSB, 0..127, default 127)
+    /// MIDI CC 11 (Expression MSB, 0..127, default 127) — plugin-level gain
     pub cc_expression: u8,
     /// MIDI CC 14 (Fine pitch offset, -64..+63 semitone cents offset)
     pub fine_pitch: i8,
@@ -44,8 +46,13 @@ pub struct MidiHandler {
     pub base_period: u16,
     /// Software LFO engine from `rp2a03_core`
     pub lfo: SoftwareLfo,
-    /// Sample accumulator for 60 Hz LFO clock timing
-    pub lfo_sample_counter: f32,
+    /// Sample accumulator for 60 Hz frame tick timing
+    pub frame_sample_counter: f32,
+
+    /// Volume sequence player (advances at 60 Hz)
+    pub vol_seq_player: SequencePlayer,
+    /// Duty cycle sequence player (advances at 60 Hz)
+    pub duty_seq_player: SequencePlayer,
 
     /// Cache of last written control register byte to avoid redundant register writes
     pub prev_ctrl: u8,
@@ -67,7 +74,9 @@ impl Default for MidiHandler {
             fine_pitch: 0,
             base_period: 0,
             lfo: SoftwareLfo::new(),
-            lfo_sample_counter: 0.0,
+            frame_sample_counter: 0.0,
+            vol_seq_player: SequencePlayer::new(),
+            duty_seq_player: SequencePlayer::new(),
             prev_ctrl: 0xFF,
             prev_timer_lo: 0xFF,
             prev_timer_hi: 0xFF,
@@ -91,21 +100,29 @@ impl MidiHandler {
         self.fine_pitch = 0;
         self.base_period = 0;
         self.lfo.reset();
-        self.lfo_sample_counter = 0.0;
+        self.frame_sample_counter = 0.0;
+        self.vol_seq_player.reset();
+        self.duty_seq_player.reset();
         self.prev_ctrl = 0xFF;
         self.prev_timer_lo = 0xFF;
         self.prev_timer_hi = 0xFF;
     }
 
     /// Process an incoming MIDI / Note event.
-    pub fn handle_event<S>(&mut self, event: &NoteEvent<S>, pulse: &mut Pulse) {
+    pub fn handle_event<S>(
+        &mut self,
+        event: &NoteEvent<S>,
+        pulse: &mut Pulse,
+        vol_seq: &Sequence,
+        duty_seq: &Sequence,
+    ) {
         match event {
             NoteEvent::NoteOn { note, velocity, .. } => {
                 let vel_u8 = (velocity * 127.0).clamp(0.0, 127.0) as u8;
-                self.note_on(*note, vel_u8, pulse);
+                self.note_on(*note, vel_u8, pulse, vol_seq, duty_seq);
             }
             NoteEvent::NoteOff { note, .. } => {
-                self.note_off(*note, pulse);
+                self.note_off(*note, pulse, vol_seq, duty_seq);
             }
             NoteEvent::MidiCC { cc, value, .. } => {
                 let value_u8 = (value * 127.0).clamp(0.0, 127.0) as u8;
@@ -116,20 +133,39 @@ impl MidiHandler {
     }
 
     /// Handle NoteOn event with monophonic last-note priority.
-    pub fn note_on(&mut self, note: u8, velocity: u8, pulse: &mut Pulse) {
+    pub fn note_on(
+        &mut self,
+        note: u8,
+        velocity: u8,
+        pulse: &mut Pulse,
+        vol_seq: &Sequence,
+        duty_seq: &Sequence,
+    ) {
         // Remove existing entry for this note if present to re-push to top
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
+
+        // Trigger sequence players on NoteOn
+        self.vol_seq_player.trigger(vol_seq);
+        self.duty_seq_player.trigger(duty_seq);
 
         self.apply_top_note(pulse);
     }
 
     /// Handle NoteOff event.
-    pub fn note_off(&mut self, note: u8, pulse: &mut Pulse) {
+    pub fn note_off(
+        &mut self,
+        note: u8,
+        pulse: &mut Pulse,
+        vol_seq: &Sequence,
+        duty_seq: &Sequence,
+    ) {
         self.note_stack.retain(|(n, _)| *n != note);
 
         if self.note_stack.is_empty() {
-            self.gate = false;
+            self.vol_seq_player.release(vol_seq);
+            self.duty_seq_player.release(duty_seq);
+            // Note: Gate stays true while playing out release tail sequence
         } else {
             self.apply_top_note(pulse);
         }
@@ -173,18 +209,18 @@ impl MidiHandler {
                 let speed = value >> 1; // 0..127 -> 0..63
                 self.lfo.set_vibrato(self.lfo.vibrato_depth, speed);
             }
-            // CC 03: Tremolo Depth (Undefined)
+            // CC 03: Tremolo Depth
             3 => {
                 let depth = value >> 3; // 0..127 -> 0..15
                 let speed = if self.lfo.tremolo_speed == 0 { DEFAULT_LFO_SPEED } else { self.lfo.tremolo_speed };
                 self.lfo.set_tremolo(depth, speed);
             }
-            // CC 04: Tremolo Speed (Foot Pedal)
+            // CC 04: Tremolo Speed
             4 => {
                 let speed = value >> 1; // 0..127 -> 0..63
                 self.lfo.set_tremolo(self.lfo.tremolo_depth, speed);
             }
-            // CC 07: Volume MSB — maps to APU 15-value volume system
+            // CC 07: Volume MSB — scales APU 15-value volume system
             7 => {
                 self.cc_volume = value;
             }
@@ -200,20 +236,22 @@ impl MidiHandler {
         }
     }
 
-    /// Update LFO modulation and write updated parameters to APU pulse channel.
-    /// Returns the overall master gain multiplier for CC7 (Volume) and CC11 (Expression).
+    /// Update sequence playback, LFO modulation, and write updated parameters to APU pulse channel.
+    /// Returns the overall master gain multiplier (CC11 Expression).
     pub fn update_modulation(
         &mut self,
         pulse: &mut Pulse,
-        param_volume: u8,
-        param_duty: u8,
+        vol_seq: &Sequence,
+        duty_seq: &Sequence,
         sample_rate: f32,
         num_samples: usize,
     ) -> f32 {
         let master_gain = self.cc_expression as f32 / 127.0;
 
         if !self.gate {
-            let ctrl_byte = (param_duty << 6) | 0x30 | 0;
+            // When gate is off, write silence with the current duty sequence value
+            let duty_val = self.duty_seq_player.value().min(3);
+            let ctrl_byte = (duty_val << 6) | 0x30;
             if ctrl_byte != self.prev_ctrl {
                 pulse.write_ctrl(ctrl_byte);
                 self.prev_ctrl = ctrl_byte;
@@ -221,27 +259,33 @@ impl MidiHandler {
             return master_gain;
         }
 
-        // Advance 60 Hz LFO ticks based on elapsed samples
+        // Advance 60 Hz frame ticks for sequences and LFO
         let samples_per_tick = sample_rate / 60.0;
-        self.lfo_sample_counter += num_samples as f32;
-        while self.lfo_sample_counter >= samples_per_tick {
+        self.frame_sample_counter += num_samples as f32;
+        while self.frame_sample_counter >= samples_per_tick {
+            self.vol_seq_player.clock_tick(vol_seq);
+            self.duty_seq_player.clock_tick(duty_seq);
             self.lfo.clock_tick();
-            self.lfo_sample_counter -= samples_per_tick;
+            self.frame_sample_counter -= samples_per_tick;
         }
 
-        // 1. Calculate APU Volume (scaled by CC7, velocity & Tremolo)
-        let cc7_scaled = (param_volume as u32 * self.cc_volume as u32 / 127) as u32;
+        // 1. Calculate APU Volume from sequence, CC7, velocity, and Tremolo
+        let seq_vol = self.vol_seq_player.value().min(15);
+        let cc7_scaled = (seq_vol as u32 * self.cc_volume as u32 / 127) as u32;
         let vel_scaled_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
         let tremolo_sub = self.lfo.tremolo_volume_delta();
         let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
-        let ctrl_byte = (param_duty << 6) | 0x30 | apu_vol;
+
+        // 2. Get duty from sequence
+        let duty_val = self.duty_seq_player.value().min(3);
+        let ctrl_byte = (duty_val << 6) | 0x30 | apu_vol;
 
         if ctrl_byte != self.prev_ctrl {
             pulse.write_ctrl(ctrl_byte);
             self.prev_ctrl = ctrl_byte;
         }
 
-        // 2. Calculate Modulated Period (base period - fine pitch - Vibrato pitch delta)
+        // 3. Calculate Modulated Period (base period - fine pitch - Vibrato pitch delta)
         let fine_pitch_offset = self.fine_pitch as i16;
         let vibrato_delta = self.lfo.vibrato_pitch_delta();
 
@@ -279,14 +323,16 @@ mod tests {
     fn test_monophonic_note_stack_last_note_priority() {
         let mut pulse = Pulse::new(PulseChannel::One);
         let mut handler = MidiHandler::new();
+        let vol_seq = Sequence::single(15);
+        let duty_seq = Sequence::single(2);
 
         // Play Note A (60)
-        handler.note_on(60, 127, &mut pulse);
+        handler.note_on(60, 127, &mut pulse, &vol_seq, &duty_seq);
         assert!(handler.gate());
         assert_eq!(handler.note_stack.last(), Some(&(60, 127)));
 
         // Play Note B (64) while holding Note A
-        handler.note_on(64, 100, &mut pulse);
+        handler.note_on(64, 100, &mut pulse, &vol_seq, &duty_seq);
         assert_eq!(handler.note_stack.last(), Some(&(64, 100)));
 
         // Release Note B -> should return to Note A (60)

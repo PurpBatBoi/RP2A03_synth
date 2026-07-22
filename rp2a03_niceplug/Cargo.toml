@@ -9,3 +9,6 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 rp2a03_core = { path = "../rp2a03_core" }
 nice-plug = { git = "https://codeberg.org/RustAudio/nice-plug.git" }
+nice-plug-egui = { git = "https://codeberg.org/RustAudio/nice-plug.git" }
+egui = "0.27"
+parking_lot = "0.12"
