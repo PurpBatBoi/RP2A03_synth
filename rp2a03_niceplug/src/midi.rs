@@ -1,5 +1,3 @@
-//! rp2a03_niceplug\src\midi.rs
-//! 
 //! Incoming MIDI handling and CC mapping for RP2A03 plugin.
 //!
 //! Encapsulates monophonic note priority, MIDI velocity scaling,
@@ -173,23 +171,28 @@ impl MidiHandler {
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 
-        // Trigger sequence players on NoteOn
-        if seqs.vol_enabled { self.vol_seq_player.trigger(seqs.vol_seq); }
-        if seqs.arp_enabled { self.arp_seq_player.trigger(seqs.arp_seq); }
-        if seqs.pitch_enabled { self.pitch_seq_player.trigger(seqs.pitch_seq); }
-        if seqs.hipitch_enabled { self.hipitch_seq_player.trigger(seqs.hipitch_seq); }
-        if seqs.duty_enabled { self.duty_seq_player.trigger(seqs.duty_seq); }
+        // Trigger sequence players on NoteOn passing sequence references
+        if seqs.vol_enabled {
+            self.vol_seq_player.trigger(&seqs.vol_seq);
+        }
+        if seqs.arp_enabled {
+            self.arp_seq_player.trigger(&seqs.arp_seq);
+        }
+        if seqs.pitch_enabled {
+            self.pitch_seq_player.trigger(&seqs.pitch_seq);
+        }
+        if seqs.hipitch_enabled {
+            self.hipitch_seq_player.trigger(&seqs.hipitch_seq);
+        }
+        if seqs.duty_enabled {
+            self.duty_seq_player.trigger(&seqs.duty_seq);
+        }
 
         self.apply_top_note(pulse);
     }
 
     /// Handle NoteOff event.
-    pub fn note_off(
-        &mut self,
-        note: u8,
-        pulse: &mut Pulse,
-        seqs: &ActiveSequences,
-    ) {
+    pub fn note_off(&mut self, note: u8, pulse: &mut Pulse, seqs: &ActiveSequences) {
         self.note_stack.retain(|(n, _)| *n != note);
 
         if self.note_stack.is_empty() {
@@ -206,11 +209,21 @@ impl MidiHandler {
                 self.hipitch_seq_player.reset();
             } else {
                 // Has release point: trigger release tails
-                if seqs.vol_enabled { self.vol_seq_player.release(seqs.vol_seq); }
-                if seqs.duty_enabled { self.duty_seq_player.release(seqs.duty_seq); }
-                if seqs.arp_enabled { self.arp_seq_player.release(seqs.arp_seq); }
-                if seqs.pitch_enabled { self.pitch_seq_player.release(seqs.pitch_seq); }
-                if seqs.hipitch_enabled { self.hipitch_seq_player.release(seqs.hipitch_seq); }
+                if seqs.vol_enabled {
+                    self.vol_seq_player.release(&seqs.vol_seq);
+                }
+                if seqs.duty_enabled {
+                    self.duty_seq_player.release(&seqs.duty_seq);
+                }
+                if seqs.arp_enabled {
+                    self.arp_seq_player.release(&seqs.arp_seq);
+                }
+                if seqs.pitch_enabled {
+                    self.pitch_seq_player.release(&seqs.pitch_seq);
+                }
+                if seqs.hipitch_enabled {
+                    self.hipitch_seq_player.release(&seqs.hipitch_seq);
+                }
             }
         } else {
             self.apply_top_note(pulse);
@@ -234,7 +247,11 @@ impl MidiHandler {
         match controller {
             1 => {
                 let depth = value >> 3;
-                let speed = if self.lfo.vibrato_speed == 0 { DEFAULT_LFO_SPEED } else { self.lfo.vibrato_speed };
+                let speed = if self.lfo.vibrato_speed == 0 {
+                    DEFAULT_LFO_SPEED
+                } else {
+                    self.lfo.vibrato_speed
+                };
                 self.lfo.set_vibrato(depth, speed);
             }
             2 => {
@@ -243,16 +260,26 @@ impl MidiHandler {
             }
             3 => {
                 let depth = value >> 3;
-                let speed = if self.lfo.tremolo_speed == 0 { DEFAULT_LFO_SPEED } else { self.lfo.tremolo_speed };
+                let speed = if self.lfo.tremolo_speed == 0 {
+                    DEFAULT_LFO_SPEED
+                } else {
+                    self.lfo.tremolo_speed
+                };
                 self.lfo.set_tremolo(depth, speed);
             }
             4 => {
                 let speed = value >> 1;
                 self.lfo.set_tremolo(self.lfo.tremolo_depth, speed);
             }
-            7 => { self.cc_volume = value; }
-            11 => { self.cc_expression = value; }
-            14 => { self.fine_pitch = value as i8 - 64; }
+            7 => {
+                self.cc_volume = value;
+            }
+            11 => {
+                self.cc_expression = value;
+            }
+            14 => {
+                self.fine_pitch = value as i8 - 64;
+            }
             _ => {}
         }
     }
@@ -269,7 +296,11 @@ impl MidiHandler {
         let master_gain = self.cc_expression as f32 / 127.0;
 
         if !self.gate {
-            let duty_val = if seqs.duty_enabled { self.duty_seq_player.value().clamp(0, 3) as u8 } else { 2 };
+            let duty_val = if seqs.duty_enabled {
+                self.duty_seq_player.value().clamp(0, 3) as u8
+            } else {
+                2
+            };
             let ctrl_byte = (duty_val << 6) | 0x30;
             if ctrl_byte != self.prev_ctrl {
                 pulse.write_ctrl(ctrl_byte);
@@ -282,18 +313,32 @@ impl MidiHandler {
         let samples_per_tick = sample_rate / 60.0;
         self.frame_sample_counter += num_samples as f32;
         while self.frame_sample_counter >= samples_per_tick {
-            if seqs.vol_enabled { self.vol_seq_player.clock_tick(seqs.vol_seq); }
-            if seqs.arp_enabled { self.arp_seq_player.clock_tick(seqs.arp_seq); }
-            if seqs.pitch_enabled { self.pitch_seq_player.clock_tick(seqs.pitch_seq); }
-            if seqs.hipitch_enabled { self.hipitch_seq_player.clock_tick(seqs.hipitch_seq); }
-            if seqs.duty_enabled { self.duty_seq_player.clock_tick(seqs.duty_seq); }
+            if seqs.vol_enabled {
+                self.vol_seq_player.clock_tick(&seqs.vol_seq);
+            }
+            if seqs.arp_enabled {
+                self.arp_seq_player.clock_tick(&seqs.arp_seq);
+            }
+            if seqs.pitch_enabled {
+                self.pitch_seq_player.clock_tick(&seqs.pitch_seq);
+            }
+            if seqs.hipitch_enabled {
+                self.hipitch_seq_player.clock_tick(&seqs.hipitch_seq);
+            }
+            if seqs.duty_enabled {
+                self.duty_seq_player.clock_tick(&seqs.duty_seq);
+            }
 
             self.lfo.clock_tick();
             self.frame_sample_counter -= samples_per_tick;
         }
 
         // 1. Volume Sequence & Tremolo LFO
-        let vol_val = if seqs.vol_enabled { self.vol_seq_player.value().clamp(0, 15) as u8 } else { 15 };
+        let vol_val = if seqs.vol_enabled {
+            self.vol_seq_player.value().clamp(0, 15) as u8
+        } else {
+            15
+        };
         let cc7_scaled = (vol_val as u32 * self.cc_volume as u32 / 127) as u32;
         let vel_scaled_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
         let tremolo_sub = self.lfo.tremolo_volume_delta();
@@ -307,7 +352,11 @@ impl MidiHandler {
         }
 
         // 2. Duty Sequence
-        let duty_val = if seqs.duty_enabled { self.duty_seq_player.value().clamp(0, 3) as u8 } else { 2 };
+        let duty_val = if seqs.duty_enabled {
+            self.duty_seq_player.value().clamp(0, 3) as u8
+        } else {
+            2
+        };
         let ctrl_byte = (duty_val << 6) | 0x30 | apu_vol;
 
         if ctrl_byte != self.prev_ctrl {
@@ -316,7 +365,11 @@ impl MidiHandler {
         }
 
         // 3. Arpeggio Sequence (adds semitones to active note)
-        let arp_semitones = if seqs.arp_enabled { self.arp_seq_player.value() } else { 0 };
+        let arp_semitones = if seqs.arp_enabled {
+            self.arp_seq_player.value()
+        } else {
+            0
+        };
         let effective_note = (self.active_note as i16 + self.octave_offset as i16 + arp_semitones)
             .clamp(0, 127) as u8;
 
@@ -324,13 +377,23 @@ impl MidiHandler {
         let base_period = freq_to_period(base_freq);
 
         // 4. Pitch & Hi-Pitch Sequences + Fine Pitch + Vibrato LFO
-        let pitch_delta = if seqs.pitch_enabled { self.pitch_seq_player.value() } else { 0 };
-        let hipitch_delta = if seqs.hipitch_enabled { self.hipitch_seq_player.value() << 4 } else { 0 };
+        let pitch_delta = if seqs.pitch_enabled {
+            self.pitch_seq_player.value()
+        } else {
+            0
+        };
+        let hipitch_delta = if seqs.hipitch_enabled {
+            self.hipitch_seq_player.value() << 4
+        } else {
+            0
+        };
         let fine_pitch_offset = self.fine_pitch as i16;
         let vibrato_delta = self.lfo.vibrato_pitch_delta();
 
         // Calculate final timer period
-        let final_period = (base_period as i32 + pitch_delta as i32 + hipitch_delta as i32 - fine_pitch_offset as i32 - vibrato_delta as i32)
+        let final_period = (base_period as i32 + pitch_delta as i32 + hipitch_delta as i32
+            - fine_pitch_offset as i32
+            - vibrato_delta as i32)
             .clamp(0, 2047) as u16;
 
         let timer_lo = (final_period & 0xFF) as u8;
