@@ -51,20 +51,8 @@ pub fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, 
         graph_rect.max.y
     };
 
-    if is_bipolar {
-        painter.line_segment(
-            [
-                Pos2::new(graph_rect.min.x, zero_y),
-                Pos2::new(graph_rect.max.x, zero_y),
-            ],
-            Stroke::new(1.0f32, Color32::from_rgb(60, 60, 60)),
-        );
-    }
-
-    // Draw individual steps
+    // Draw step column backgrounds first
     for i in 0..num_steps {
-        let val = seq.values[i].clamp(min_val, max_val);
-
         let bar_x_min = graph_rect.min.x + i as f32 * step_width;
         let bar_x_max = bar_x_min + step_width - 1.0;
 
@@ -78,6 +66,25 @@ pub fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, 
             Color32::from_rgb(20, 20, 20)
         };
         painter.rect_filled(col_rect, 0.0, bg_color);
+    }
+
+    // Draw zero-axis reference line AFTER step backgrounds so it is not overwritten
+    if is_bipolar {
+        painter.line_segment(
+            [
+                Pos2::new(graph_rect.min.x, zero_y),
+                Pos2::new(graph_rect.max.x, zero_y),
+            ],
+            Stroke::new(1.0f32, Color32::from_rgb(90, 90, 90)),
+        );
+    }
+
+    // Draw individual step bars
+    for i in 0..num_steps {
+        let val = seq.values[i].clamp(min_val, max_val);
+
+        let bar_x_min = graph_rect.min.x + i as f32 * step_width;
+        let bar_x_max = bar_x_min + step_width - 1.0;
 
         let bar_rect = if is_bipolar {
             let range = (max_val as f32 - min_val as f32).max(1.0);

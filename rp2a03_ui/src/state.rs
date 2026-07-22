@@ -34,17 +34,17 @@ pub struct SharedSequences {
 
 impl Default for SharedSequences {
     fn default() -> Self {
-        let vol_text = "15".to_string();
-        let arp_text = "0".to_string();
-        let pitch_text = "0".to_string();
-        let hipitch_text = "0".to_string();
-        let duty_text = "2".to_string();
+        let vol_text = String::new();
+        let arp_text = String::new();
+        let pitch_text = String::new();
+        let hipitch_text = String::new();
+        let duty_text = String::new();
 
-        let (vol_seq, _) = Sequence::parse_clamped(&vol_text, 0, 15);
-        let (arp_seq, _) = Sequence::parse_clamped(&arp_text, -96, 96);
-        let (pitch_seq, _) = Sequence::parse_clamped(&pitch_text, -128, 127);
-        let (hipitch_seq, _) = Sequence::parse_clamped(&hipitch_text, -64, 63);
-        let (duty_seq, _) = Sequence::parse_clamped(&duty_text, 0, 3);
+        let (vol_seq, _) = Sequence::parse_clamped("15", 0, 15);
+        let (arp_seq, _) = Sequence::parse_clamped("0", -96, 96);
+        let (pitch_seq, _) = Sequence::parse_clamped("0", -128, 127);
+        let (hipitch_seq, _) = Sequence::parse_clamped("0", -64, 63);
+        let (duty_seq, _) = Sequence::parse_clamped("2", 0, 3);
 
         Self {
             selected_tab: 0,
@@ -79,5 +79,10 @@ mod tests {
         assert!(!state.arp_enabled);
         assert_eq!(state.vol_seq.len(), 1);
         assert_eq!(state.duty_seq.values[0], 2);
+        assert!(state.vol_text.is_empty());
+        assert!(state.arp_text.is_empty());
+        assert!(state.pitch_text.is_empty());
+        assert!(state.hipitch_text.is_empty());
+        assert!(state.duty_text.is_empty());
     }
 }
