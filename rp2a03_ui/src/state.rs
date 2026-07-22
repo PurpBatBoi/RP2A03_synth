@@ -34,30 +34,18 @@ pub struct SharedSequences {
 
 impl Default for SharedSequences {
     fn default() -> Self {
-        let vol_text = String::new();
-        let arp_text = String::new();
-        let pitch_text = String::new();
-        let hipitch_text = String::new();
-        let duty_text = String::new();
-
-        let (vol_seq, _) = Sequence::parse_clamped("15", 0, 15);
-        let (arp_seq, _) = Sequence::parse_clamped("0", -96, 96);
-        let (pitch_seq, _) = Sequence::parse_clamped("0", -128, 127);
-        let (hipitch_seq, _) = Sequence::parse_clamped("0", -64, 63);
-        let (duty_seq, _) = Sequence::parse_clamped("2", 0, 3);
-
         Self {
             selected_tab: 0,
-            vol_text,
-            arp_text,
-            pitch_text,
-            hipitch_text,
-            duty_text,
-            vol_seq,
-            arp_seq,
-            pitch_seq,
-            hipitch_seq,
-            duty_seq,
+            vol_text: String::new(),
+            arp_text: String::new(),
+            pitch_text: String::new(),
+            hipitch_text: String::new(),
+            duty_text: String::new(),
+            vol_seq: Sequence::default(),
+            arp_seq: Sequence::default(),
+            pitch_seq: Sequence::default(),
+            hipitch_seq: Sequence::default(),
+            duty_seq: Sequence::default(),
             vol_enabled: true,
             arp_enabled: false,
             pitch_enabled: false,
@@ -77,8 +65,8 @@ mod tests {
         assert_eq!(state.selected_tab, 0);
         assert!(state.vol_enabled);
         assert!(!state.arp_enabled);
-        assert_eq!(state.vol_seq.len(), 1);
-        assert_eq!(state.duty_seq.values[0], 2);
+        assert_eq!(state.vol_seq.len(), 0);
+        assert_eq!(state.duty_seq.len(), 0);
         assert!(state.vol_text.is_empty());
         assert!(state.arp_text.is_empty());
         assert!(state.pitch_text.is_empty());

@@ -23,7 +23,7 @@ pub struct Sequence {
 impl Default for Sequence {
     fn default() -> Self {
         Self {
-            values: vec![0],
+            values: Vec::new(),
             loop_point: None,
             release_point: None,
         }

@@ -57,12 +57,12 @@ pub fn sanitize_sequence_text(text: &str) -> String {
 
 /// Sanitizes text input and updates sequence state for a specific tab index.
 pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
-    let (min_val, max_val, default_str) = match tab {
-        0 => (0i16, 15i16, "15"),
-        1 => (-96i16, 96i16, "0"),
-        2 => (-128i16, 127i16, "0"),
-        3 => (-64i16, 63i16, "0"),
-        _ => (0i16, 3i16, "2"),
+    let (min_val, max_val) = match tab {
+        0 => (0i16, 15i16),
+        1 => (-96i16, 96i16),
+        2 => (-128i16, 127i16),
+        3 => (-64i16, 63i16),
+        _ => (0i16, 3i16),
     };
 
     let (text_ptr, seq_ptr) = match tab {
@@ -75,11 +75,21 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
 
     let sanitized = sanitize_sequence_text(text_ptr);
     if sanitized.trim().is_empty() {
-        let (parsed, _) = Sequence::parse_clamped(default_str, min_val, max_val);
-        *seq_ptr = parsed;
+        *seq_ptr = Sequence::default();
         *text_ptr = String::new();
     } else {
-        let (parsed, norm) = Sequence::parse_clamped(&sanitized, min_val, max_val);
+        let (mut parsed, norm) = Sequence::parse_clamped(&sanitized, min_val, max_val);
+        let len = parsed.values.len();
+        if let Some(lp) = parsed.loop_point {
+            if lp >= len {
+                parsed.loop_point = None;
+            }
+        }
+        if let Some(rp) = parsed.release_point {
+            if rp >= len {
+                parsed.release_point = None;
+            }
+        }
         *seq_ptr = parsed;
         *text_ptr = norm;
     }
@@ -143,12 +153,12 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
         // Right Column: Graphical Sequence Editor
         ui.vertical(|ui| {
             let tab = data.selected_tab;
-            let (title, min_val, max_val, default_str) = match tab {
-                0 => ("Volume", 0i16, 15i16, "15"),
-                1 => ("Arpeggio", -96i16, 96i16, "0"),
-                2 => ("Pitch", -128i16, 127i16, "0"),
-                3 => ("Hi-pitch", -64i16, 63i16, "0"),
-                _ => ("Duty / Noise", 0i16, 3i16, "2"),
+            let (title, min_val, max_val) = match tab {
+                0 => ("Volume", 0i16, 15i16),
+                1 => ("Arpeggio", -96i16, 96i16),
+                2 => ("Pitch", -128i16, 127i16),
+                3 => ("Hi-pitch", -64i16, 63i16),
+                _ => ("Duty / Noise", 0i16, 3i16),
             };
 
             let (text_ptr, seq_ptr) = match tab {
@@ -184,19 +194,19 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
                             seq_ptr.release_point = None;
                             *text_ptr = String::new();
                         } else {
-                            let mut tokens: Vec<&str> = text_ptr.split_whitespace().collect();
-                            for i in (0..tokens.len()).rev() {
-                                if tokens[i].parse::<i16>().is_ok() {
-                                    tokens.remove(i);
-                                    break;
+                            seq_ptr.values.pop();
+                            let new_len = seq_ptr.values.len();
+                            if let Some(lp) = seq_ptr.loop_point {
+                                if lp >= new_len {
+                                    seq_ptr.loop_point = None;
                                 }
                             }
-                            *text_ptr = tokens.join(" ");
-                            let sanitized = sanitize_sequence_text(text_ptr);
-                            let (parsed, norm) =
-                                Sequence::parse_clamped(&sanitized, min_val, max_val);
-                            *seq_ptr = parsed;
-                            *text_ptr = norm;
+                            if let Some(rp) = seq_ptr.release_point {
+                                if rp >= new_len {
+                                    seq_ptr.release_point = None;
+                                }
+                            }
+                            *text_ptr = sequence_to_text(seq_ptr);
                         }
                     }
 
@@ -204,15 +214,12 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
 
                     if ui.button("+").clicked() {
                         if cur_len == 0 {
-                            *text_ptr = default_str.to_string();
+                            seq_ptr.values.push(0);
+                            *text_ptr = "0".to_string();
                         } else {
-                            text_ptr.push_str(" 0");
+                            seq_ptr.values.push(0);
+                            *text_ptr = sequence_to_text(seq_ptr);
                         }
-                        let sanitized = sanitize_sequence_text(text_ptr);
-                        let (parsed, norm) =
-                            Sequence::parse_clamped(&sanitized, min_val, max_val);
-                        *seq_ptr = parsed;
-                        *text_ptr = norm;
                     }
 
                     ui.add_space(15.0);
@@ -234,25 +241,33 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
 
                     if edit.changed() {
                         let sanitized = sanitize_sequence_text(text_ptr);
-                        let parse_input = if sanitized.trim().is_empty() {
-                            default_str
+                        if sanitized.trim().is_empty() {
+                            *seq_ptr = Sequence::default();
                         } else {
-                            &sanitized
-                        };
-                        let (parsed, _) = Sequence::parse_clamped(parse_input, min_val, max_val);
-                        *seq_ptr = parsed;
+                            let (parsed, _) = Sequence::parse_clamped(&sanitized, min_val, max_val);
+                            *seq_ptr = parsed;
+                        }
                     }
 
                     if enter_pressed || edit.lost_focus() {
                         let sanitized = sanitize_sequence_text(text_ptr);
                         if sanitized.trim().is_empty() {
-                            let (parsed, _) =
-                                Sequence::parse_clamped(default_str, min_val, max_val);
-                            *seq_ptr = parsed;
+                            *seq_ptr = Sequence::default();
                             *text_ptr = String::new();
                         } else {
-                            let (parsed, norm) =
+                            let (mut parsed, norm) =
                                 Sequence::parse_clamped(&sanitized, min_val, max_val);
+                            let len = parsed.values.len();
+                            if let Some(lp) = parsed.loop_point {
+                                if lp >= len {
+                                    parsed.loop_point = None;
+                                }
+                            }
+                            if let Some(rp) = parsed.release_point {
+                                if rp >= len {
+                                    parsed.release_point = None;
+                                }
+                            }
                             *seq_ptr = parsed;
                             *text_ptr = norm;
                         }
@@ -269,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_sequence_to_text_formatting() {
-        let mut seq = Sequence::new();
+        let mut seq = Sequence::default();
         seq.values = vec![15, 12, 10];
         seq.loop_point = Some(1);
         seq.release_point = Some(1);
@@ -285,8 +300,26 @@ mod tests {
 
     #[test]
     fn test_empty_sequence_to_text() {
-        let seq = Sequence::new();
+        let seq = Sequence::default();
         let text = sequence_to_text(&seq);
         assert_eq!(text, "");
+    }
+
+    #[test]
+    fn test_loop_point_removal_on_step_reduction() {
+        let mut seq = Sequence::default();
+        seq.values = vec![15, 12, 10];
+        seq.loop_point = Some(2);
+
+        seq.values.pop();
+        let new_len = seq.values.len();
+        if let Some(lp) = seq.loop_point {
+            if lp >= new_len {
+                seq.loop_point = None;
+            }
+        }
+
+        assert_eq!(seq.loop_point, None);
+        assert_eq!(sequence_to_text(&seq), "15 12");
     }
 }

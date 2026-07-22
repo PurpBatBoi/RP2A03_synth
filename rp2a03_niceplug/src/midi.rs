@@ -1,10 +1,5 @@
 //! rp2a03_niceplug\src\midi.rs
 //! Incoming MIDI handling and CC mapping for RP2A03 plugin.
-//!
-//! Encapsulates monophonic note priority, MIDI velocity scaling,
-//! fine pitch tuning, CC mappings (CC 01, 02, 03, 04, 07, 11, 14),
-//! 5 FamiTracker-style sequence players (Volume, Arpeggio, Pitch, Hi-Pitch, Duty),
-//! and invokes `rp2a03_core::lfo::SoftwareLfo` for APU modulation.
 
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::Pulse;
@@ -172,20 +167,19 @@ impl MidiHandler {
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 
-        // Trigger sequence players on NoteOn passing sequence references
-        if seqs.vol_enabled {
+        if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
             self.vol_seq_player.trigger(&seqs.vol_seq);
         }
-        if seqs.arp_enabled {
+        if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
             self.arp_seq_player.trigger(&seqs.arp_seq);
         }
-        if seqs.pitch_enabled {
+        if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
             self.pitch_seq_player.trigger(&seqs.pitch_seq);
         }
-        if seqs.hipitch_enabled {
+        if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
             self.hipitch_seq_player.trigger(&seqs.hipitch_seq);
         }
-        if seqs.duty_enabled {
+        if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
             self.duty_seq_player.trigger(&seqs.duty_seq);
         }
 
@@ -197,11 +191,14 @@ impl MidiHandler {
         self.note_stack.retain(|(n, _)| *n != note);
 
         if self.note_stack.is_empty() {
-            let has_vol_rel = seqs.vol_enabled && seqs.vol_seq.release_point.is_some();
-            let has_duty_rel = seqs.duty_enabled && seqs.duty_seq.release_point.is_some();
+            let has_vol_rel = seqs.vol_enabled
+                && !seqs.vol_seq.values.is_empty()
+                && seqs.vol_seq.release_point.is_some();
+            let has_duty_rel = seqs.duty_enabled
+                && !seqs.duty_seq.values.is_empty()
+                && seqs.duty_seq.release_point.is_some();
 
             if !has_vol_rel && !has_duty_rel {
-                // No release point: cut sound immediately on key release
                 self.gate = false;
                 self.vol_seq_player.reset();
                 self.duty_seq_player.reset();
@@ -209,20 +206,19 @@ impl MidiHandler {
                 self.pitch_seq_player.reset();
                 self.hipitch_seq_player.reset();
             } else {
-                // Has release point: trigger release tails
-                if seqs.vol_enabled {
+                if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
                     self.vol_seq_player.release(&seqs.vol_seq);
                 }
-                if seqs.duty_enabled {
+                if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
                     self.duty_seq_player.release(&seqs.duty_seq);
                 }
-                if seqs.arp_enabled {
+                if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
                     self.arp_seq_player.release(&seqs.arp_seq);
                 }
-                if seqs.pitch_enabled {
+                if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
                     self.pitch_seq_player.release(&seqs.pitch_seq);
                 }
-                if seqs.hipitch_enabled {
+                if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
                     self.hipitch_seq_player.release(&seqs.hipitch_seq);
                 }
             }
@@ -297,10 +293,10 @@ impl MidiHandler {
         let master_gain = self.cc_expression as f32 / 127.0;
 
         if !self.gate {
-            let duty_val = if seqs.duty_enabled {
+            let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
                 self.duty_seq_player.value().clamp(0, 3) as u8
             } else {
-                2
+                0
             };
             let ctrl_byte = (duty_val << 6) | 0x30;
             if ctrl_byte != self.prev_ctrl {
@@ -310,23 +306,23 @@ impl MidiHandler {
             return master_gain;
         }
 
-        // Advance 60 Hz frame ticks for 5 sequences and LFO
+        // Advance 60 Hz frame ticks for active non-empty sequences
         let samples_per_tick = sample_rate / 60.0;
         self.frame_sample_counter += num_samples as f32;
         while self.frame_sample_counter >= samples_per_tick {
-            if seqs.vol_enabled {
+            if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
                 self.vol_seq_player.clock_tick(&seqs.vol_seq);
             }
-            if seqs.arp_enabled {
+            if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
                 self.arp_seq_player.clock_tick(&seqs.arp_seq);
             }
-            if seqs.pitch_enabled {
+            if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
                 self.pitch_seq_player.clock_tick(&seqs.pitch_seq);
             }
-            if seqs.hipitch_enabled {
+            if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
                 self.hipitch_seq_player.clock_tick(&seqs.hipitch_seq);
             }
-            if seqs.duty_enabled {
+            if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
                 self.duty_seq_player.clock_tick(&seqs.duty_seq);
             }
 
@@ -334,8 +330,8 @@ impl MidiHandler {
             self.frame_sample_counter -= samples_per_tick;
         }
 
-        // 1. Volume Sequence & Tremolo LFO
-        let vol_val = if seqs.vol_enabled {
+        // 1. Volume Sequence & Tremolo LFO (Fallback to 15 if sequence is empty)
+        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
             self.vol_seq_player.value().clamp(0, 15) as u8
         } else {
             15
@@ -352,11 +348,11 @@ impl MidiHandler {
             }
         }
 
-        // 2. Duty Sequence
-        let duty_val = if seqs.duty_enabled {
+        // 2. Duty Sequence (Fallback to 0 [12.5% square] if sequence is empty)
+        let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
             self.duty_seq_player.value().clamp(0, 3) as u8
         } else {
-            2
+            0
         };
         let ctrl_byte = (duty_val << 6) | 0x30 | apu_vol;
 
@@ -365,8 +361,8 @@ impl MidiHandler {
             self.prev_ctrl = ctrl_byte;
         }
 
-        // 3. Arpeggio Sequence (adds semitones to active note)
-        let arp_semitones = if seqs.arp_enabled {
+        // 3. Arpeggio Sequence (Fallback to 0 if sequence is empty)
+        let arp_semitones = if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
             self.arp_seq_player.value()
         } else {
             0
@@ -377,13 +373,13 @@ impl MidiHandler {
         let base_freq = midi_note_to_freq(effective_note);
         let base_period = freq_to_period(base_freq);
 
-        // 4. Pitch & Hi-Pitch Sequences + Fine Pitch + Vibrato LFO
-        let pitch_delta = if seqs.pitch_enabled {
+        // 4. Pitch & Hi-Pitch Sequences (Fallback to 0 if sequence is empty)
+        let pitch_delta = if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
             self.pitch_seq_player.value()
         } else {
             0
         };
-        let hipitch_delta = if seqs.hipitch_enabled {
+        let hipitch_delta = if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
             self.hipitch_seq_player.value() << 4
         } else {
             0

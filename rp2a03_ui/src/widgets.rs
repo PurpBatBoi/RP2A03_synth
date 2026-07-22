@@ -6,7 +6,7 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use rp2a03_core::sequence::Sequence;
 
 /// Renders a FamiTracker-style envelope bar graph and handles interactive mouse editing.
-/// Returns `true` when mouse interaction finishes and text representation should be synchronized.
+/// Returns `true` when step values or markers change so text representation can be synchronized.
 pub fn draw_envelope_bar_graph(
     ui: &mut egui::Ui,
     seq: &mut Sequence,
@@ -74,7 +74,7 @@ pub fn draw_envelope_bar_graph(
                     text_needs_sync = true;
                 }
             } else {
-                // Bar graph area interaction: Drawing envelope values
+                // Bar graph area interaction: Real-time envelope drawing
                 if response.dragged_by(egui::PointerButton::Primary)
                     || response.clicked_by(egui::PointerButton::Primary)
                 {
@@ -97,7 +97,10 @@ pub fn draw_envelope_bar_graph(
                     }
 
                     let clamped_val = new_val.clamp(min_val, max_val);
-                    seq.values[step_idx] = clamped_val;
+                    if seq.values[step_idx] != clamped_val {
+                        seq.values[step_idx] = clamped_val;
+                        text_needs_sync = true;
+                    }
                 }
             }
         }
