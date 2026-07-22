@@ -1,3 +1,5 @@
+//! rp2a03_ui\src\editor.rs
+//! 
 //! Layout rendering logic for the main sequence editor window.
 
 use super::state::SharedSequences;

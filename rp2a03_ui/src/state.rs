@@ -1,3 +1,5 @@
+//! rp2a03_ui\src\state.rs
+//! 
 //! State structures for tracking sequence configuration across audio and GUI threads.
 
 use rp2a03_core::sequence::Sequence;

@@ -1,3 +1,4 @@
+//! rp2a03_niceplug\src\lib.rs
 //! RP2A03 Plugin wrapper using nice-plug.
 
 mod midi;

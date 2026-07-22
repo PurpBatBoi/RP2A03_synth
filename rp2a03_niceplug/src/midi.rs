@@ -1,3 +1,4 @@
+//! rp2a03_niceplug\src\midi.rs
 //! Incoming MIDI handling and CC mapping for RP2A03 plugin.
 //!
 //! Encapsulates monophonic note priority, MIDI velocity scaling,

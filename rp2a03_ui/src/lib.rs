@@ -1,3 +1,5 @@
+//! rp2a03_ui\src\lib.rs
+//! 
 //! `rp2a03_ui` - Dedicated egui User Interface for RP2A03 Synth.
 
 pub mod editor;

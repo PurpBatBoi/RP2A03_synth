@@ -1,3 +1,5 @@
+//! rp2a03_ui\src\widgets.rs
+//! 
 //! Custom painter elements for sequence visualization.
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
