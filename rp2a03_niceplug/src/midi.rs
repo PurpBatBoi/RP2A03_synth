@@ -163,9 +163,16 @@ impl MidiHandler {
         self.note_stack.retain(|(n, _)| *n != note);
 
         if self.note_stack.is_empty() {
-            self.vol_seq_player.release(vol_seq);
-            self.duty_seq_player.release(duty_seq);
-            // Note: Gate stays true while playing out release tail sequence
+            if vol_seq.release_point.is_none() && duty_seq.release_point.is_none() {
+                // No release point in envelope: stop sound immediately on key release
+                self.gate = false;
+                self.vol_seq_player.reset();
+                self.duty_seq_player.reset();
+            } else {
+                // Has release point: trigger release tail
+                self.vol_seq_player.release(vol_seq);
+                self.duty_seq_player.release(duty_seq);
+            }
         } else {
             self.apply_top_note(pulse);
         }
@@ -275,6 +282,13 @@ impl MidiHandler {
         let vel_scaled_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
         let tremolo_sub = self.lfo.tremolo_volume_delta();
         let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
+
+        // Turn off gate when release tail has completed and volume reached zero
+        if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
+            if self.vol_seq_player.state == SeqState::Held && apu_vol == 0 {
+                self.gate = false;
+            }
+        }
 
         // 2. Get duty from sequence
         let duty_val = self.duty_seq_player.value().min(3);

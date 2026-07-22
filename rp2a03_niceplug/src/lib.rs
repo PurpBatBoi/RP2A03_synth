@@ -363,8 +363,12 @@ fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _labe
         };
         painter.rect_filled(col_rect, 0.0, bg_color);
 
-        // Bar color based on region (normal white/gray, cyan loop, purple release)
-        let bar_color = if i >= rel_idx {
+        let is_loop_release_mode = loop_idx < num_steps && rel_idx == loop_idx;
+
+        // Bar color based on region (yellow for combined Loop/Release, cyan for Loop, purple for Release, white/gray for normal)
+        let bar_color = if is_loop_release_mode && i >= loop_idx {
+            Color32::from_rgb(230, 190, 40) // Yellow for combined Loop, Release
+        } else if i >= rel_idx {
             Color32::from_rgb(200, 120, 220) // Purple release region
         } else if i >= loop_idx {
             Color32::from_rgb(100, 200, 220) // Cyan loop region
@@ -380,44 +384,63 @@ fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _labe
     // Render Header markers for Loop & Release
     painter.rect_filled(header_rect, 0.0, Color32::from_rgb(25, 25, 25));
 
-    let loop_end = if rel_idx < usize::MAX {
-        rel_idx
-    } else {
-        num_steps
-    };
+    let is_loop_release_mode = loop_idx < num_steps && rel_idx == loop_idx;
 
-    if loop_idx < num_steps {
+    if is_loop_release_mode {
         let x_min = header_rect.min.x + loop_idx as f32 * step_width;
-        let x_max = header_rect.min.x + loop_end as f32 * step_width;
-        let l_rect = Rect::from_min_max(
-            Pos2::new(x_min, header_rect.min.y),
-            Pos2::new(x_max, header_rect.max.y),
-        );
-        painter.rect_filled(l_rect, 0.0, Color32::from_rgb(0, 120, 130));
-        painter.text(
-            Pos2::new(x_min + 4.0, header_rect.min.y + 2.0),
-            egui::Align2::LEFT_TOP,
-            "Loop",
-            egui::FontId::proportional(12.0),
-            Color32::WHITE,
-        );
-    }
-
-    if rel_idx < num_steps {
-        let x_min = header_rect.min.x + rel_idx as f32 * step_width;
         let x_max = header_rect.max.x;
-        let r_rect = Rect::from_min_max(
+        let lr_rect = Rect::from_min_max(
             Pos2::new(x_min, header_rect.min.y),
             Pos2::new(x_max, header_rect.max.y),
         );
-        painter.rect_filled(r_rect, 0.0, Color32::from_rgb(120, 0, 130));
+        painter.rect_filled(lr_rect, 0.0, Color32::from_rgb(180, 140, 20)); // Yellow header
         painter.text(
             Pos2::new(x_min + 4.0, header_rect.min.y + 2.0),
             egui::Align2::LEFT_TOP,
-            "Release",
+            "Loop, Release",
             egui::FontId::proportional(12.0),
             Color32::WHITE,
         );
+    } else {
+        let loop_end = if rel_idx < usize::MAX {
+            rel_idx
+        } else {
+            num_steps
+        };
+
+        if loop_idx < num_steps {
+            let x_min = header_rect.min.x + loop_idx as f32 * step_width;
+            let x_max = header_rect.min.x + loop_end as f32 * step_width;
+            let l_rect = Rect::from_min_max(
+                Pos2::new(x_min, header_rect.min.y),
+                Pos2::new(x_max, header_rect.max.y),
+            );
+            painter.rect_filled(l_rect, 0.0, Color32::from_rgb(0, 120, 130));
+            painter.text(
+                Pos2::new(x_min + 4.0, header_rect.min.y + 2.0),
+                egui::Align2::LEFT_TOP,
+                "Loop",
+                egui::FontId::proportional(12.0),
+                Color32::WHITE,
+            );
+        }
+
+        if rel_idx < num_steps {
+            let x_min = header_rect.min.x + rel_idx as f32 * step_width;
+            let x_max = header_rect.max.x;
+            let r_rect = Rect::from_min_max(
+                Pos2::new(x_min, header_rect.min.y),
+                Pos2::new(x_max, header_rect.max.y),
+            );
+            painter.rect_filled(r_rect, 0.0, Color32::from_rgb(120, 0, 130));
+            painter.text(
+                Pos2::new(x_min + 4.0, header_rect.min.y + 2.0),
+                egui::Align2::LEFT_TOP,
+                "Release",
+                egui::FontId::proportional(12.0),
+                Color32::WHITE,
+            );
+        }
     }
 
     // Print step count and duration info below

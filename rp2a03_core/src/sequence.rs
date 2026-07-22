@@ -114,7 +114,7 @@ pub struct SequencePlayer {
     pub pos: usize,
     /// Playback state.
     pub state: SeqState,
-    /// Active gate / note-held state. When `false`, key is released.
+    /// Active gate / note-held state. When `false`, key is held; when `true`, key is released.
     pub is_releasing: bool,
     /// The current output value from the sequence.
     pub current_value: u8,
@@ -172,47 +172,55 @@ impl SequencePlayer {
                 // Read current step value
                 self.current_value = seq.get(self.pos);
 
-                // Determine next position
-                let next_pos = self.pos + 1;
+                // Advance pointer
+                self.pos += 1;
 
-                if !self.is_releasing {
-                    // Key is held
-                    if let Some(rel) = seq.release_point {
-                        if next_pos >= rel {
-                            // Hit release boundary while key is held
-                            if let Some(loop_pt) = seq.loop_point {
-                                if loop_pt < rel {
-                                    // Loop back between loop_point and release_point
-                                    self.pos = loop_pt;
-                                    return self.current_value;
-                                }
+                let loop_pt = seq.loop_point;
+                let rel_pt = seq.release_point;
+
+                let hit_release_boundary = rel_pt.map_or(false, |r| self.pos >= r);
+                let hit_seq_end = self.pos >= seq_len;
+
+                if hit_release_boundary || hit_seq_end {
+                    if let (Some(l), Some(r)) = (loop_pt, rel_pt) {
+                        if l < r {
+                            // Standard loop before release (Loop < Release)
+                            if !self.is_releasing {
+                                // While key is held, loop back to loop_pt at release boundary
+                                self.pos = l;
+                            } else if hit_seq_end {
+                                // After release tail reaches end of sequence, hold on last step
+                                self.pos = seq_len.saturating_sub(1);
+                                self.state = SeqState::Held;
                             }
-                            // No loop before release: hold at release - 1
-                            self.pos = rel.saturating_sub(1);
-                            self.state = SeqState::Held;
-                            return self.current_value;
+                        } else {
+                            // Loop point is in/after release tail (Loop >= Release)
+                            if hit_seq_end {
+                                self.pos = l.min(seq_len.saturating_sub(1));
+                            } else if !self.is_releasing {
+                                // Waiting before release
+                                self.pos = self.pos.saturating_sub(1);
+                                self.state = SeqState::Held;
+                            }
                         }
-                    }
-                }
-
-                if next_pos >= seq_len {
-                    // Reached end of sequence
-                    if let Some(loop_pt) = seq.loop_point {
-                        // Loop back to loop point
-                        self.pos = loop_pt.min(seq_len.saturating_sub(1));
-                    } else {
-                        // Hold on last step
-                        self.pos = seq_len.saturating_sub(1);
+                    } else if hit_seq_end {
+                        // No release point, or loop only
+                        if let Some(l) = loop_pt {
+                            self.pos = l.min(seq_len.saturating_sub(1));
+                        } else {
+                            self.pos = seq_len.saturating_sub(1);
+                            self.state = SeqState::Held;
+                        }
+                    } else if !self.is_releasing && rel_pt.is_some() {
+                        // Reached release boundary without loop: hold at release - 1
+                        self.pos = self.pos.saturating_sub(1);
                         self.state = SeqState::Held;
                     }
-                } else {
-                    self.pos = next_pos;
                 }
 
                 self.current_value
             }
             SeqState::Held => {
-                // Return held value
                 self.current_value
             }
             SeqState::Disabled => 0,
@@ -249,45 +257,51 @@ mod tests {
     }
 
     #[test]
-    fn test_loop_and_release_playback() {
-        let seq = Sequence::parse("10 12 | 15 14 / 8 4 0");
+    fn test_release_tail_does_not_loop_back() {
+        // Example 1: "15 | 12 12 12 12 / 0 0 0 0"
+        let seq = Sequence::parse("15 | 12 12 12 12 / 0 0 0 0");
         let mut player = SequencePlayer::new();
 
-        // Trigger note (key held)
         player.trigger(&seq);
-        assert_eq!(player.current_value, 10);
+        assert_eq!(player.current_value, 15);
 
-        assert_eq!(player.clock_tick(&seq), 10); // pos=0 -> 1
-        assert_eq!(player.clock_tick(&seq), 12); // pos=1 -> hits release boundary at pos=2, loops to 2 (|)
-        assert_eq!(player.clock_tick(&seq), 15); // pos=2 -> 3
-        assert_eq!(player.clock_tick(&seq), 14); // pos=3 -> hits release boundary pos=4, loops to 2
-        assert_eq!(player.clock_tick(&seq), 15); // pos=2 -> 3
+        // Advance through initial step and loop steps while key held
+        assert_eq!(player.clock_tick(&seq), 15); // pos=0 -> 1
+        assert_eq!(player.clock_tick(&seq), 12); // pos=1 -> 2
+        assert_eq!(player.clock_tick(&seq), 12); // pos=2 -> 3
+        assert_eq!(player.clock_tick(&seq), 12); // pos=3 -> 4
+        assert_eq!(player.clock_tick(&seq), 12); // pos=4 -> hits release at 5, loops to 1
+        assert_eq!(player.clock_tick(&seq), 12); // pos=1 -> 2
 
-        // Release key -> jumps to release point (pos=4)
+        // Release key -> jumps to release tail (step 5)
         player.release(&seq);
-        assert_eq!(player.current_value, 8); // pos=4 value
+        assert_eq!(player.current_value, 0); // pos=5
 
-        assert_eq!(player.clock_tick(&seq), 8); // pos=4 -> 5
-        assert_eq!(player.clock_tick(&seq), 4); // pos=5 -> 6
-        assert_eq!(player.clock_tick(&seq), 0); // pos=6 -> end, holds 0
+        assert_eq!(player.clock_tick(&seq), 0); // pos=5 -> 6
+        assert_eq!(player.clock_tick(&seq), 0); // pos=6 -> 7
+        assert_eq!(player.clock_tick(&seq), 0); // pos=7 -> 8
+        assert_eq!(player.clock_tick(&seq), 0); // pos=8 -> end, holds 0 (does NOT loop back to 12!)
         assert_eq!(player.state, SeqState::Held);
+        assert_eq!(player.clock_tick(&seq), 0);
     }
 
     #[test]
-    fn test_no_loop_holds_at_release_boundary() {
-        let seq = Sequence::parse("15 12 / 6 0");
+    fn test_loop_in_release_tail() {
+        // Example 2: "7 10 12 | / 9 9"
+        let seq = Sequence::parse("7 10 12 | / 9 9");
         let mut player = SequencePlayer::new();
 
         player.trigger(&seq);
-        player.clock_tick(&seq); // 15
-        player.clock_tick(&seq); // 12 -> holds at 12 (pos=1) while key held
-        assert_eq!(player.current_value, 12);
+        assert_eq!(player.clock_tick(&seq), 7);  // pos=0 -> 1
+        assert_eq!(player.clock_tick(&seq), 10); // pos=1 -> 2
+        assert_eq!(player.clock_tick(&seq), 12); // pos=2 -> hits release at 3, holds at 2
         assert_eq!(player.state, SeqState::Held);
 
-        // Key release
+        // Key release -> jumps to step 3
         player.release(&seq);
-        assert_eq!(player.current_value, 6);
-        player.clock_tick(&seq); // 6
-        player.clock_tick(&seq); // 0
+        assert_eq!(player.current_value, 9);
+        assert_eq!(player.clock_tick(&seq), 9); // pos=3 -> 4
+        assert_eq!(player.clock_tick(&seq), 9); // pos=4 -> end, loops to step 3 (Loop >= Release)
+        assert_eq!(player.clock_tick(&seq), 9); // pos=3 -> 4
     }
 }
