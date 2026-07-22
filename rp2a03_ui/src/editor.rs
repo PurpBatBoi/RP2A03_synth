@@ -6,6 +6,45 @@ use super::state::SharedSequences;
 use super::widgets::draw_envelope_bar_graph;
 use rp2a03_core::sequence::Sequence;
 
+/// Converts a Sequence engine instance back to a FamiTracker formatted text string.
+pub fn sequence_to_text(seq: &Sequence) -> String {
+    if seq.values.is_empty() {
+        return String::new();
+    }
+
+    let num_steps = seq.values.len();
+    let mut tokens = Vec::with_capacity(num_steps * 2);
+
+    for i in 0..num_steps {
+        let is_loop = seq.loop_point == Some(i);
+        let is_rel = seq.release_point == Some(i);
+
+        if is_loop && is_rel {
+            tokens.push("|".to_string());
+            tokens.push("/".to_string());
+        } else if is_loop {
+            tokens.push("|".to_string());
+        } else if is_rel {
+            tokens.push("/".to_string());
+        }
+
+        tokens.push(seq.values[i].to_string());
+    }
+
+    let end_loop = seq.loop_point == Some(num_steps);
+    let end_rel = seq.release_point == Some(num_steps);
+    if end_loop && end_rel {
+        tokens.push("|".to_string());
+        tokens.push("/".to_string());
+    } else if end_loop {
+        tokens.push("|".to_string());
+    } else if end_rel {
+        tokens.push("/".to_string());
+    }
+
+    tokens.join(" ")
+}
+
 /// Strips non-sequence characters from raw text input.
 /// Retains digits, minus sign (-), loop marker (|), release marker (/), and whitespace.
 pub fn sanitize_sequence_text(text: &str) -> String {
@@ -126,8 +165,10 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
                 );
                 ui.add_space(4.0);
 
-                // Painter canvas
-                draw_envelope_bar_graph(ui, seq_ptr, min_val, max_val);
+                // Painter canvas with interactive mouse editing
+                if draw_envelope_bar_graph(ui, seq_ptr, min_val, max_val) {
+                    *text_ptr = sequence_to_text(seq_ptr);
+                }
 
                 ui.add_space(6.0);
 
@@ -136,22 +177,24 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
                     ui.label("Size:");
 
                     let cur_len = seq_ptr.len();
-                    if ui.button("-").clicked() && cur_len > 1 {
-                        let mut tokens: Vec<&str> = text_ptr.split_whitespace().collect();
-                        for i in (0..tokens.len()).rev() {
-                            if tokens[i].parse::<i16>().is_ok() {
-                                tokens.remove(i);
-                                break;
-                            }
-                        }
-                        *text_ptr = tokens.join(" ");
-                        let sanitized = sanitize_sequence_text(text_ptr);
-                        if sanitized.trim().is_empty() {
-                            let (parsed, _) = Sequence::parse_clamped(default_str, min_val, max_val);
-                            *seq_ptr = parsed;
+                    if ui.button("-").clicked() && cur_len > 0 {
+                        if cur_len == 1 {
+                            seq_ptr.values.clear();
+                            seq_ptr.loop_point = None;
+                            seq_ptr.release_point = None;
                             *text_ptr = String::new();
                         } else {
-                            let (parsed, norm) = Sequence::parse_clamped(&sanitized, min_val, max_val);
+                            let mut tokens: Vec<&str> = text_ptr.split_whitespace().collect();
+                            for i in (0..tokens.len()).rev() {
+                                if tokens[i].parse::<i16>().is_ok() {
+                                    tokens.remove(i);
+                                    break;
+                                }
+                            }
+                            *text_ptr = tokens.join(" ");
+                            let sanitized = sanitize_sequence_text(text_ptr);
+                            let (parsed, norm) =
+                                Sequence::parse_clamped(&sanitized, min_val, max_val);
                             *seq_ptr = parsed;
                             *text_ptr = norm;
                         }
@@ -160,13 +203,14 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
                     ui.label(egui::RichText::new(format!("{}", cur_len)).strong());
 
                     if ui.button("+").clicked() {
-                        if text_ptr.trim().is_empty() {
-                            *text_ptr = format!("{} 0", default_str);
+                        if cur_len == 0 {
+                            *text_ptr = default_str.to_string();
                         } else {
                             text_ptr.push_str(" 0");
                         }
                         let sanitized = sanitize_sequence_text(text_ptr);
-                        let (parsed, norm) = Sequence::parse_clamped(&sanitized, min_val, max_val);
+                        let (parsed, norm) =
+                            Sequence::parse_clamped(&sanitized, min_val, max_val);
                         *seq_ptr = parsed;
                         *text_ptr = norm;
                     }
@@ -202,11 +246,13 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
                     if enter_pressed || edit.lost_focus() {
                         let sanitized = sanitize_sequence_text(text_ptr);
                         if sanitized.trim().is_empty() {
-                            let (parsed, _) = Sequence::parse_clamped(default_str, min_val, max_val);
+                            let (parsed, _) =
+                                Sequence::parse_clamped(default_str, min_val, max_val);
                             *seq_ptr = parsed;
                             *text_ptr = String::new();
                         } else {
-                            let (parsed, norm) = Sequence::parse_clamped(&sanitized, min_val, max_val);
+                            let (parsed, norm) =
+                                Sequence::parse_clamped(&sanitized, min_val, max_val);
                             *seq_ptr = parsed;
                             *text_ptr = norm;
                         }
@@ -215,4 +261,32 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
             });
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sequence_to_text_formatting() {
+        let mut seq = Sequence::new();
+        seq.values = vec![15, 12, 10];
+        seq.loop_point = Some(1);
+        seq.release_point = Some(1);
+
+        let text = sequence_to_text(&seq);
+        assert_eq!(text, "15 | / 12 10");
+
+        let (reparsed, _) = Sequence::parse_clamped(&text, 0, 15);
+        assert_eq!(reparsed.values, seq.values);
+        assert_eq!(reparsed.loop_point, seq.loop_point);
+        assert_eq!(reparsed.release_point, seq.release_point);
+    }
+
+    #[test]
+    fn test_empty_sequence_to_text() {
+        let seq = Sequence::new();
+        let text = sequence_to_text(&seq);
+        assert_eq!(text, "");
+    }
 }

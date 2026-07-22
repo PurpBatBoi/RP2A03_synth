@@ -1,14 +1,20 @@
 //! rp2a03_ui\src\widgets.rs
 //! 
-//! Custom painter elements for sequence visualization.
+//! Custom painter elements for sequence visualization and interactive envelope editing.
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use rp2a03_core::sequence::Sequence;
 
-/// Renders a FamiTracker-style envelope bar graph with unipolar and bipolar range support.
-pub fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, max_val: i16) {
+/// Renders a FamiTracker-style envelope bar graph and handles interactive mouse editing.
+/// Returns `true` when mouse interaction finishes and text representation should be synchronized.
+pub fn draw_envelope_bar_graph(
+    ui: &mut egui::Ui,
+    seq: &mut Sequence,
+    min_val: i16,
+    max_val: i16,
+) -> bool {
     let desired_size = Vec2::new(450.0, 220.0);
-    let (rect, _response) = ui.allocate_at_least(desired_size, Sense::hover());
+    let (rect, response) = ui.allocate_at_least(desired_size, Sense::click_and_drag());
 
     let painter = ui.painter_at(rect);
 
@@ -22,9 +28,6 @@ pub fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, 
     );
 
     let num_steps = seq.len();
-    if num_steps == 0 {
-        return;
-    }
 
     let header_height = 20.0;
     let graph_rect = Rect::from_min_max(
@@ -35,6 +38,87 @@ pub fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, 
         Pos2::new(rect.min.x, rect.max.y - header_height),
         rect.max,
     );
+
+    let mut text_needs_sync = false;
+
+    // Handle mouse interactions when sequence is non-empty
+    if num_steps > 0 {
+        let step_width = graph_rect.width() / num_steps as f32;
+
+        if let Some(pointer_pos) = response.interact_pointer_pos() {
+            let is_header_click = pointer_pos.y >= graph_rect.max.y;
+
+            if is_header_click {
+                // Header interaction: Loop / Release point toggling
+                if response.clicked() {
+                    let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width)
+                        .floor() as usize)
+                        .clamp(0, num_steps - 1);
+
+                    if seq.loop_point == Some(clicked_step) {
+                        seq.loop_point = None;
+                    } else {
+                        seq.loop_point = Some(clicked_step);
+                    }
+                    text_needs_sync = true;
+                } else if response.secondary_clicked() {
+                    let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width)
+                        .floor() as usize)
+                        .clamp(0, num_steps - 1);
+
+                    if seq.release_point == Some(clicked_step) {
+                        seq.release_point = None;
+                    } else {
+                        seq.release_point = Some(clicked_step);
+                    }
+                    text_needs_sync = true;
+                }
+            } else {
+                // Bar graph area interaction: Drawing envelope values
+                if response.dragged_by(egui::PointerButton::Primary)
+                    || response.clicked_by(egui::PointerButton::Primary)
+                {
+                    let step_idx = (((pointer_pos.x - graph_rect.min.x) / step_width)
+                        .floor() as i32)
+                        .clamp(0, num_steps as i32 - 1) as usize;
+
+                    let rel_y =
+                        (pointer_pos.y - graph_rect.min.y).clamp(0.0, graph_rect.height());
+                    let norm_y = rel_y / graph_rect.height();
+                    let raw_val = max_val as f32 - norm_y * (max_val as f32 - min_val as f32);
+                    let mut new_val = raw_val.round() as i16;
+
+                    // Zero-axis snap for bipolar sequences
+                    if min_val < 0 {
+                        let snap_threshold = (max_val as f32 - min_val as f32) * 0.03;
+                        if raw_val.abs() <= snap_threshold {
+                            new_val = 0;
+                        }
+                    }
+
+                    let clamped_val = new_val.clamp(min_val, max_val);
+                    seq.values[step_idx] = clamped_val;
+                }
+            }
+        }
+
+        if response.drag_stopped_by(egui::PointerButton::Primary)
+            || response.clicked_by(egui::PointerButton::Primary)
+        {
+            text_needs_sync = true;
+        }
+    }
+
+    if num_steps == 0 {
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Empty Sequence (0 steps)",
+            egui::FontId::proportional(13.0),
+            Color32::from_rgb(90, 90, 90),
+        );
+        return text_needs_sync;
+    }
 
     let step_width = graph_rect.width() / num_steps as f32;
     let loop_idx = seq.loop_point.unwrap_or(usize::MAX);
@@ -51,7 +135,7 @@ pub fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, 
         graph_rect.max.y
     };
 
-    // Draw step column backgrounds first
+    // Draw step column backgrounds
     for i in 0..num_steps {
         let bar_x_min = graph_rect.min.x + i as f32 * step_width;
         let bar_x_max = bar_x_min + step_width - 1.0;
@@ -68,7 +152,7 @@ pub fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, 
         painter.rect_filled(col_rect, 0.0, bg_color);
     }
 
-    // Draw zero-axis reference line AFTER step backgrounds so it is not overwritten
+    // Draw zero-axis reference line for bipolar graphs
     if is_bipolar {
         painter.line_segment(
             [
@@ -79,7 +163,7 @@ pub fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, 
         );
     }
 
-    // Draw individual step bars
+    // Draw step bars
     for i in 0..num_steps {
         let val = seq.values[i].clamp(min_val, max_val);
 
@@ -199,4 +283,6 @@ pub fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, 
         egui::FontId::proportional(11.0),
         Color32::from_rgb(160, 160, 160),
     );
+
+    text_needs_sync
 }
