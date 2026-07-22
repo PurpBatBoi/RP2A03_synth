@@ -1,3 +1,6 @@
+mod midi;
+
+use midi::MidiHandler;
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::blip_buf::BlipBuf;
@@ -14,8 +17,7 @@ pub struct Rp2a03Plugin {
     blip: BlipBuf,
     sample_rate: f32,
     last_output: i16,
-    midi_note_id: u8,
-    gate: bool,
+    midi_handler: MidiHandler,
 }
 
 #[derive(Params)]
@@ -40,8 +42,7 @@ impl Default for Rp2a03Plugin {
             blip,
             sample_rate: 44100.0,
             last_output: 0,
-            midi_note_id: 0,
-            gate: false,
+            midi_handler: MidiHandler::new(),
         }
     }
 }
@@ -64,11 +65,6 @@ impl Default for Rp2a03Params {
 }
 
 impl Rp2a03Plugin {
-    fn freq_to_period(freq: f32) -> u16 {
-        let t = (NTSC_CPU_CLOCK as f32 / (16.0 * freq)) - 0.5;
-        t.round().clamp(0.0, 2047.0) as u16
-    }
-
     fn generate_samples(&mut self, output: &mut [f32]) {
         let sample_count = output.len() as u32;
         if sample_count == 0 {
@@ -79,15 +75,20 @@ impl Rp2a03Plugin {
 
         let volume = self.params.volume.value() as u8;
         let duty = self.params.duty.value() as u8;
-        let actual_vol = if self.gate { volume } else { 0 };
 
-        // Set Duty (bits 6,7), Halt Length Counter (bit 5), Constant Volume (bit 4)
-        self.pulse.write_ctrl((duty << 6) | 0x20 | 0x10 | actual_vol);
+        // Update modulation (Vibrato, Tremolo, CC7, CC11, Velocity) and write updated registers to pulse
+        let master_gain = self.midi_handler.update_modulation(
+            &mut self.pulse,
+            volume,
+            duty,
+            self.sample_rate,
+            sample_count as usize,
+        );
 
         for clock in 0..clocks_needed {
             self.pulse.clock();
 
-            let current_output = if self.gate && !self.pulse.is_muted() {
+            let current_output = if self.midi_handler.gate() && !self.pulse.is_muted() {
                 self.pulse.output() as i16
             } else {
                 0
@@ -106,7 +107,7 @@ impl Rp2a03Plugin {
         self.blip.read_samples(&mut buf_i16, false);
 
         for (i, sample) in buf_i16.iter().enumerate() {
-            output[i] = *sample as f32 / 32768.0;
+            output[i] = (*sample as f32 / 32768.0) * master_gain;
         }
     }
 }
@@ -126,7 +127,7 @@ impl Plugin for Rp2a03Plugin {
         },
     ];
 
-    const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
+    const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type SysExMessage = ();
@@ -149,6 +150,7 @@ impl Plugin for Rp2a03Plugin {
         self.pulse.set_enabled(true);
         self.pulse.write_sweep(0x08);
         self.last_output = 0;
+        self.midi_handler.reset();
         true
     }
 
@@ -158,8 +160,7 @@ impl Plugin for Rp2a03Plugin {
         self.pulse.write_sweep(0x08);
         self.blip.clear();
         self.last_output = 0;
-        self.midi_note_id = 0;
-        self.gate = false;
+        self.midi_handler.reset();
     }
 
     fn process(
@@ -197,25 +198,7 @@ impl Plugin for Rp2a03Plugin {
                     next_event = Some(event);
                     break;
                 }
-                match event {
-                    NoteEvent::NoteOn { note, velocity: _, .. } => {
-                        self.midi_note_id = note;
-                        let effective_note = note.saturating_add(12);
-                        let freq = util::midi_note_to_freq(effective_note);
-                        let period = Self::freq_to_period(freq);
-
-                        self.pulse.set_enabled(true);
-                        self.pulse.write_sweep(0x08);
-                        self.pulse.write_timer_lo((period & 0xFF) as u8);
-                        self.pulse.write_timer_hi(0xF8 | (((period >> 8) & 0x07) as u8));
-
-                        self.gate = true;
-                    }
-                    NoteEvent::NoteOff { note, .. } if note == self.midi_note_id => {
-                        self.gate = false;
-                    }
-                    _ => {}
-                }
+                self.midi_handler.handle_event(&event, &mut self.pulse);
                 next_event = context.next_event();
             }
 
@@ -262,6 +245,8 @@ nice_export_vst3!(Rp2a03Plugin);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use midi::midi_note_to_freq;
+    use midi::freq_to_period;
 
     #[test]
     fn test_note_on_produces_audio() {
@@ -270,8 +255,8 @@ mod tests {
         plugin.pulse.write_sweep(0x08);
 
         let note = 60; // Middle C
-        let freq = util::midi_note_to_freq(note);
-        let period = Rp2a03Plugin::freq_to_period(freq);
+        let freq = midi_note_to_freq(note);
+        let period = freq_to_period(freq);
 
         plugin.pulse.write_timer_lo((period & 0xFF) as u8);
         plugin.pulse.write_timer_hi(0xF8 | (((period >> 8) & 0x07) as u8));

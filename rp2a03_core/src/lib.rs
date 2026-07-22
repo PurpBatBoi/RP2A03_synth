@@ -9,3 +9,4 @@ pub mod apu_length_counter;
 pub mod apu_frame_counter;
 pub mod apu_pulse;
 pub mod blip_buf;
+pub mod lfo;
