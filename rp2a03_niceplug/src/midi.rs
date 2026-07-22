@@ -336,12 +336,12 @@ mod tests {
         assert_eq!(handler.note_stack.last(), Some(&(64, 100)));
 
         // Release Note B -> should return to Note A (60)
-        handler.note_off(64, &mut pulse);
+        handler.note_off(64, &mut pulse, &vol_seq, &duty_seq);
         assert!(handler.gate());
         assert_eq!(handler.note_stack.last(), Some(&(60, 127)));
 
         // Release Note A -> gate turns false
-        handler.note_off(60, &mut pulse);
+        handler.note_off(60, &mut pulse, &vol_seq, &duty_seq);
         assert!(!handler.gate());
     }
 

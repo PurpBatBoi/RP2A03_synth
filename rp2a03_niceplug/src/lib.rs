@@ -172,7 +172,7 @@ impl Plugin for Rp2a03Plugin {
 
                     // --- Volume Sequence Section ---
                     ui.group(|ui| {
-                        ui.label(egui::RichText::new("Volume Sequence").bold());
+                        ui.label(egui::RichText::new("Volume Sequence").strong());
                         ui.add_space(4.0);
 
                         // Render Bar Graph Visualization for Volume
@@ -196,7 +196,7 @@ impl Plugin for Rp2a03Plugin {
 
                     // --- Duty Sequence Section ---
                     ui.group(|ui| {
-                        ui.label(egui::RichText::new("Duty Cycle Sequence").bold());
+                        ui.label(egui::RichText::new("Duty Cycle Sequence").strong());
                         ui.add_space(4.0);
 
                         // Render Bar Graph Visualization for Duty
@@ -314,7 +314,7 @@ fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _labe
 
     // Background
     painter.rect_filled(rect, 2.0, Color32::from_rgb(8, 8, 8));
-    painter.rect_stroke(rect, 2.0, Stroke::new(1.0, Color32::from_rgb(35, 35, 35)));
+    painter.rect_stroke(rect, 2.0, Stroke::new(1.0f32, Color32::from_rgb(35, 35, 35)), egui::StrokeKind::Outside);
 
     let num_steps = seq.len();
     if num_steps == 0 {
