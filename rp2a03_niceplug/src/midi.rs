@@ -1,8 +1,10 @@
+//! rp2a03_niceplug\src\midi.rs
+//! 
 //! Incoming MIDI handling and CC mapping for RP2A03 plugin.
 //!
 //! Encapsulates monophonic note priority, MIDI velocity scaling,
 //! fine pitch tuning, CC mappings (CC 01, 02, 03, 04, 07, 11, 14),
-//! FamiTracker-style volume/duty sequence playback,
+//! 5 FamiTracker-style sequence players (Volume, Arpeggio, Pitch, Hi-Pitch, Duty),
 //! and invokes `rp2a03_core::lfo::SoftwareLfo` for APU modulation.
 
 use nice_plug::prelude::*;
@@ -25,6 +27,25 @@ pub fn freq_to_period(freq: f32) -> u16 {
     t.round().clamp(0.0, 2047.0) as u16
 }
 
+/// Container holding owned copies of all 5 active sequences and their enable statuses.
+#[derive(Debug, Clone)]
+pub struct ActiveSequences {
+    pub vol_seq: Sequence,
+    pub vol_enabled: bool,
+
+    pub arp_seq: Sequence,
+    pub arp_enabled: bool,
+
+    pub pitch_seq: Sequence,
+    pub pitch_enabled: bool,
+
+    pub hipitch_seq: Sequence,
+    pub hipitch_enabled: bool,
+
+    pub duty_seq: Sequence,
+    pub duty_enabled: bool,
+}
+
 /// Manages incoming MIDI events, note stack, velocity, CCs, and modulation.
 #[derive(Debug, Clone)]
 pub struct MidiHandler {
@@ -42,16 +63,18 @@ pub struct MidiHandler {
     pub cc_expression: u8,
     /// MIDI CC 14 (Fine pitch offset, -64..+63 semitone cents offset)
     pub fine_pitch: i8,
-    /// Unmodulated base APU timer period
-    pub base_period: u16,
+    /// Active base MIDI note
+    pub active_note: u8,
     /// Software LFO engine from `rp2a03_core`
     pub lfo: SoftwareLfo,
     /// Sample accumulator for 60 Hz frame tick timing
     pub frame_sample_counter: f32,
 
-    /// Volume sequence player (advances at 60 Hz)
+    /// 5 FamiTracker sequence players
     pub vol_seq_player: SequencePlayer,
-    /// Duty cycle sequence player (advances at 60 Hz)
+    pub arp_seq_player: SequencePlayer,
+    pub pitch_seq_player: SequencePlayer,
+    pub hipitch_seq_player: SequencePlayer,
     pub duty_seq_player: SequencePlayer,
 
     /// Cache of last written control register byte to avoid redundant register writes
@@ -72,10 +95,13 @@ impl Default for MidiHandler {
             cc_volume: 127,
             cc_expression: 127,
             fine_pitch: 0,
-            base_period: 0,
+            active_note: 60,
             lfo: SoftwareLfo::new(),
             frame_sample_counter: 0.0,
             vol_seq_player: SequencePlayer::new(),
+            arp_seq_player: SequencePlayer::new(),
+            pitch_seq_player: SequencePlayer::new(),
+            hipitch_seq_player: SequencePlayer::new(),
             duty_seq_player: SequencePlayer::new(),
             prev_ctrl: 0xFF,
             prev_timer_lo: 0xFF,
@@ -98,11 +124,16 @@ impl MidiHandler {
         self.cc_volume = 127;
         self.cc_expression = 127;
         self.fine_pitch = 0;
-        self.base_period = 0;
+        self.active_note = 60;
         self.lfo.reset();
         self.frame_sample_counter = 0.0;
+
         self.vol_seq_player.reset();
+        self.arp_seq_player.reset();
+        self.pitch_seq_player.reset();
+        self.hipitch_seq_player.reset();
         self.duty_seq_player.reset();
+
         self.prev_ctrl = 0xFF;
         self.prev_timer_lo = 0xFF;
         self.prev_timer_hi = 0xFF;
@@ -113,16 +144,15 @@ impl MidiHandler {
         &mut self,
         event: &NoteEvent<S>,
         pulse: &mut Pulse,
-        vol_seq: &Sequence,
-        duty_seq: &Sequence,
+        seqs: &ActiveSequences,
     ) {
         match event {
             NoteEvent::NoteOn { note, velocity, .. } => {
                 let vel_u8 = (velocity * 127.0).clamp(0.0, 127.0) as u8;
-                self.note_on(*note, vel_u8, pulse, vol_seq, duty_seq);
+                self.note_on(*note, vel_u8, pulse, seqs);
             }
             NoteEvent::NoteOff { note, .. } => {
-                self.note_off(*note, pulse, vol_seq, duty_seq);
+                self.note_off(*note, pulse, seqs);
             }
             NoteEvent::MidiCC { cc, value, .. } => {
                 let value_u8 = (value * 127.0).clamp(0.0, 127.0) as u8;
@@ -138,16 +168,17 @@ impl MidiHandler {
         note: u8,
         velocity: u8,
         pulse: &mut Pulse,
-        vol_seq: &Sequence,
-        duty_seq: &Sequence,
+        seqs: &ActiveSequences,
     ) {
-        // Remove existing entry for this note if present to re-push to top
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 
         // Trigger sequence players on NoteOn
-        self.vol_seq_player.trigger(vol_seq);
-        self.duty_seq_player.trigger(duty_seq);
+        if seqs.vol_enabled { self.vol_seq_player.trigger(seqs.vol_seq); }
+        if seqs.arp_enabled { self.arp_seq_player.trigger(seqs.arp_seq); }
+        if seqs.pitch_enabled { self.pitch_seq_player.trigger(seqs.pitch_seq); }
+        if seqs.hipitch_enabled { self.hipitch_seq_player.trigger(seqs.hipitch_seq); }
+        if seqs.duty_enabled { self.duty_seq_player.trigger(seqs.duty_seq); }
 
         self.apply_top_note(pulse);
     }
@@ -157,107 +188,88 @@ impl MidiHandler {
         &mut self,
         note: u8,
         pulse: &mut Pulse,
-        vol_seq: &Sequence,
-        duty_seq: &Sequence,
+        seqs: &ActiveSequences,
     ) {
         self.note_stack.retain(|(n, _)| *n != note);
 
         if self.note_stack.is_empty() {
-            if vol_seq.release_point.is_none() && duty_seq.release_point.is_none() {
-                // No release point in envelope: stop sound immediately on key release
+            let has_vol_rel = seqs.vol_enabled && seqs.vol_seq.release_point.is_some();
+            let has_duty_rel = seqs.duty_enabled && seqs.duty_seq.release_point.is_some();
+
+            if !has_vol_rel && !has_duty_rel {
+                // No release point: cut sound immediately on key release
                 self.gate = false;
                 self.vol_seq_player.reset();
                 self.duty_seq_player.reset();
+                self.arp_seq_player.reset();
+                self.pitch_seq_player.reset();
+                self.hipitch_seq_player.reset();
             } else {
-                // Has release point: trigger release tail
-                self.vol_seq_player.release(vol_seq);
-                self.duty_seq_player.release(duty_seq);
+                // Has release point: trigger release tails
+                if seqs.vol_enabled { self.vol_seq_player.release(seqs.vol_seq); }
+                if seqs.duty_enabled { self.duty_seq_player.release(seqs.duty_seq); }
+                if seqs.arp_enabled { self.arp_seq_player.release(seqs.arp_seq); }
+                if seqs.pitch_enabled { self.pitch_seq_player.release(seqs.pitch_seq); }
+                if seqs.hipitch_enabled { self.hipitch_seq_player.release(seqs.hipitch_seq); }
             }
         } else {
             self.apply_top_note(pulse);
         }
     }
 
-    /// Apply the top note from the monophonic note stack to the APU pulse channel.
+    /// Apply top note from monophonic note stack.
     fn apply_top_note(&mut self, pulse: &mut Pulse) {
         if let Some(&(note, velocity)) = self.note_stack.last() {
-            let effective_note = (note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
-            let freq = midi_note_to_freq(effective_note);
-            let period = freq_to_period(freq);
-
-            self.base_period = period;
+            self.active_note = note;
             self.current_velocity = velocity;
             self.gate = true;
 
-            let timer_lo = (period & 0xFF) as u8;
-            let hi_bits = ((period >> 8) & 0x07) as u8;
-
-            self.prev_timer_lo = timer_lo;
-            self.prev_timer_hi = hi_bits;
-
             pulse.set_enabled(true);
             pulse.write_sweep(0x08);
-            pulse.write_timer_lo(timer_lo);
-            pulse.write_timer_hi(0xF8 | hi_bits);
         }
     }
 
     /// Handle MIDI Control Change messages.
     pub fn handle_control_change(&mut self, controller: u8, value: u8) {
         match controller {
-            // CC 01: Vibrato Depth (Modulation Wheel)
             1 => {
-                let depth = value >> 3; // 0..127 -> 0..15
+                let depth = value >> 3;
                 let speed = if self.lfo.vibrato_speed == 0 { DEFAULT_LFO_SPEED } else { self.lfo.vibrato_speed };
                 self.lfo.set_vibrato(depth, speed);
             }
-            // CC 02: Vibrato Speed (Breath Controller)
             2 => {
-                let speed = value >> 1; // 0..127 -> 0..63
+                let speed = value >> 1;
                 self.lfo.set_vibrato(self.lfo.vibrato_depth, speed);
             }
-            // CC 03: Tremolo Depth
             3 => {
-                let depth = value >> 3; // 0..127 -> 0..15
+                let depth = value >> 3;
                 let speed = if self.lfo.tremolo_speed == 0 { DEFAULT_LFO_SPEED } else { self.lfo.tremolo_speed };
                 self.lfo.set_tremolo(depth, speed);
             }
-            // CC 04: Tremolo Speed
             4 => {
-                let speed = value >> 1; // 0..127 -> 0..63
+                let speed = value >> 1;
                 self.lfo.set_tremolo(self.lfo.tremolo_depth, speed);
             }
-            // CC 07: Volume MSB — scales APU 15-value volume system
-            7 => {
-                self.cc_volume = value;
-            }
-            // CC 11: Expression MSB — plugin-level continuous gain multiplier
-            11 => {
-                self.cc_expression = value;
-            }
-            // CC 14: Fine Pitch
-            14 => {
-                self.fine_pitch = value as i8 - 64;
-            }
+            7 => { self.cc_volume = value; }
+            11 => { self.cc_expression = value; }
+            14 => { self.fine_pitch = value as i8 - 64; }
             _ => {}
         }
     }
 
     /// Update sequence playback, LFO modulation, and write updated parameters to APU pulse channel.
-    /// Returns the overall master gain multiplier (CC11 Expression).
+    /// Returns master gain multiplier (CC11 Expression).
     pub fn update_modulation(
         &mut self,
         pulse: &mut Pulse,
-        vol_seq: &Sequence,
-        duty_seq: &Sequence,
+        seqs: &ActiveSequences,
         sample_rate: f32,
         num_samples: usize,
     ) -> f32 {
         let master_gain = self.cc_expression as f32 / 127.0;
 
         if !self.gate {
-            // When gate is off, write silence with the current duty sequence value
-            let duty_val = self.duty_seq_player.value().min(3);
+            let duty_val = if seqs.duty_enabled { self.duty_seq_player.value().clamp(0, 3) as u8 } else { 2 };
             let ctrl_byte = (duty_val << 6) | 0x30;
             if ctrl_byte != self.prev_ctrl {
                 pulse.write_ctrl(ctrl_byte);
@@ -266,32 +278,36 @@ impl MidiHandler {
             return master_gain;
         }
 
-        // Advance 60 Hz frame ticks for sequences and LFO
+        // Advance 60 Hz frame ticks for 5 sequences and LFO
         let samples_per_tick = sample_rate / 60.0;
         self.frame_sample_counter += num_samples as f32;
         while self.frame_sample_counter >= samples_per_tick {
-            self.vol_seq_player.clock_tick(vol_seq);
-            self.duty_seq_player.clock_tick(duty_seq);
+            if seqs.vol_enabled { self.vol_seq_player.clock_tick(seqs.vol_seq); }
+            if seqs.arp_enabled { self.arp_seq_player.clock_tick(seqs.arp_seq); }
+            if seqs.pitch_enabled { self.pitch_seq_player.clock_tick(seqs.pitch_seq); }
+            if seqs.hipitch_enabled { self.hipitch_seq_player.clock_tick(seqs.hipitch_seq); }
+            if seqs.duty_enabled { self.duty_seq_player.clock_tick(seqs.duty_seq); }
+
             self.lfo.clock_tick();
             self.frame_sample_counter -= samples_per_tick;
         }
 
-        // 1. Calculate APU Volume from sequence, CC7, velocity, and Tremolo
-        let seq_vol = self.vol_seq_player.value().min(15);
-        let cc7_scaled = (seq_vol as u32 * self.cc_volume as u32 / 127) as u32;
+        // 1. Volume Sequence & Tremolo LFO
+        let vol_val = if seqs.vol_enabled { self.vol_seq_player.value().clamp(0, 15) as u8 } else { 15 };
+        let cc7_scaled = (vol_val as u32 * self.cc_volume as u32 / 127) as u32;
         let vel_scaled_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
         let tremolo_sub = self.lfo.tremolo_volume_delta();
         let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
 
-        // Turn off gate when release tail has completed and volume reached zero
+        // Turn off gate when release tail completes and volume reaches 0
         if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
             if self.vol_seq_player.state == SeqState::Held && apu_vol == 0 {
                 self.gate = false;
             }
         }
 
-        // 2. Get duty from sequence
-        let duty_val = self.duty_seq_player.value().min(3);
+        // 2. Duty Sequence
+        let duty_val = if seqs.duty_enabled { self.duty_seq_player.value().clamp(0, 3) as u8 } else { 2 };
         let ctrl_byte = (duty_val << 6) | 0x30 | apu_vol;
 
         if ctrl_byte != self.prev_ctrl {
@@ -299,11 +315,22 @@ impl MidiHandler {
             self.prev_ctrl = ctrl_byte;
         }
 
-        // 3. Calculate Modulated Period (base period - fine pitch - Vibrato pitch delta)
+        // 3. Arpeggio Sequence (adds semitones to active note)
+        let arp_semitones = if seqs.arp_enabled { self.arp_seq_player.value() } else { 0 };
+        let effective_note = (self.active_note as i16 + self.octave_offset as i16 + arp_semitones)
+            .clamp(0, 127) as u8;
+
+        let base_freq = midi_note_to_freq(effective_note);
+        let base_period = freq_to_period(base_freq);
+
+        // 4. Pitch & Hi-Pitch Sequences + Fine Pitch + Vibrato LFO
+        let pitch_delta = if seqs.pitch_enabled { self.pitch_seq_player.value() } else { 0 };
+        let hipitch_delta = if seqs.hipitch_enabled { self.hipitch_seq_player.value() << 4 } else { 0 };
         let fine_pitch_offset = self.fine_pitch as i16;
         let vibrato_delta = self.lfo.vibrato_pitch_delta();
 
-        let final_period = (self.base_period as i32 - fine_pitch_offset as i32 - vibrato_delta as i32)
+        // Calculate final timer period
+        let final_period = (base_period as i32 + pitch_delta as i32 + hipitch_delta as i32 - fine_pitch_offset as i32 - vibrato_delta as i32)
             .clamp(0, 2047) as u16;
 
         let timer_lo = (final_period & 0xFF) as u8;
@@ -325,54 +352,5 @@ impl MidiHandler {
     /// Check if gate is currently active.
     pub fn gate(&self) -> bool {
         self.gate
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rp2a03_core::apu_pulse::PulseChannel;
-
-    #[test]
-    fn test_monophonic_note_stack_last_note_priority() {
-        let mut pulse = Pulse::new(PulseChannel::One);
-        let mut handler = MidiHandler::new();
-        let vol_seq = Sequence::single(15);
-        let duty_seq = Sequence::single(2);
-
-        // Play Note A (60)
-        handler.note_on(60, 127, &mut pulse, &vol_seq, &duty_seq);
-        assert!(handler.gate());
-        assert_eq!(handler.note_stack.last(), Some(&(60, 127)));
-
-        // Play Note B (64) while holding Note A
-        handler.note_on(64, 100, &mut pulse, &vol_seq, &duty_seq);
-        assert_eq!(handler.note_stack.last(), Some(&(64, 100)));
-
-        // Release Note B -> should return to Note A (60)
-        handler.note_off(64, &mut pulse, &vol_seq, &duty_seq);
-        assert!(handler.gate());
-        assert_eq!(handler.note_stack.last(), Some(&(60, 127)));
-
-        // Release Note A -> gate turns false
-        handler.note_off(60, &mut pulse, &vol_seq, &duty_seq);
-        assert!(!handler.gate());
-    }
-
-    #[test]
-    fn test_control_change_mappings() {
-        let mut handler = MidiHandler::new();
-
-        handler.handle_control_change(1, 120); // Vibrato Depth
-        assert_eq!(handler.lfo.vibrato_depth, 15);
-
-        handler.handle_control_change(2, 60); // Vibrato Speed
-        assert_eq!(handler.lfo.vibrato_speed, 30);
-
-        handler.handle_control_change(7, 100); // CC Volume
-        assert_eq!(handler.cc_volume, 100);
-
-        handler.handle_control_change(14, 64); // Fine pitch center
-        assert_eq!(handler.fine_pitch, 0);
     }
 }

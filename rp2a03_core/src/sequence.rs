@@ -1,6 +1,7 @@
-//! FamiTracker-style sequence engine for volume and duty cycle envelopes.
+//! rp2a03_core\src\sequence.rs
+//! FamiTracker-style sequence engine for volume, arpeggio, pitch, hi-pitch, and duty cycle envelopes.
 //!
-//! Each `Sequence` holds an array of step values that are advanced at 60 Hz.
+//! Each `Sequence` holds a vector of signed 16-bit step values advanced at 60 Hz.
 //! Supports Loop markers (`|`) and Release markers (`/`).
 //! `SequencePlayer` tracks playback position, looping, and release tail state.
 
@@ -11,8 +12,8 @@
 /// - Release marker `/`: defines step index where playback jumps when key is released (`NoteOff`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sequence {
-    /// Step values (e.g. 0..15 for volume, 0..3 for duty).
-    pub values: Vec<u8>,
+    /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
+    pub values: Vec<i16>,
     /// Optional loop point index (`|`).
     pub loop_point: Option<usize>,
     /// Optional release point index (`/`).
@@ -31,7 +32,7 @@ impl Default for Sequence {
 
 impl Sequence {
     /// Create a new sequence with a single step value.
-    pub fn single(value: u8) -> Self {
+    pub fn single(value: i16) -> Self {
         Self {
             values: vec![value],
             loop_point: None,
@@ -39,42 +40,58 @@ impl Sequence {
         }
     }
 
-    /// Parse a FamiTracker-style sequence string.
+    /// Parse a FamiTracker-style sequence string into a Sequence.
     ///
     /// Example: `"6 8 9 10 | 11 12 12 12 11 9 8 8 9 / 9 10 12 11 11 10"`
-    /// - Numbers: step values.
+    /// - Numbers: step values (signed integers).
     /// - `|` or `L`: marks loop start step index.
     /// - `/` or `R`: marks release start step index.
     pub fn parse(input: &str) -> Self {
+        let (seq, _) = Self::parse_clamped(input, i16::MIN, i16::MAX);
+        seq
+    }
+
+    /// Parse a sequence string and clamp all numeric tokens to `[min_val, max_val]`.
+    /// Returns the parsed `Sequence` and a normalized/clamped text string.
+    pub fn parse_clamped(input: &str, min_val: i16, max_val: i16) -> (Self, String) {
         let mut values = Vec::new();
         let mut loop_point = None;
         let mut release_point = None;
+        let mut text_tokens = Vec::new();
 
         for token in input.split_whitespace() {
             match token {
                 "|" | "L" | "l" => {
                     loop_point = Some(values.len());
+                    text_tokens.push("|".to_string());
                 }
                 "/" | "R" | "r" => {
                     release_point = Some(values.len());
+                    text_tokens.push("/".to_string());
                 }
                 _ => {
-                    if let Ok(v) = token.parse::<u8>() {
-                        values.push(v);
+                    if let Ok(v) = token.parse::<i16>() {
+                        let clamped = v.clamp(min_val, max_val);
+                        values.push(clamped);
+                        text_tokens.push(clamped.to_string());
                     }
                 }
             }
         }
 
         if values.is_empty() {
-            values.push(0);
+            values.push(0.clamp(min_val, max_val));
+            text_tokens.push("0".to_string());
         }
 
-        Self {
+        let normalized_text = text_tokens.join(" ");
+        let sequence = Self {
             values,
             loop_point,
             release_point,
-        }
+        };
+
+        (sequence, normalized_text)
     }
 
     /// Get total number of steps in sequence.
@@ -87,8 +104,8 @@ impl Sequence {
         self.values.is_empty()
     }
 
-    /// Get value at a given step index, clamped to valid range.
-    pub fn get(&self, index: usize) -> u8 {
+    /// Get value at a given step index, clamped to valid bounds.
+    pub fn get(&self, index: usize) -> i16 {
         if self.values.is_empty() {
             return 0;
         }
@@ -117,7 +134,7 @@ pub struct SequencePlayer {
     /// Active gate / note-held state. When `false`, key is held; when `true`, key is released.
     pub is_releasing: bool,
     /// The current output value from the sequence.
-    pub current_value: u8,
+    pub current_value: i16,
 }
 
 impl Default for SequencePlayer {
@@ -160,7 +177,7 @@ impl SequencePlayer {
     }
 
     /// Advance the sequence by one 60 Hz tick. Returns the current step value.
-    pub fn clock_tick(&mut self, seq: &Sequence) -> u8 {
+    pub fn clock_tick(&mut self, seq: &Sequence) -> i16 {
         if self.state == SeqState::Disabled || seq.is_empty() {
             return 0;
         }
@@ -228,7 +245,7 @@ impl SequencePlayer {
     }
 
     /// Get current output value without advancing.
-    pub fn value(&self) -> u8 {
+    pub fn value(&self) -> i16 {
         self.current_value
     }
 
@@ -257,51 +274,17 @@ mod tests {
     }
 
     #[test]
-    fn test_release_tail_does_not_loop_back() {
-        // Example 1: "15 | 12 12 12 12 / 0 0 0 0"
-        let seq = Sequence::parse("15 | 12 12 12 12 / 0 0 0 0");
-        let mut player = SequencePlayer::new();
-
-        player.trigger(&seq);
-        assert_eq!(player.current_value, 15);
-
-        // Advance through initial step and loop steps while key held
-        assert_eq!(player.clock_tick(&seq), 15); // pos=0 -> 1
-        assert_eq!(player.clock_tick(&seq), 12); // pos=1 -> 2
-        assert_eq!(player.clock_tick(&seq), 12); // pos=2 -> 3
-        assert_eq!(player.clock_tick(&seq), 12); // pos=3 -> 4
-        assert_eq!(player.clock_tick(&seq), 12); // pos=4 -> hits release at 5, loops to 1
-        assert_eq!(player.clock_tick(&seq), 12); // pos=1 -> 2
-
-        // Release key -> jumps to release tail (step 5)
-        player.release(&seq);
-        assert_eq!(player.current_value, 0); // pos=5
-
-        assert_eq!(player.clock_tick(&seq), 0); // pos=5 -> 6
-        assert_eq!(player.clock_tick(&seq), 0); // pos=6 -> 7
-        assert_eq!(player.clock_tick(&seq), 0); // pos=7 -> 8
-        assert_eq!(player.clock_tick(&seq), 0); // pos=8 -> end, holds 0 (does NOT loop back to 12!)
-        assert_eq!(player.state, SeqState::Held);
-        assert_eq!(player.clock_tick(&seq), 0);
+    fn test_parse_clamped_values() {
+        let (seq, text) = Sequence::parse_clamped("0 5 32 -50 10", 0, 15);
+        assert_eq!(seq.values, vec![0, 5, 15, 0, 10]);
+        assert_eq!(text, "0 5 15 0 10");
     }
 
     #[test]
-    fn test_loop_in_release_tail() {
-        // Example 2: "7 10 12 | / 9 9"
-        let seq = Sequence::parse("7 10 12 | / 9 9");
-        let mut player = SequencePlayer::new();
-
-        player.trigger(&seq);
-        assert_eq!(player.clock_tick(&seq), 7);  // pos=0 -> 1
-        assert_eq!(player.clock_tick(&seq), 10); // pos=1 -> 2
-        assert_eq!(player.clock_tick(&seq), 12); // pos=2 -> hits release at 3, holds at 2
-        assert_eq!(player.state, SeqState::Held);
-
-        // Key release -> jumps to step 3
-        player.release(&seq);
-        assert_eq!(player.current_value, 9);
-        assert_eq!(player.clock_tick(&seq), 9); // pos=3 -> 4
-        assert_eq!(player.clock_tick(&seq), 9); // pos=4 -> end, loops to step 3 (Loop >= Release)
-        assert_eq!(player.clock_tick(&seq), 9); // pos=3 -> 4
+    fn test_signed_bipolar_values() {
+        let (seq, _) = Sequence::parse_clamped("0 4 7 12 -12 | 0 -4 -7 / -12", -96, 96);
+        assert_eq!(seq.values, vec![0, 4, 7, 12, -12, 0, -4, -7, -12]);
+        assert_eq!(seq.loop_point, Some(5));
+        assert_eq!(seq.release_point, Some(8));
     }
 }

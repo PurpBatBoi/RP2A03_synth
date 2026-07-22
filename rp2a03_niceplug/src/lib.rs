@@ -1,6 +1,7 @@
+//! rp2a03_niceplug\src\lib.rs
 mod midi;
 
-use midi::MidiHandler;
+use midi::{ActiveSequences, MidiHandler};
 use nice_plug::prelude::*;
 use egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use nice_plug_egui::{create_egui_editor, EguiSettings, EguiState};
@@ -15,24 +16,64 @@ use rp2a03_core::NTSC_CPU_CLOCK;
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
 
-/// Shared thread-safe container for parsed volume and duty sequences.
+/// Shared thread-safe state holding sequence definitions and editor configuration.
 #[derive(Debug, Clone)]
 pub struct SharedSequences {
-    pub vol_seq: Sequence,
-    pub duty_seq: Sequence,
+    pub selected_tab: usize, // 0=Volume, 1=Arpeggio, 2=Pitch, 3=Hi-Pitch, 4=Duty
+
+    // Text representation of each sequence
     pub vol_text: String,
+    pub arp_text: String,
+    pub pitch_text: String,
+    pub hipitch_text: String,
     pub duty_text: String,
+
+    // Parsed Sequence objects
+    pub vol_seq: Sequence,
+    pub arp_seq: Sequence,
+    pub pitch_seq: Sequence,
+    pub hipitch_seq: Sequence,
+    pub duty_seq: Sequence,
+
+    // Enabled flags
+    pub vol_enabled: bool,
+    pub arp_enabled: bool,
+    pub pitch_enabled: bool,
+    pub hipitch_enabled: bool,
+    pub duty_enabled: bool,
 }
 
 impl Default for SharedSequences {
     fn default() -> Self {
         let vol_text = "15".to_string();
+        let arp_text = "0".to_string();
+        let pitch_text = "0".to_string();
+        let hipitch_text = "0".to_string();
         let duty_text = "2".to_string();
+
+        let (vol_seq, _) = Sequence::parse_clamped(&vol_text, 0, 15);
+        let (arp_seq, _) = Sequence::parse_clamped(&arp_text, -96, 96);
+        let (pitch_seq, _) = Sequence::parse_clamped(&pitch_text, -128, 127);
+        let (hipitch_seq, _) = Sequence::parse_clamped(&hipitch_text, -64, 63);
+        let (duty_seq, _) = Sequence::parse_clamped(&duty_text, 0, 3);
+
         Self {
-            vol_seq: Sequence::parse(&vol_text),
-            duty_seq: Sequence::parse(&duty_text),
+            selected_tab: 0,
             vol_text,
+            arp_text,
+            pitch_text,
+            hipitch_text,
             duty_text,
+            vol_seq,
+            arp_seq,
+            pitch_seq,
+            hipitch_seq,
+            duty_seq,
+            vol_enabled: true,
+            arp_enabled: false,
+            pitch_enabled: false,
+            hipitch_enabled: false,
+            duty_enabled: true,
         }
     }
 }
@@ -75,13 +116,13 @@ impl Default for Rp2a03Plugin {
 impl Default for Rp2a03Params {
     fn default() -> Self {
         Self {
-            egui_state: EguiState::from_size(520, 480),
+            egui_state: EguiState::from_size(680, 420),
         }
     }
 }
 
 impl Rp2a03Plugin {
-    fn generate_samples(&mut self, output: &mut [f32], vol_seq: &Sequence, duty_seq: &Sequence) {
+    fn generate_samples(&mut self, output: &mut [f32], seqs: &ActiveSequences) {
         let sample_count = output.len() as u32;
         if sample_count == 0 {
             return;
@@ -91,8 +132,7 @@ impl Rp2a03Plugin {
 
         let master_gain = self.midi_handler.update_modulation(
             &mut self.pulse,
-            vol_seq,
-            duty_seq,
+            seqs,
             self.sample_rate,
             sample_count as usize,
         );
@@ -165,54 +205,136 @@ impl Plugin for Rp2a03Plugin {
             move |ui, _setter, _queue, _state| {
                 let mut data = shared.lock();
 
-                ui.vertical(|ui| {
-                    ui.add_space(8.0);
-                    ui.heading("RP2A03 Sequence Editor");
-                    ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    // --- Left Column: Instrument Settings (Tab Selector) ---
+                    ui.vertical(|ui| {
+                        ui.set_width(180.0);
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new("Instrument settings").strong());
+                            ui.add_space(6.0);
 
-                    // --- Volume Sequence Section ---
-                    ui.group(|ui| {
-                        ui.label(egui::RichText::new("Volume Sequence").strong());
-                        ui.add_space(4.0);
+                            egui::Grid::new("seq_type_grid")
+                                .num_columns(3)
+                                .spacing([6.0, 6.0])
+                                .show(ui, |ui| {
+                                    ui.label("");
+                                    ui.label("#");
+                                    ui.label("Effect name");
+                                    ui.end_row();
 
-                        // Render Bar Graph Visualization for Volume
-                        draw_envelope_bar_graph(ui, &data.vol_seq, 15, "Volume");
+                                    let seq_types = [
+                                        ("Volume", 0),
+                                        ("Arpeggio", 1),
+                                        ("Pitch", 2),
+                                        ("Hi-pitch", 3),
+                                        ("Duty / Noise", 4),
+                                    ];
 
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.label("Sequence:");
-                            let edit = ui.add(
-                                egui::TextEdit::singleline(&mut data.vol_text)
-                                    .desired_width(360.0)
-                                    .font(egui::TextStyle::Monospace),
-                            );
-                            if edit.changed() {
-                                data.vol_seq = Sequence::parse(&data.vol_text);
-                            }
+                                    for (name, idx) in seq_types {
+                                        let enabled = match idx {
+                                            0 => &mut data.vol_enabled,
+                                            1 => &mut data.arp_enabled,
+                                            2 => &mut data.pitch_enabled,
+                                            3 => &mut data.hipitch_enabled,
+                                            _ => &mut data.duty_enabled,
+                                        };
+
+                                        ui.checkbox(enabled, "");
+                                        ui.label("0");
+
+                                        let is_selected = data.selected_tab == idx;
+                                        if ui.selectable_label(is_selected, name).clicked() {
+                                            data.selected_tab = idx;
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
                         });
                     });
 
-                    ui.add_space(12.0);
+                    ui.add_space(10.0);
 
-                    // --- Duty Sequence Section ---
-                    ui.group(|ui| {
-                        ui.label(egui::RichText::new("Duty Cycle Sequence").strong());
-                        ui.add_space(4.0);
+                    // --- Right Column: Active Sequence Editor ---
+                    ui.vertical(|ui| {
+                        let tab = data.selected_tab;
+                        let (title, min_val, max_val) = match tab {
+                            0 => ("Volume", 0i16, 15i16),
+                            1 => ("Arpeggio", -96i16, 96i16),
+                            2 => ("Pitch", -128i16, 127i16),
+                            3 => ("Hi-pitch", -64i16, 63i16),
+                            _ => ("Duty / Noise", 0i16, 3i16),
+                        };
 
-                        // Render Bar Graph Visualization for Duty
-                        draw_envelope_bar_graph(ui, &data.duty_seq, 3, "Duty");
+                        let (text_ptr, seq_ptr) = match tab {
+                            0 => (&mut data.vol_text, &mut data.vol_seq),
+                            1 => (&mut data.arp_text, &mut data.arp_seq),
+                            2 => (&mut data.pitch_text, &mut data.pitch_seq),
+                            3 => (&mut data.hipitch_text, &mut data.hipitch_seq),
+                            _ => (&mut data.duty_text, &mut data.duty_seq),
+                        };
 
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.label("Sequence:");
-                            let edit = ui.add(
-                                egui::TextEdit::singleline(&mut data.duty_text)
-                                    .desired_width(360.0)
-                                    .font(egui::TextStyle::Monospace),
-                            );
-                            if edit.changed() {
-                                data.duty_seq = Sequence::parse(&data.duty_text);
-                            }
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new(format!("Sequence editor - {}", title)).strong());
+                            ui.add_space(4.0);
+
+                            // Draw Envelope Bar Graph
+                            draw_envelope_bar_graph(ui, seq_ptr, min_val, max_val);
+
+                            ui.add_space(6.0);
+
+                            // Size +/- Controls
+                            ui.horizontal(|ui| {
+                                ui.label("Size:");
+
+                                let cur_len = seq_ptr.len();
+                                if ui.button("-").clicked() && cur_len > 1 {
+                                    let mut tokens: Vec<&str> = text_ptr.split_whitespace().collect();
+                                    // Remove last numeric token
+                                    for i in (0..tokens.len()).rev() {
+                                        if tokens[i].parse::<i16>().is_ok() {
+                                            tokens.remove(i);
+                                            break;
+                                        }
+                                    }
+                                    *text_ptr = tokens.join(" ");
+                                    let (parsed, norm) = Sequence::parse_clamped(text_ptr, min_val, max_val);
+                                    *seq_ptr = parsed;
+                                    *text_ptr = norm;
+                                }
+
+                                ui.label(egui::RichText::new(format!("{}", cur_len)).strong());
+
+                                if ui.button("+").clicked() {
+                                    text_ptr.push_str(" 0");
+                                    let (parsed, norm) = Sequence::parse_clamped(text_ptr, min_val, max_val);
+                                    *seq_ptr = parsed;
+                                    *text_ptr = norm;
+                                }
+
+                                ui.add_space(15.0);
+                                let duration_ms = (cur_len * 1000) / 60;
+                                ui.label(format!("{} ms", duration_ms));
+                            });
+
+                            ui.add_space(6.0);
+
+                            // Text Editor Input Box with Auto-Clamping
+                            ui.horizontal(|ui| {
+                                let edit = ui.add(
+                                    egui::TextEdit::singleline(text_ptr)
+                                        .desired_width(420.0)
+                                        .font(egui::TextStyle::Monospace),
+                                );
+
+                                if edit.changed() {
+                                    let (parsed, norm) = Sequence::parse_clamped(text_ptr, min_val, max_val);
+                                    *seq_ptr = parsed;
+                                    // Update text if clamped
+                                    if *text_ptr != norm && !edit.has_focus() {
+                                        *text_ptr = norm;
+                                    }
+                                }
+                            });
                         });
                     });
                 });
@@ -258,10 +380,21 @@ impl Plugin for Rp2a03Plugin {
         let mut mono_buf = vec![0.0f32; num_samples];
 
         // Fetch current active sequences from GUI thread state
-        let (vol_seq, duty_seq) = {
+        let active_seqs = {
             let data = self.shared_sequences.lock();
-            (data.vol_seq.clone(), data.duty_seq.clone())
-        };
+            ActiveSequences {
+                vol_seq: data.vol_seq.clone(),
+                vol_enabled: data.vol_enabled,
+                arp_seq: data.arp_seq.clone(),
+                arp_enabled: data.arp_enabled,
+                pitch_seq: data.pitch_seq.clone(),
+                pitch_enabled: data.pitch_enabled,
+                hipitch_seq: data.hipitch_seq.clone(),
+                hipitch_enabled: data.hipitch_enabled,
+                duty_seq: data.duty_seq.clone(),
+                duty_enabled: data.duty_enabled,
+            }
+        }; // MutexGuard is dropped here
 
         loop {
             let chunk_end = if let Some(ref event) = next_event {
@@ -271,7 +404,7 @@ impl Plugin for Rp2a03Plugin {
             };
 
             if chunk_end > sample_pos {
-                self.generate_samples(&mut mono_buf[sample_pos..chunk_end], &vol_seq, &duty_seq);
+                self.generate_samples(&mut mono_buf[sample_pos..chunk_end], &active_seqs);
                 sample_pos = chunk_end;
             }
 
@@ -284,12 +417,12 @@ impl Plugin for Rp2a03Plugin {
                     next_event = Some(event);
                     break;
                 }
-                self.midi_handler.handle_event(&event, &mut self.pulse, &vol_seq, &duty_seq);
+                self.midi_handler.handle_event(&event, &mut self.pulse, &active_seqs);
                 next_event = context.next_event();
             }
 
             if next_event.is_none() && sample_pos < num_samples {
-                self.generate_samples(&mut mono_buf[sample_pos..num_samples], &vol_seq, &duty_seq);
+                self.generate_samples(&mut mono_buf[sample_pos..num_samples], &active_seqs);
                 break;
             }
         }
@@ -304,10 +437,9 @@ impl Plugin for Rp2a03Plugin {
     }
 }
 
-/// Renders a FamiTracker-style envelope bar graph with step bars,
-/// cyan Loop region header/bars (`|`), and purple Release region header/bars (`/`).
-fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _label: &str) {
-    let desired_size = Vec2::new(480.0, 120.0);
+/// Renders a FamiTracker-style envelope bar graph with unipolar and bipolar support.
+fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, min_val: i16, max_val: i16) {
+    let desired_size = Vec2::new(450.0, 220.0);
     let (rect, _response) = ui.allocate_at_least(desired_size, Sense::hover());
 
     let painter = ui.painter_at(rect);
@@ -332,24 +464,34 @@ fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _labe
     );
 
     let step_width = graph_rect.width() / num_steps as f32;
-
     let loop_idx = seq.loop_point.unwrap_or(usize::MAX);
     let rel_idx = seq.release_point.unwrap_or(usize::MAX);
 
-    // Render bars
+    let is_bipolar = min_val < 0;
+
+    // Calculate zero axis Y position
+    let zero_y = if is_bipolar {
+        let range = (max_val - min_val) as f32;
+        let norm_zero = (0 - min_val) as f32 / range.max(1.0);
+        graph_rect.max.y - (norm_zero * graph_rect.height())
+    } else {
+        graph_rect.max.y
+    };
+
+    // Draw zero line for bipolar graphs
+    if is_bipolar {
+        painter.line_segment(
+            [Pos2::new(graph_rect.min.x, zero_y), Pos2::new(graph_rect.max.x, zero_y)],
+            Stroke::new(1.0f32, Color32::from_rgb(60, 60, 60)),
+        );
+    }
+
+    // Render step columns & bars
     for i in 0..num_steps {
-        let val = seq.values[i].min(max_val);
-        let norm_val = val as f32 / max_val.max(1) as f32;
+        let val = seq.values[i].clamp(min_val, max_val);
 
         let bar_x_min = graph_rect.min.x + i as f32 * step_width;
         let bar_x_max = bar_x_min + step_width - 1.0;
-        let bar_y_max = graph_rect.max.y;
-        let bar_y_min = graph_rect.max.y - (norm_val * graph_rect.height());
-
-        let bar_rect = Rect::from_min_max(
-            Pos2::new(bar_x_min, bar_y_min),
-            Pos2::new(bar_x_max, bar_y_max),
-        );
 
         // Step grid column background
         let col_rect = Rect::from_min_max(
@@ -363,11 +505,27 @@ fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _labe
         };
         painter.rect_filled(col_rect, 0.0, bg_color);
 
+        // Calculate bar geometry relative to zero axis
+        let bar_rect = if is_bipolar {
+            let range = (max_val - min_val) as f32;
+            let norm_val = (val - min_val) as f32 / range.max(1.0);
+            let bar_y = graph_rect.max.y - (norm_val * graph_rect.height());
+            if val >= 0 {
+                Rect::from_min_max(Pos2::new(bar_x_min, bar_y), Pos2::new(bar_x_max, zero_y))
+            } else {
+                Rect::from_min_max(Pos2::new(bar_x_min, zero_y), Pos2::new(bar_x_max, bar_y))
+            }
+        } else {
+            let norm_val = val as f32 / max_val.max(1) as f32;
+            let bar_y_min = graph_rect.max.y - (norm_val * graph_rect.height());
+            Rect::from_min_max(Pos2::new(bar_x_min, bar_y_min), Pos2::new(bar_x_max, graph_rect.max.y))
+        };
+
         let is_loop_release_mode = loop_idx < num_steps && rel_idx == loop_idx;
 
-        // Bar color based on region (yellow for combined Loop/Release, cyan for Loop, purple for Release, white/gray for normal)
+        // Bar color based on region
         let bar_color = if is_loop_release_mode && i >= loop_idx {
-            Color32::from_rgb(230, 190, 40) // Yellow for combined Loop, Release
+            Color32::from_rgb(230, 190, 40) // Yellow for Loop, Release mode
         } else if i >= rel_idx {
             Color32::from_rgb(200, 120, 220) // Purple release region
         } else if i >= loop_idx {
@@ -376,7 +534,7 @@ fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _labe
             Color32::from_rgb(220, 220, 220) // Normal region
         };
 
-        if norm_val > 0.0 {
+        if val != 0 || !is_bipolar {
             painter.rect_filled(bar_rect, 1.0, bar_color);
         }
     }
@@ -393,7 +551,7 @@ fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _labe
             Pos2::new(x_min, header_rect.min.y),
             Pos2::new(x_max, header_rect.max.y),
         );
-        painter.rect_filled(lr_rect, 0.0, Color32::from_rgb(180, 140, 20)); // Yellow header
+        painter.rect_filled(lr_rect, 0.0, Color32::from_rgb(180, 140, 20));
         painter.text(
             Pos2::new(x_min + 4.0, header_rect.min.y + 2.0),
             egui::Align2::LEFT_TOP,
@@ -402,11 +560,7 @@ fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _labe
             Color32::WHITE,
         );
     } else {
-        let loop_end = if rel_idx < usize::MAX {
-            rel_idx
-        } else {
-            num_steps
-        };
+        let loop_end = if rel_idx < usize::MAX { rel_idx } else { num_steps };
 
         if loop_idx < num_steps {
             let x_min = header_rect.min.x + loop_idx as f32 * step_width;
@@ -443,15 +597,20 @@ fn draw_envelope_bar_graph(ui: &mut egui::Ui, seq: &Sequence, max_val: u8, _labe
         }
     }
 
-    // Print step count and duration info below
-    let duration_ms = (num_steps * 1000) / 60;
-    let info_str = format!("Size: {} steps  ({} ms)", num_steps, duration_ms);
+    // Min / Max labels
     painter.text(
-        Pos2::new(rect.min.x + 6.0, rect.min.y + 4.0),
+        Pos2::new(graph_rect.min.x + 6.0, graph_rect.min.y + 2.0),
         egui::Align2::LEFT_TOP,
-        info_str,
+        format!("{}", max_val),
         egui::FontId::proportional(11.0),
-        Color32::from_rgb(180, 180, 180),
+        Color32::from_rgb(160, 160, 160),
+    );
+    painter.text(
+        Pos2::new(graph_rect.min.x + 6.0, graph_rect.max.y - 14.0),
+        egui::Align2::LEFT_TOP,
+        format!("{}", min_val),
+        egui::FontId::proportional(11.0),
+        Color32::from_rgb(160, 160, 160),
     );
 }
 
