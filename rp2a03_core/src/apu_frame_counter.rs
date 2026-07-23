@@ -1,6 +1,6 @@
 //! rp2a03_core\src\apu_frame_counter.rs
-//! 
-//! 
+//!
+//!
 //! Adapted from TetaNES: https://github.com/lukexor/tetanes/blob/main/tetanes-core/src/apu/frame_counter.rs
 //!
 //! APU Frame Counter implementation (NTSC only).

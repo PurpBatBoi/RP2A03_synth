@@ -9,7 +9,10 @@ pub struct ApuTimer {
 
 impl ApuTimer {
     pub fn new(period: u16) -> Self {
-        Self {period, counter: period}
+        Self {
+            period,
+            counter: period,
+        }
     }
 
     pub fn counter(&self) -> u16 {
@@ -47,7 +50,7 @@ mod tests {
     fn timer_starts_loaded() {
         let timer = ApuTimer::new(4);
         assert_eq!(timer.period(), 4);
-        assert_eq!(timer.counter(),4);
+        assert_eq!(timer.counter(), 4);
     }
 
     #[test]
@@ -63,7 +66,7 @@ mod tests {
     fn timer_does_not_expire_early() {
         let mut timer = ApuTimer::new(4);
 
-        for _ in 0..4{
+        for _ in 0..4 {
             assert!(!timer.clock());
         }
     }
@@ -119,15 +122,7 @@ mod tests {
     fn timer_output_sequence() {
         let mut timer = ApuTimer::new(4);
 
-        let expected = [
-            false,
-            false,
-            false,
-            false,
-            true,
-            false,
-            false,
-        ];
+        let expected = [false, false, false, false, true, false, false];
 
         for expected_value in expected {
             assert_eq!(timer.clock(), expected_value);

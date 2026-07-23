@@ -1,5 +1,5 @@
 //! rp2a03_core\src\apu_length_counter.rs
-//! 
+//!
 //! Adapted from TetaNES: https://github.com/lukexor/tetanes/blob/main/tetanes-core/src/apu/length_counter.rs
 //! APU Length Counter implementation.
 //! See: <https://www.nesdev.org/wiki/APU_Length_Counter>
@@ -16,8 +16,8 @@ pub struct LengthCounter {
 
 impl LengthCounter {
     const LENGTH_TABLE: [u8; 32] = [
-        10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14,
-        12, 16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30,
+        10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96,
+        22, 192, 24, 72, 26, 16, 28, 32, 30,
     ];
 
     pub fn new() -> Self {

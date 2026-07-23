@@ -119,11 +119,7 @@ impl SoftwareLfo {
         let table_idx = ((self.vibrato_depth as usize) << 4) | (idx as usize);
         let magnitude = FT_VIBRATO_TABLE[table_idx.min(255)] as i16;
 
-        if negate {
-            -magnitude
-        } else {
-            magnitude
-        }
+        if negate { -magnitude } else { magnitude }
     }
 
     /// Calculate the current Tremolo volume reduction delta (0..15).
@@ -164,12 +160,20 @@ mod tests {
         // Phase 1 (0..15): positive delta
         lfo.vibrato_pos = 8;
         let delta_p1 = lfo.vibrato_pitch_delta();
-        assert!(delta_p1 > 0, "Phase 1 should yield positive pitch delta, got {}", delta_p1);
+        assert!(
+            delta_p1 > 0,
+            "Phase 1 should yield positive pitch delta, got {}",
+            delta_p1
+        );
 
         // Phase 3 (32..47): negative delta
         lfo.vibrato_pos = 40;
         let delta_p3 = lfo.vibrato_pitch_delta();
-        assert!(delta_p3 < 0, "Phase 3 should yield negative pitch delta, got {}", delta_p3);
+        assert!(
+            delta_p3 < 0,
+            "Phase 3 should yield negative pitch delta, got {}",
+            delta_p3
+        );
         assert_eq!(delta_p3, -delta_p1);
     }
 
@@ -181,7 +185,11 @@ mod tests {
         for pos in 0..64 {
             lfo.tremolo_pos = pos;
             let vol_delta = lfo.tremolo_volume_delta();
-            assert!(vol_delta <= 63, "Tremolo volume delta should be within 0..63, got {}", vol_delta);
+            assert!(
+                vol_delta <= 63,
+                "Tremolo volume delta should be within 0..63, got {}",
+                vol_delta
+            );
         }
     }
 }

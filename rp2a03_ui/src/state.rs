@@ -58,7 +58,7 @@ impl Default for SharedSequences {
             selected_tab: 0,
             sequence_indices: [0; SEQUENCE_TYPE_COUNT],
             sequence_banks: std::array::from_fn(|_| SequenceBank::default()),
-            enabled: [true, false, false, false, true],
+            enabled: [false; SEQUENCE_TYPE_COUNT],
         }
     }
 }
@@ -118,7 +118,9 @@ mod tests {
         assert_eq!(state.selected_sequence_index(0), 0);
         assert_eq!(state.selected_sequence(0).len(), 0);
         assert_eq!(state.selected_sequence(4).len(), 0);
-        assert!(!state.sequence_enabled(1));
+        for tab in 0..SEQUENCE_TYPE_COUNT {
+            assert!(!state.sequence_enabled(tab));
+        }
     }
 
     #[test]

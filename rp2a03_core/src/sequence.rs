@@ -237,9 +237,7 @@ impl SequencePlayer {
 
                 self.current_value
             }
-            SeqState::Held => {
-                self.current_value
-            }
+            SeqState::Held => self.current_value,
             SeqState::Disabled => 0,
         }
     }

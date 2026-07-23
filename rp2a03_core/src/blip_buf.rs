@@ -1,5 +1,5 @@
 //! rp2a03_core\src\blip_buf.rs
-//! 
+//!
 //! blip_buf is a small waveform synthesis library meant for use in classic video game
 //! sound chip emulation. It greatly simplifies sound chip emulation code by handling
 //! all the details of resampling. The emulator merely sets the input clock rate and output
@@ -18,7 +18,7 @@
 //! This library is a very thin wrapper on the original C library, found here: https://code.google.com/p/blip-buf/
 //!
 //! [BLEP]: http://www.cs.cmu.edu/~eli/L/icmc01/hardsync.html
-//! 
+//!
 //! Taken from https://github.com/mvdnes/blip_buf-rs/tree/main with some small changes.
 
 #![warn(missing_docs)]
@@ -116,11 +116,11 @@ impl BlipBuf {
         let time = clock_time as fixed_t;
         let fixed = ((time * self.factor + self.offset) >> PRE_SHIFT) as usize;
         let out_index = self.avail + (fixed >> FRAC_BITS);
-        
+
         const PHASE_SHIFT: usize = FRAC_BITS - PHASE_BITS;
         let phase = fixed >> PHASE_SHIFT & (PHASE_COUNT - 1);
         let phase_rev = PHASE_COUNT - phase;
-        
+
         let interp = (fixed >> (PHASE_SHIFT - DELTA_BITS) & (DELTA_UNIT - 1)) as i32;
         let delta2 = (delta * interp) >> DELTA_BITS;
         let delta1 = delta - delta2;
@@ -131,10 +131,12 @@ impl BlipBuf {
         );
 
         for i in 0..8 {
-            self.samples[out_index + i] += BL_STEP[phase][i]*delta1 + BL_STEP[phase+1][i]*delta2;
+            self.samples[out_index + i] +=
+                BL_STEP[phase][i] * delta1 + BL_STEP[phase + 1][i] * delta2;
         }
         for i in 0..8 {
-            self.samples[out_index + 8 + i] += BL_STEP[phase_rev][7-i]*delta1 + BL_STEP[phase_rev-1][7-i] * delta2;
+            self.samples[out_index + 8 + i] +=
+                BL_STEP[phase_rev][7 - i] * delta1 + BL_STEP[phase_rev - 1][7 - i] * delta2;
         }
     }
 
@@ -163,7 +165,9 @@ impl BlipBuf {
         assert!(self.avail + sample_count as usize <= self.samples.len()); // TODO
 
         let needed = sample_count as fixed_t * TIME_UNIT;
-        if needed < self.offset { return 0; }
+        if needed < self.offset {
+            return 0;
+        }
 
         ((needed - self.offset + self.factor - 1) / self.factor) as u32
     }
@@ -192,7 +196,7 @@ impl BlipBuf {
         // We emulate the following:
         //    memmove( &buf [0], &buf [count], remain * sizeof buf [0] );
         //    memset( &buf [remain], 0, count * sizeof buf [0] );
-        self.samples.copy_within(count..count+remain, 0);
+        self.samples.copy_within(count..count + remain, 0);
         self.samples[remain..remain + count].fill(0);
     }
 

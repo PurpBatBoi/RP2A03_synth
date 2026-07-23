@@ -1,5 +1,5 @@
 //! rp2a03_core\src\apu_envelope.rs
-//! 
+//!
 //! Code adapted from TetaNES code: https://github.com/lukexor/tetanes/blob/main/tetanes-core/src/apu/envelope.rs
 //!
 //! APU Envelope implementation.
