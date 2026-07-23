@@ -40,6 +40,33 @@ pub struct ActiveSequences {
     pub duty_enabled: bool,
 }
 
+/// Host-automatable controls that mirror the corresponding MIDI CC functions.
+///
+/// They are synchronized only when their parameter value changes, allowing MIDI
+/// CC messages to continue controlling a value until host automation changes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostAutomationControls {
+    pub vibrato_depth: u8,
+    pub vibrato_speed: u8,
+    pub tremolo_depth: u8,
+    pub tremolo_speed: u8,
+    pub hardware_volume: u8,
+    pub fine_pitch: i8,
+}
+
+impl Default for HostAutomationControls {
+    fn default() -> Self {
+        Self {
+            vibrato_depth: 0,
+            vibrato_speed: DEFAULT_LFO_SPEED,
+            tremolo_depth: 0,
+            tremolo_speed: DEFAULT_LFO_SPEED,
+            hardware_volume: 15,
+            fine_pitch: 0,
+        }
+    }
+}
+
 /// Manages incoming MIDI events, note stack, velocity, CCs, and modulation.
 #[derive(Debug, Clone)]
 pub struct MidiHandler {
@@ -57,6 +84,10 @@ pub struct MidiHandler {
     pub cc_expression: u8,
     /// MIDI CC 14 (Fine pitch offset, -64..+63 semitone cents offset)
     pub fine_pitch: i8,
+    /// Host-controlled 4-bit APU volume, applied before MIDI CC 7 and velocity.
+    pub hardware_volume: u8,
+    /// Last host parameter values applied to this handler.
+    last_host_controls: Option<HostAutomationControls>,
     /// Active base MIDI note
     pub active_note: u8,
     /// Software LFO engine from `rp2a03_core`
@@ -89,6 +120,8 @@ impl Default for MidiHandler {
             cc_volume: 127,
             cc_expression: 127,
             fine_pitch: 0,
+            hardware_volume: 15,
+            last_host_controls: None,
             active_note: 60,
             lfo: SoftwareLfo::new(),
             frame_sample_counter: 0.0,
@@ -118,6 +151,8 @@ impl MidiHandler {
         self.cc_volume = 127;
         self.cc_expression = 127;
         self.fine_pitch = 0;
+        self.hardware_volume = 15;
+        self.last_host_controls = None;
         self.active_note = 60;
         self.lfo.reset();
         self.frame_sample_counter = 0.0;
@@ -275,6 +310,37 @@ impl MidiHandler {
         }
     }
 
+    /// Applies changed host parameter values without continuously overriding MIDI CC values.
+    pub fn apply_host_automation(&mut self, controls: HostAutomationControls) {
+        let previous = self.last_host_controls.unwrap_or_default();
+
+        if self.last_host_controls.is_none() || controls.vibrato_depth != previous.vibrato_depth {
+            self.lfo
+                .set_vibrato(controls.vibrato_depth, self.lfo.vibrato_speed);
+        }
+        if self.last_host_controls.is_none() || controls.vibrato_speed != previous.vibrato_speed {
+            self.lfo
+                .set_vibrato(self.lfo.vibrato_depth, controls.vibrato_speed);
+        }
+        if self.last_host_controls.is_none() || controls.tremolo_depth != previous.tremolo_depth {
+            self.lfo
+                .set_tremolo(controls.tremolo_depth, self.lfo.tremolo_speed);
+        }
+        if self.last_host_controls.is_none() || controls.tremolo_speed != previous.tremolo_speed {
+            self.lfo
+                .set_tremolo(self.lfo.tremolo_depth, controls.tremolo_speed);
+        }
+        if self.last_host_controls.is_none() || controls.hardware_volume != previous.hardware_volume
+        {
+            self.hardware_volume = controls.hardware_volume.min(15);
+        }
+        if self.last_host_controls.is_none() || controls.fine_pitch != previous.fine_pitch {
+            self.fine_pitch = controls.fine_pitch.clamp(-64, 63);
+        }
+
+        self.last_host_controls = Some(controls);
+    }
+
     /// Update sequence playback, LFO modulation, and write updated parameters to APU pulse channel.
     /// Returns master gain multiplier (CC11 Expression).
     pub fn update_modulation(
@@ -330,7 +396,8 @@ impl MidiHandler {
         } else {
             15
         };
-        let cc7_scaled = (vol_val as u32 * self.cc_volume as u32 / 127) as u32;
+        let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15) as u32;
+        let cc7_scaled = (hardware_scaled * self.cc_volume as u32 / 127) as u32;
         let vel_scaled_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
         let tremolo_sub = self.lfo.tremolo_volume_delta();
         let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
@@ -406,5 +473,30 @@ impl MidiHandler {
     /// Check if gate is currently active.
     pub fn gate(&self) -> bool {
         self.gate
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_automation_controls_update_the_matching_synth_controls() {
+        let mut handler = MidiHandler::new();
+        handler.apply_host_automation(HostAutomationControls {
+            vibrato_depth: 7,
+            vibrato_speed: 20,
+            tremolo_depth: 9,
+            tremolo_speed: 30,
+            hardware_volume: 11,
+            fine_pitch: -24,
+        });
+
+        assert_eq!(handler.lfo.vibrato_depth, 7);
+        assert_eq!(handler.lfo.vibrato_speed, 20);
+        assert_eq!(handler.lfo.tremolo_depth, 9);
+        assert_eq!(handler.lfo.tremolo_speed, 30);
+        assert_eq!(handler.hardware_volume, 11);
+        assert_eq!(handler.fine_pitch, -24);
     }
 }

@@ -84,8 +84,8 @@ pub fn render_editor_ui(
     const SEQ_TYPES: [(&str, usize); 5] = [
         ("Volume", 0),
         ("Arpeggio", 1),
-        ("Pitch", 2),
-        ("Hi-pitch", 3),
+        ("Fine Pitch", 2),
+        ("Hi-Pitch", 3),
         ("Duty / Noise", 4),
     ];
 

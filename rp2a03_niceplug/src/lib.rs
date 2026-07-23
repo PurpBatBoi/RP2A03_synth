@@ -4,7 +4,7 @@
 mod midi;
 
 use egui::Color32;
-use midi::{ActiveSequences, MidiHandler};
+use midi::{ActiveSequences, HostAutomationControls, MidiHandler};
 use nice_plug::prelude::*;
 use nice_plug_egui::{create_egui_editor, EguiSettings, EguiState};
 use parking_lot::Mutex;
@@ -35,6 +35,19 @@ struct Rp2a03Params {
     /// Selects the same numbered sequence slot for all five pulse envelopes.
     #[id = "sequence_number"]
     pub sequence_number: IntParam,
+
+    #[id = "vibrato_depth"]
+    pub vibrato_depth: IntParam,
+    #[id = "vibrato_speed"]
+    pub vibrato_speed: IntParam,
+    #[id = "tremolo_depth"]
+    pub tremolo_depth: IntParam,
+    #[id = "tremolo_speed"]
+    pub tremolo_speed: IntParam,
+    #[id = "hardware_volume"]
+    pub hardware_volume: IntParam,
+    #[id = "fine_pitch"]
+    pub fine_pitch: IntParam,
 }
 
 impl Default for Rp2a03Plugin {
@@ -61,13 +74,19 @@ impl Default for Rp2a03Params {
         Self {
             egui_state: EguiState::from_size(680, 420),
             sequence_number: IntParam::new(
-                "Sequence Number",
+                "Sequence Index",
                 0,
                 IntRange::Linear {
                     min: 0,
                     max: (MAX_SEQUENCES - 1) as i32,
                 },
             ),
+            vibrato_depth: IntParam::new("Vibrato Depth", 0, IntRange::Linear { min: 0, max: 15 }),
+            vibrato_speed: IntParam::new("Vibrato Speed", 4, IntRange::Linear { min: 0, max: 63 }),
+            tremolo_depth: IntParam::new("Tremolo Depth", 0, IntRange::Linear { min: 0, max: 15 }),
+            tremolo_speed: IntParam::new("Tremolo Speed", 4, IntRange::Linear { min: 0, max: 63 }),
+            hardware_volume: IntParam::new("HW Volume", 15, IntRange::Linear { min: 0, max: 15 }),
+            fine_pitch: IntParam::new("Fine Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
         }
     }
 }
@@ -111,6 +130,17 @@ impl Rp2a03Plugin {
 
         for (i, sample) in buf_i16.iter().enumerate() {
             output[i] = (*sample as f32 / 32768.0) * master_gain;
+        }
+    }
+
+    fn host_automation_controls(&self) -> HostAutomationControls {
+        HostAutomationControls {
+            vibrato_depth: self.params.vibrato_depth.value() as u8,
+            vibrato_speed: self.params.vibrato_speed.value() as u8,
+            tremolo_depth: self.params.tremolo_depth.value() as u8,
+            tremolo_speed: self.params.tremolo_speed.value() as u8,
+            hardware_volume: self.params.hardware_volume.value() as u8,
+            fine_pitch: self.params.fine_pitch.value() as i8,
         }
     }
 }
@@ -199,6 +229,8 @@ impl Plugin for Rp2a03Plugin {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        self.midi_handler
+            .apply_host_automation(self.host_automation_controls());
         let num_samples = buffer.samples();
         let mut next_event = context.next_event();
         let mut sample_pos: usize = 0;
