@@ -174,7 +174,7 @@ impl MidiHandler {
         event: &NoteEvent<S>,
         pulse: &mut Pulse,
         seqs: &ActiveSequences,
-    ) {
+    ) -> Option<usize> {
         match event {
             NoteEvent::NoteOn { note, velocity, .. } => {
                 let vel_u8 = (velocity * 127.0).clamp(0.0, 127.0) as u8;
@@ -187,8 +187,13 @@ impl MidiHandler {
                 let value_u8 = (value * 127.0).clamp(0.0, 127.0) as u8;
                 self.handle_control_change(*cc, value_u8);
             }
+            NoteEvent::MidiProgramChange { program, .. } => {
+                return Some(*program as usize);
+            }
             _ => {}
         }
+
+        None
     }
 
     /// Handle NoteOn event with monophonic last-note priority.
@@ -498,5 +503,35 @@ mod tests {
         assert_eq!(handler.lfo.tremolo_speed, 30);
         assert_eq!(handler.hardware_volume, 11);
         assert_eq!(handler.fine_pitch, -24);
+    }
+
+    #[test]
+    fn program_change_returns_its_sequence_index() {
+        let mut handler = MidiHandler::new();
+        let mut pulse = Pulse::new(rp2a03_core::apu_pulse::PulseChannel::One);
+        let sequences = ActiveSequences {
+            vol_seq: Sequence::default(),
+            vol_enabled: false,
+            arp_seq: Sequence::default(),
+            arp_enabled: false,
+            pitch_seq: Sequence::default(),
+            pitch_enabled: false,
+            hipitch_seq: Sequence::default(),
+            hipitch_enabled: false,
+            duty_seq: Sequence::default(),
+            duty_enabled: false,
+        };
+
+        let index = handler.handle_event(
+            &NoteEvent::<()>::MidiProgramChange {
+                timing: 0,
+                channel: 0,
+                program: 42,
+            },
+            &mut pulse,
+            &sequences,
+        );
+
+        assert_eq!(index, Some(42));
     }
 }

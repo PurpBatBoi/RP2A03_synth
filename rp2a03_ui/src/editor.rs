@@ -99,7 +99,7 @@ pub fn render_editor_ui(
                 ui.label(egui::RichText::new("Instrument settings").strong());
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label("Sequence #:");
+                    ui.label("Sequence Index:");
                     let mut index = shared_sequence_index;
                     if ui
                         .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))

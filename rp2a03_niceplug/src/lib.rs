@@ -24,6 +24,9 @@ pub struct Rp2a03Plugin {
     sample_rate: f32,
     last_output: i16,
     midi_handler: MidiHandler,
+    /// Program Change selection remains active until the host changes the Index parameter.
+    midi_program_index: Option<usize>,
+    last_sequence_parameter: i32,
     shared_sequences: Arc<Mutex<SharedSequences>>,
 }
 
@@ -64,6 +67,8 @@ impl Default for Rp2a03Plugin {
             sample_rate: 44100.0,
             last_output: 0,
             midi_handler: MidiHandler::new(),
+            midi_program_index: None,
+            last_sequence_parameter: 0,
             shared_sequences: Arc::new(Mutex::new(SharedSequences::default())),
         }
     }
@@ -143,6 +148,23 @@ impl Rp2a03Plugin {
             fine_pitch: self.params.fine_pitch.value() as i8,
         }
     }
+
+    fn active_sequences(&self, sequence_index: usize) -> ActiveSequences {
+        let mut data = self.shared_sequences.lock();
+        data.set_all_selected_sequence_indices(sequence_index);
+        ActiveSequences {
+            vol_seq: data.selected_sequence(0).clone(),
+            vol_enabled: data.sequence_enabled(0),
+            arp_seq: data.selected_sequence(1).clone(),
+            arp_enabled: data.sequence_enabled(1),
+            pitch_seq: data.selected_sequence(2).clone(),
+            pitch_enabled: data.sequence_enabled(2),
+            hipitch_seq: data.selected_sequence(3).clone(),
+            hipitch_enabled: data.sequence_enabled(3),
+            duty_seq: data.selected_sequence(4).clone(),
+            duty_enabled: data.sequence_enabled(4),
+        }
+    }
 }
 
 impl Plugin for Rp2a03Plugin {
@@ -184,7 +206,7 @@ impl Plugin for Rp2a03Plugin {
             },
             move |ui, setter, _queue, _state| {
                 let mut data = shared.lock();
-                let sequence_index = params.sequence_number.value() as usize;
+                let sequence_index = data.selected_sequence_index(0);
                 if let Some(new_index) = render_editor_ui(ui, &mut data, sequence_index) {
                     data.set_all_selected_sequence_indices(new_index);
                     let new_index = new_index as i32;
@@ -211,6 +233,8 @@ impl Plugin for Rp2a03Plugin {
         self.pulse.write_sweep(0x08);
         self.last_output = 0;
         self.midi_handler.reset();
+        self.midi_program_index = None;
+        self.last_sequence_parameter = self.params.sequence_number.value();
         true
     }
 
@@ -221,6 +245,8 @@ impl Plugin for Rp2a03Plugin {
         self.blip.clear();
         self.last_output = 0;
         self.midi_handler.reset();
+        self.midi_program_index = None;
+        self.last_sequence_parameter = self.params.sequence_number.value();
     }
 
     fn process(
@@ -236,23 +262,16 @@ impl Plugin for Rp2a03Plugin {
         let mut sample_pos: usize = 0;
         let mut mono_buf = vec![0.0f32; num_samples];
 
-        let active_seqs = {
-            let sequence_index = self.params.sequence_number.value() as usize;
-            let mut data = self.shared_sequences.lock();
-            data.set_all_selected_sequence_indices(sequence_index);
-            ActiveSequences {
-                vol_seq: data.selected_sequence(0).clone(),
-                vol_enabled: data.sequence_enabled(0),
-                arp_seq: data.selected_sequence(1).clone(),
-                arp_enabled: data.sequence_enabled(1),
-                pitch_seq: data.selected_sequence(2).clone(),
-                pitch_enabled: data.sequence_enabled(2),
-                hipitch_seq: data.selected_sequence(3).clone(),
-                hipitch_enabled: data.sequence_enabled(3),
-                duty_seq: data.selected_sequence(4).clone(),
-                duty_enabled: data.sequence_enabled(4),
-            }
-        };
+        let sequence_parameter = self.params.sequence_number.value();
+        if sequence_parameter != self.last_sequence_parameter {
+            self.last_sequence_parameter = sequence_parameter;
+            self.midi_program_index = None;
+        }
+        let mut sequence_index = self
+            .midi_program_index
+            .unwrap_or(sequence_parameter as usize)
+            .min(MAX_SEQUENCES - 1);
+        let mut active_seqs = self.active_sequences(sequence_index);
 
         loop {
             let chunk_end = if let Some(ref event) = next_event {
@@ -275,8 +294,14 @@ impl Plugin for Rp2a03Plugin {
                     next_event = Some(event);
                     break;
                 }
-                self.midi_handler
-                    .handle_event(&event, &mut self.pulse, &active_seqs);
+                if let Some(program_index) =
+                    self.midi_handler
+                        .handle_event(&event, &mut self.pulse, &active_seqs)
+                {
+                    sequence_index = program_index.min(MAX_SEQUENCES - 1);
+                    self.midi_program_index = Some(sequence_index);
+                    active_seqs = self.active_sequences(sequence_index);
+                }
                 next_event = context.next_event();
             }
 
