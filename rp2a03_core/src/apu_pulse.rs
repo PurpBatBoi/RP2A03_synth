@@ -195,7 +195,7 @@ impl Pulse {
         }
     }
 
-    fn set_period(&mut self, period: u16) {
+    pub fn set_period(&mut self, period: u16) {
         self.real_period = period;
         // The pulse timer is clocked every other CPU cycle,
         // so the effective timer period is (period * 2) + 1.
