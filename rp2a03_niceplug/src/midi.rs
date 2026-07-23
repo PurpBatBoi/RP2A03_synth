@@ -157,13 +157,7 @@ impl MidiHandler {
     }
 
     /// Handle NoteOn event with monophonic last-note priority.
-    pub fn note_on(
-        &mut self,
-        note: u8,
-        velocity: u8,
-        pulse: &mut Pulse,
-        seqs: &ActiveSequences,
-    ) {
+    pub fn note_on(&mut self, note: u8, velocity: u8, pulse: &mut Pulse, seqs: &ActiveSequences) {
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 

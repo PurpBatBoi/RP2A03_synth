@@ -187,16 +187,16 @@ impl Plugin for Rp2a03Plugin {
         let active_seqs = {
             let data = self.shared_sequences.lock();
             ActiveSequences {
-                vol_seq: data.vol_seq.clone(),
-                vol_enabled: data.vol_enabled,
-                arp_seq: data.arp_seq.clone(),
-                arp_enabled: data.arp_enabled,
-                pitch_seq: data.pitch_seq.clone(),
-                pitch_enabled: data.pitch_enabled,
-                hipitch_seq: data.hipitch_seq.clone(),
-                hipitch_enabled: data.hipitch_enabled,
-                duty_seq: data.duty_seq.clone(),
-                duty_enabled: data.duty_enabled,
+                vol_seq: data.selected_sequence(0).clone(),
+                vol_enabled: data.sequence_enabled(0),
+                arp_seq: data.selected_sequence(1).clone(),
+                arp_enabled: data.sequence_enabled(1),
+                pitch_seq: data.selected_sequence(2).clone(),
+                pitch_enabled: data.sequence_enabled(2),
+                hipitch_seq: data.selected_sequence(3).clone(),
+                hipitch_enabled: data.sequence_enabled(3),
+                duty_seq: data.selected_sequence(4).clone(),
+                duty_enabled: data.sequence_enabled(4),
             }
         };
 

@@ -83,3 +83,4 @@ The plugin should support the following flow:
   - step count starts at `0`
   - only when the user creates or loads data does the step count become greater than `0`
 - The empty state must behave correctly for playback fallback
+ 

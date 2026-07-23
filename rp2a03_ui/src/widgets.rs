@@ -1,5 +1,5 @@
 //! rp2a03_ui\src\widgets.rs
-//! 
+//!
 //! Custom painter elements for sequence visualization and interactive envelope editing.
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
@@ -30,14 +30,10 @@ pub fn draw_envelope_bar_graph(
     let num_steps = seq.len();
 
     let header_height = 20.0;
-    let graph_rect = Rect::from_min_max(
-        rect.min,
-        Pos2::new(rect.max.x, rect.max.y - header_height),
-    );
-    let header_rect = Rect::from_min_max(
-        Pos2::new(rect.min.x, rect.max.y - header_height),
-        rect.max,
-    );
+    let graph_rect =
+        Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - header_height));
+    let header_rect =
+        Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - header_height), rect.max);
 
     let mut text_needs_sync = false;
 
@@ -51,8 +47,8 @@ pub fn draw_envelope_bar_graph(
             if is_header_click {
                 // Header interaction: Loop / Release point toggling
                 if response.clicked() {
-                    let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width)
-                        .floor() as usize)
+                    let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width).floor()
+                        as usize)
                         .clamp(0, num_steps - 1);
 
                     if seq.loop_point == Some(clicked_step) {
@@ -62,8 +58,8 @@ pub fn draw_envelope_bar_graph(
                     }
                     text_needs_sync = true;
                 } else if response.secondary_clicked() {
-                    let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width)
-                        .floor() as usize)
+                    let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width).floor()
+                        as usize)
                         .clamp(0, num_steps - 1);
 
                     if seq.release_point == Some(clicked_step) {
@@ -78,12 +74,11 @@ pub fn draw_envelope_bar_graph(
                 if response.dragged_by(egui::PointerButton::Primary)
                     || response.clicked_by(egui::PointerButton::Primary)
                 {
-                    let step_idx = (((pointer_pos.x - graph_rect.min.x) / step_width)
-                        .floor() as i32)
+                    let step_idx = (((pointer_pos.x - graph_rect.min.x) / step_width).floor()
+                        as i32)
                         .clamp(0, num_steps as i32 - 1) as usize;
 
-                    let rel_y =
-                        (pointer_pos.y - graph_rect.min.y).clamp(0.0, graph_rect.height());
+                    let rel_y = (pointer_pos.y - graph_rect.min.y).clamp(0.0, graph_rect.height());
                     let norm_y = rel_y / graph_rect.height();
                     let raw_val = max_val as f32 - norm_y * (max_val as f32 - min_val as f32);
                     let mut new_val = raw_val.round() as i16;
