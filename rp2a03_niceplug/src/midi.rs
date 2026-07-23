@@ -270,13 +270,6 @@ impl MidiHandler {
 
             pulse.set_enabled(true);
             pulse.write_sweep(0x08);
-            let effective_note = (note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
-            let base_freq = midi_note_to_freq(effective_note);
-            let period = freq_to_period(base_freq);
-            let timer_hi_bits = ((period >> 8) & 0x07) as u8;
-            pulse.write_timer_hi(0xF8 | timer_hi_bits);
-            self.prev_timer_lo = (period & 0xFF) as u8;
-            self.prev_timer_hi = timer_hi_bits;
         }
     }
 
@@ -469,9 +462,13 @@ impl MidiHandler {
         let timer_lo = (final_period & 0xFF) as u8;
         let timer_hi_bits = ((final_period >> 8) & 0x07) as u8;
 
-        if timer_lo != self.prev_timer_lo || timer_hi_bits != self.prev_timer_hi {
-            pulse.set_period(final_period);
+        if timer_lo != self.prev_timer_lo {
+            pulse.write_timer_lo(timer_lo);
             self.prev_timer_lo = timer_lo;
+        }
+
+        if timer_hi_bits != self.prev_timer_hi {
+            pulse.write_timer_hi(0xF8 | timer_hi_bits);
             self.prev_timer_hi = timer_hi_bits;
         }
 
