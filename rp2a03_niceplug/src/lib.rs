@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::NTSC_CPU_CLOCK;
-use rp2a03_ui::{render_editor_ui, SharedSequences};
+use rp2a03_ui::{render_editor_ui, SharedSequences, MAX_SEQUENCES};
 use std::sync::Arc;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
@@ -31,6 +31,10 @@ pub struct Rp2a03Plugin {
 struct Rp2a03Params {
     #[persist = "editor_state"]
     pub egui_state: Arc<EguiState>,
+
+    /// Selects the same numbered sequence slot for all five pulse envelopes.
+    #[id = "sequence_number"]
+    pub sequence_number: IntParam,
 }
 
 impl Default for Rp2a03Plugin {
@@ -56,6 +60,14 @@ impl Default for Rp2a03Params {
     fn default() -> Self {
         Self {
             egui_state: EguiState::from_size(680, 420),
+            sequence_number: IntParam::new(
+                "Sequence Number",
+                0,
+                IntRange::Linear {
+                    min: 0,
+                    max: (MAX_SEQUENCES - 1) as i32,
+                },
+            ),
         }
     }
 }
@@ -128,6 +140,7 @@ impl Plugin for Rp2a03Plugin {
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let shared = self.shared_sequences.clone();
+        let params = self.params.clone();
 
         create_egui_editor(
             self.params.egui_state.clone(),
@@ -139,9 +152,16 @@ impl Plugin for Rp2a03Plugin {
                 visuals.extreme_bg_color = Color32::from_rgb(10, 10, 10);
                 ctx.set_visuals(visuals);
             },
-            move |ui, _setter, _queue, _state| {
+            move |ui, setter, _queue, _state| {
                 let mut data = shared.lock();
-                render_editor_ui(ui, &mut data);
+                let sequence_index = params.sequence_number.value() as usize;
+                if let Some(new_index) = render_editor_ui(ui, &mut data, sequence_index) {
+                    data.set_all_selected_sequence_indices(new_index);
+                    let new_index = new_index as i32;
+                    setter.begin_set_parameter(&params.sequence_number);
+                    setter.set_parameter(&params.sequence_number, new_index);
+                    setter.end_set_parameter(&params.sequence_number);
+                }
             },
         )
     }
@@ -185,7 +205,9 @@ impl Plugin for Rp2a03Plugin {
         let mut mono_buf = vec![0.0f32; num_samples];
 
         let active_seqs = {
-            let data = self.shared_sequences.lock();
+            let sequence_index = self.params.sequence_number.value() as usize;
+            let mut data = self.shared_sequences.lock();
+            data.set_all_selected_sequence_indices(sequence_index);
             ActiveSequences {
                 vol_seq: data.selected_sequence(0).clone(),
                 vol_enabled: data.sequence_enabled(0),

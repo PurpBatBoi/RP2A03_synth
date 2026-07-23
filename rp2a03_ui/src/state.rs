@@ -76,6 +76,14 @@ impl SharedSequences {
         self.sequence_indices[Self::tab_index(tab)] = index.min(MAX_SEQUENCES - 1);
     }
 
+    /// Select one numbered slot for every envelope type in this instrument.
+    ///
+    /// The shared host parameter uses this so a single automation lane selects
+    /// matching sequence numbers without making the envelope banks share data.
+    pub fn set_all_selected_sequence_indices(&mut self, index: usize) {
+        self.sequence_indices.fill(index.min(MAX_SEQUENCES - 1));
+    }
+
     pub fn selected_sequence(&self, tab: usize) -> &Sequence {
         let tab = Self::tab_index(tab);
         &self.sequence_banks[tab]
@@ -126,5 +134,15 @@ mod tests {
         assert_eq!(state.selected_sequence(0).values, vec![15]);
         assert_eq!(state.selected_sequence(4).values, vec![3]);
         assert!(state.sequence_banks[0].slot(0).sequence.is_empty());
+    }
+
+    #[test]
+    fn shared_sequence_number_selects_the_same_slot_for_every_envelope() {
+        let mut state = SharedSequences::default();
+        state.set_all_selected_sequence_indices(42);
+
+        for tab in 0..SEQUENCE_TYPE_COUNT {
+            assert_eq!(state.selected_sequence_index(tab), 42);
+        }
     }
 }

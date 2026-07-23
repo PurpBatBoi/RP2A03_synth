@@ -72,7 +72,15 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
 }
 
 /// Renders the pulse instrument settings and a generic selected-sequence editor.
-pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
+///
+/// Returns a new shared sequence number when the user changes the spinbox. The
+/// plugin wrapper owns the automatable parameter and commits this change to the
+/// host through its parameter setter.
+pub fn render_editor_ui(
+    ui: &mut egui::Ui,
+    data: &mut SharedSequences,
+    shared_sequence_index: usize,
+) -> Option<usize> {
     const SEQ_TYPES: [(&str, usize); 5] = [
         ("Volume", 0),
         ("Arpeggio", 1),
@@ -81,32 +89,35 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
         ("Duty / Noise", 4),
     ];
 
+    data.set_all_selected_sequence_indices(shared_sequence_index);
+    let mut changed_sequence_index = None;
+
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.set_width(180.0);
             ui.group(|ui| {
                 ui.label(egui::RichText::new("Instrument settings").strong());
                 ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Sequence #:");
+                    let mut index = shared_sequence_index;
+                    if ui
+                        .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
+                        .changed()
+                    {
+                        changed_sequence_index = Some(index);
+                    }
+                });
+                ui.add_space(6.0);
                 egui::Grid::new("seq_type_grid")
-                    .num_columns(3)
+                    .num_columns(2)
                     .spacing([6.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("");
-                        ui.label("#");
                         ui.label("Effect name");
                         ui.end_row();
                         for (name, tab) in SEQ_TYPES {
                             ui.checkbox(data.sequence_enabled_mut(tab), "");
-                            let mut index = data.selected_sequence_index(tab);
-                            if ui
-                                .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
-                                .changed()
-                            {
-                                data.set_selected_sequence_index(tab, index);
-                                if data.selected_tab == tab {
-                                    cleanup_tab_sequence(data, tab);
-                                }
-                            }
                             if ui
                                 .selectable_label(data.selected_tab == tab, name)
                                 .clicked()
@@ -183,6 +194,8 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences) {
             });
         });
     });
+
+    changed_sequence_index
 }
 
 #[cfg(test)]
