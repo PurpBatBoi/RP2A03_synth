@@ -51,7 +51,7 @@ The following projects were extensively referenced during research/development:
 * **[FamiStudio](https://famistudio.org/)** / **[FamiStudio GitHub](https://github.com/BleuBleu/FamiStudio)** (License: **MIT**)
 * **[Dn-FamiTracker](https://github.com/Dn-Programming-Core-Management/Dn-FamiTracker)** (License: **GPL-3.0-or-later**)
 * **[Furnace Tracker](https://github.com/tildearrow/furnace)** (License: **GPL-2.0-or-later**)
-* **[Mesen / MesenCE](https://github.com/SourMesen/Mesen2)** (License: **GPL-3.0-or-later**)
+* **[Mesen / MesenCE](https://github.com/nesdev-org/MesenCE)** (License: **GPL-3.0-or-later**)
 * **[puNES](https://github.com/punesemu/puNES)** (License: **GPL-2.0-or-later**)
 * **[NesDEV and its community](https://www.nesdev.org/wiki/Nesdev_Wiki)**
 
