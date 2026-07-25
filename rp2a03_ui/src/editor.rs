@@ -2,7 +2,7 @@
 
 use super::state::{SharedSequences, MAX_SEQUENCES};
 use super::widgets::draw_envelope_bar_graph;
-use rp2a03_core::sequence::Sequence;
+use rp2a03_core::sequence::{PitchMode, Sequence};
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
 pub fn sequence_to_text(seq: &Sequence) -> String {
@@ -49,16 +49,18 @@ fn sequence_range(tab: usize) -> (i16, i16) {
 /// Sanitizes the selected numbered sequence for an envelope type.
 pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
     let (min_val, max_val) = sequence_range(tab);
-    let sanitized = {
-        let (text, _) = data.selected_sequence_mut(tab);
-        sanitize_sequence_text(text)
+    let (sanitized, prev_mode) = {
+        let (text, sequence) = data.selected_sequence_mut(tab);
+        (sanitize_sequence_text(text), sequence.pitch_mode)
     };
     let (text, sequence) = data.selected_sequence_mut(tab);
     if sanitized.trim().is_empty() {
         *sequence = Sequence::default();
+        sequence.pitch_mode = prev_mode;
         text.clear();
     } else {
         let (mut parsed, normalized) = Sequence::parse_clamped(&sanitized, min_val, max_val);
+        parsed.pitch_mode = prev_mode;
         let len = parsed.len();
         if parsed.loop_point.is_some_and(|point| point >= len) {
             parsed.loop_point = None;
@@ -144,7 +146,16 @@ pub fn render_editor_ui(
                 _ => ("Duty / Noise", 0, 3),
             };
             ui.group(|ui| {
-                ui.label(egui::RichText::new(format!("Sequence editor - {}", title)).strong());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("Sequence editor - {}", title)).strong());
+                    if tab == 2 {
+                        ui.add_space(20.0);
+                        ui.label("Mode:");
+                        let (_, sequence) = data.selected_sequence_mut(tab);
+                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
+                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
+                    }
+                });
                 ui.add_space(4.0);
                 let (text, sequence) = data.selected_sequence_mut(tab);
                 if draw_envelope_bar_graph(ui, sequence, min_val, max_val) {
@@ -182,11 +193,13 @@ pub fn render_editor_ui(
                 let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if edit.changed() {
                     let sanitized = sanitize_sequence_text(text);
+                    let prev_mode = sequence.pitch_mode;
                     *sequence = if sanitized.trim().is_empty() {
                         Sequence::default()
                     } else {
                         Sequence::parse_clamped(&sanitized, min_val, max_val).0
                     };
+                    sequence.pitch_mode = prev_mode;
                 }
                 if enter_pressed || edit.lost_focus() {
                     *text = sequence_to_text(sequence);

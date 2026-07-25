@@ -4,7 +4,7 @@
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::lfo::{SoftwareLfo, DEFAULT_LFO_SPEED};
-use rp2a03_core::sequence::{SeqState, Sequence, SequencePlayer};
+use rp2a03_core::sequence::{PitchMode, SeqState, Sequence, SequencePlayer};
 use rp2a03_core::NTSC_CPU_CLOCK;
 
 /// Converts MIDI note number to frequency in Hz.
@@ -102,6 +102,9 @@ pub struct MidiHandler {
     pub hipitch_seq_player: SequencePlayer,
     pub duty_seq_player: SequencePlayer,
 
+    /// Accumulated pitch offset for Relative pitch mode
+    pub pitch_accum: i16,
+
     /// Cache of last written control register byte to avoid redundant register writes
     pub prev_ctrl: u8,
     /// Cache of last written timer low byte to avoid redundant register writes
@@ -130,6 +133,7 @@ impl Default for MidiHandler {
             pitch_seq_player: SequencePlayer::new(),
             hipitch_seq_player: SequencePlayer::new(),
             duty_seq_player: SequencePlayer::new(),
+            pitch_accum: 0,
             prev_ctrl: 0xFF,
             prev_timer_lo: 0xFF,
             prev_timer_hi: 0xFF,
@@ -162,6 +166,7 @@ impl MidiHandler {
         self.pitch_seq_player.reset();
         self.hipitch_seq_player.reset();
         self.duty_seq_player.reset();
+        self.pitch_accum = 0;
 
         self.prev_ctrl = 0xFF;
         self.prev_timer_lo = 0xFF;
@@ -201,6 +206,7 @@ impl MidiHandler {
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 
+        self.pitch_accum = 0;
         if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
             self.vol_seq_player.trigger(&seqs.vol_seq);
         }
@@ -387,12 +393,30 @@ impl MidiHandler {
             if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
                 self.arp_seq_player.clock_tick(&seqs.arp_seq);
             }
-            if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
-                self.pitch_seq_player.clock_tick(&seqs.pitch_seq);
+            let pitch_was_running = seqs.pitch_enabled
+                && !seqs.pitch_seq.values.is_empty()
+                && self.pitch_seq_player.state == SeqState::Running;
+            let pitch_step = if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
+                self.pitch_seq_player.clock_tick(&seqs.pitch_seq)
+            } else {
+                0
+            };
+
+            let hipitch_was_running = seqs.hipitch_enabled
+                && !seqs.hipitch_seq.values.is_empty()
+                && self.hipitch_seq_player.state == SeqState::Running;
+            let hipitch_step = if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
+                self.hipitch_seq_player.clock_tick(&seqs.hipitch_seq) << 4
+            } else {
+                0
+            };
+
+            if seqs.pitch_enabled && seqs.pitch_seq.pitch_mode == PitchMode::Relative {
+                let p_add = if pitch_was_running { pitch_step } else { 0 };
+                let hp_add = if hipitch_was_running { hipitch_step } else { 0 };
+                self.pitch_accum = self.pitch_accum.saturating_add(p_add + hp_add);
             }
-            if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
-                self.hipitch_seq_player.clock_tick(&seqs.hipitch_seq);
-            }
+
             if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
                 self.duty_seq_player.clock_tick(&seqs.duty_seq);
             }
@@ -446,21 +470,31 @@ impl MidiHandler {
         let base_period = freq_to_period(base_freq);
 
         // 4. Pitch & Hi-Pitch Sequences (Fallback to 0 if sequence is empty)
-        let pitch_delta = if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
+        let pitch_step = if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
             self.pitch_seq_player.value()
         } else {
             0
         };
-        let hipitch_delta = if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
+        let hipitch_step = if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
             self.hipitch_seq_player.value() << 4
         } else {
             0
         };
+        let total_step = pitch_step + hipitch_step;
+
+        let pitch_delta = if seqs.pitch_enabled && seqs.pitch_seq.pitch_mode == PitchMode::Relative {
+            self.pitch_accum
+        } else {
+            total_step
+        };
+
         let fine_pitch_offset = self.fine_pitch as i16;
         let vibrato_delta = self.lfo.vibrato_pitch_delta();
 
-        // Calculate final timer period
-        let final_period = (base_period as i32 + pitch_delta as i32 + hipitch_delta as i32
+        // Calculate final timer period (Dn-FamiTracker: Period = BasePeriod + PitchValue)
+        // Positive values (+127) increase period -> lower pitch (pitch down, ~328 Hz for ref note 522 Hz)
+        // Negative values (-128) decrease period -> higher pitch (pitch up, ~1300 Hz for ref note 522 Hz)
+        let final_period = (base_period as i32 + pitch_delta as i32
             - fine_pitch_offset as i32
             - vibrato_delta as i32)
             .clamp(0, 2047) as u16;
@@ -549,5 +583,74 @@ mod tests {
         );
 
         assert_eq!(index, Some(42));
+    }
+
+    #[test]
+    fn test_relative_and_absolute_pitch_modes() {
+        let mut handler = MidiHandler::new();
+        let mut pulse = Pulse::new(rp2a03_core::apu_pulse::PulseChannel::One);
+
+        let mut pitch_seq = Sequence::parse("1 2 3");
+        pitch_seq.pitch_mode = PitchMode::Relative;
+
+        let seqs_rel = ActiveSequences {
+            vol_seq: Sequence::default(),
+            vol_enabled: false,
+            arp_seq: Sequence::default(),
+            arp_enabled: false,
+            pitch_seq: pitch_seq.clone(),
+            pitch_enabled: true,
+            hipitch_seq: Sequence::default(),
+            hipitch_enabled: false,
+            duty_seq: Sequence::default(),
+            duty_enabled: false,
+        };
+
+        // Note trigger (pitch_accum starts at 0)
+        handler.note_on(60, 127, &mut pulse, &seqs_rel);
+        assert_eq!(handler.pitch_accum, 0);
+
+        // Advance 1 tick (step 0, value 1)
+        handler.update_modulation(&mut pulse, &seqs_rel, 60.0, 1);
+        assert_eq!(handler.pitch_accum, 1); // 0 + 1
+
+        // Advance 1 tick (step 1, value 2)
+        handler.update_modulation(&mut pulse, &seqs_rel, 60.0, 1);
+        assert_eq!(handler.pitch_accum, 3); // 1 + 2
+
+        // Advance 1 tick (step 2, value 3)
+        handler.update_modulation(&mut pulse, &seqs_rel, 60.0, 1);
+        assert_eq!(handler.pitch_accum, 6); // 3 + 3
+
+        // Advance 1 more tick (sequence finished, state is now Held)
+        handler.update_modulation(&mut pulse, &seqs_rel, 60.0, 1);
+        assert_eq!(handler.pitch_accum, 6); // Must hold constant at 6!
+
+        // Switch to Absolute Mode
+        pitch_seq.pitch_mode = PitchMode::Absolute;
+        let seqs_abs = ActiveSequences {
+            pitch_seq,
+            ..seqs_rel
+        };
+
+        handler.note_on(60, 127, &mut pulse, &seqs_abs);
+        handler.update_modulation(&mut pulse, &seqs_abs, 60.0, 1);
+        assert_eq!(handler.pitch_seq_player.value(), 1);
+    }
+
+    #[test]
+    fn test_famitracker_reference_key_pitch_frequencies() {
+        let base_freq = 522.71f32;
+        let base_period = freq_to_period(base_freq); // 213
+
+        // Value +127: period = 213 + 127 = 340 -> ~328.04 Hz
+        let period_127 = (base_period as i32 + 127) as u16;
+        let freq_127 = NTSC_CPU_CLOCK as f32 / (16.0 * (period_127 as f32 + 0.5));
+        assert!((freq_127 - 328.04).abs() < 1.0, "Expected ~328.04 Hz, got {}", freq_127);
+
+        // Value -128: period = 213 - 128 = 85 -> ~1300.71 Hz
+        let period_minus_128 = (base_period as i32 - 128) as u16;
+        let freq_minus_128 = NTSC_CPU_CLOCK as f32 / (16.0 * (period_minus_128 as f32 + 0.5));
+        assert!((freq_minus_128 - 1300.71).abs() < 10.0, "Expected ~1300.71 Hz, got {}", freq_minus_128);
     }
 }

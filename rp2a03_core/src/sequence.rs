@@ -11,6 +11,14 @@
 //! - Loop marker `|`: defines step index where sequence loops back while key is held.
 //! - Release marker `/`: defines step index where playback jumps when key is released (`NoteOff`).
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum PitchMode {
+    #[default]
+    Relative = 0,
+    Absolute = 1,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
@@ -19,6 +27,8 @@ pub struct Sequence {
     pub loop_point: Option<usize>,
     /// Optional release point index (`/`).
     pub release_point: Option<usize>,
+    /// Pitch mode for pitch sequences (Relative vs Absolute).
+    pub pitch_mode: PitchMode,
 }
 
 impl Default for Sequence {
@@ -27,6 +37,7 @@ impl Default for Sequence {
             values: Vec::new(),
             loop_point: None,
             release_point: None,
+            pitch_mode: PitchMode::default(),
         }
     }
 }
@@ -38,6 +49,7 @@ impl Sequence {
             values: vec![value],
             loop_point: None,
             release_point: None,
+            pitch_mode: PitchMode::default(),
         }
     }
 
@@ -90,6 +102,7 @@ impl Sequence {
             values,
             loop_point,
             release_point,
+            pitch_mode: PitchMode::default(),
         };
 
         (sequence, normalized_text)
@@ -285,5 +298,11 @@ mod tests {
         assert_eq!(seq.values, vec![0, 4, 7, 12, -12, 0, -4, -7, -12]);
         assert_eq!(seq.loop_point, Some(5));
         assert_eq!(seq.release_point, Some(8));
+    }
+
+    #[test]
+    fn test_pitch_mode_defaults() {
+        let seq = Sequence::default();
+        assert_eq!(seq.pitch_mode, PitchMode::Relative);
     }
 }
