@@ -91,7 +91,7 @@ impl Default for Rp2a03Params {
             tremolo_depth: IntParam::new("Tremolo Depth", 0, IntRange::Linear { min: 0, max: 15 }),
             tremolo_speed: IntParam::new("Tremolo Speed", 4, IntRange::Linear { min: 0, max: 63 }),
             hardware_volume: IntParam::new("HW Volume", 15, IntRange::Linear { min: 0, max: 15 }),
-            fine_pitch: IntParam::new("Fine Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
+            fine_pitch: IntParam::new("Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
         }
     }
 }

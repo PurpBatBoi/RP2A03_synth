@@ -82,7 +82,7 @@ pub struct MidiHandler {
     pub cc_volume: u8,
     /// MIDI CC 11 (Expression MSB, 0..127, default 127) — plugin-level gain
     pub cc_expression: u8,
-    /// MIDI CC 14 (Fine pitch offset, -64..+63 semitone cents offset)
+    /// MIDI CC 14 (Pitch offset, -64..+63 semitone cents offset)
     pub fine_pitch: i8,
     /// Host-controlled 4-bit APU volume, applied before MIDI CC 7 and velocity.
     pub hardware_volume: u8,
