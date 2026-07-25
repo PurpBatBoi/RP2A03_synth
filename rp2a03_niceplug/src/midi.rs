@@ -202,6 +202,7 @@ impl MidiHandler {
     }
 
     /// Handle NoteOn event with monophonic last-note priority.
+    /// Handle NoteOn event with monophonic last-note priority.
     pub fn note_on(&mut self, note: u8, velocity: u8, pulse: &mut Pulse, seqs: &ActiveSequences) {
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
@@ -221,6 +222,20 @@ impl MidiHandler {
         }
         if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
             self.duty_seq_player.trigger(&seqs.duty_seq);
+        }
+
+        if seqs.pitch_enabled && seqs.pitch_seq.pitch_mode == PitchMode::Relative {
+            let p_add = if !seqs.pitch_seq.values.is_empty() {
+                self.pitch_seq_player.value()
+            } else {
+                0
+            };
+            let hp_add = if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
+                self.hipitch_seq_player.value() << 4
+            } else {
+                0
+            };
+            self.pitch_accum = p_add.saturating_add(hp_add);
         }
 
         self.apply_top_note(pulse);
@@ -257,6 +272,15 @@ impl MidiHandler {
                 }
                 if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
                     self.pitch_seq_player.release(&seqs.pitch_seq);
+                    if seqs.pitch_seq.pitch_mode == PitchMode::Relative && seqs.pitch_seq.release_point.is_some() {
+                        let p_add = self.pitch_seq_player.value();
+                        let hp_add = if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
+                            self.hipitch_seq_player.value() << 4
+                        } else {
+                            0
+                        };
+                        self.pitch_accum = self.pitch_accum.saturating_add(p_add.saturating_add(hp_add));
+                    }
                 }
                 if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
                     self.hipitch_seq_player.release(&seqs.hipitch_seq);
@@ -606,13 +630,9 @@ mod tests {
             duty_enabled: false,
         };
 
-        // Note trigger (pitch_accum starts at 0)
+        // Note trigger (pitch_accum starts with step 0 = 1)
         handler.note_on(60, 127, &mut pulse, &seqs_rel);
-        assert_eq!(handler.pitch_accum, 0);
-
-        // Advance 1 tick (step 0, value 1)
-        handler.update_modulation(&mut pulse, &seqs_rel, 60.0, 1);
-        assert_eq!(handler.pitch_accum, 1); // 0 + 1
+        assert_eq!(handler.pitch_accum, 1);
 
         // Advance 1 tick (step 1, value 2)
         handler.update_modulation(&mut pulse, &seqs_rel, 60.0, 1);
@@ -634,8 +654,9 @@ mod tests {
         };
 
         handler.note_on(60, 127, &mut pulse, &seqs_abs);
-        handler.update_modulation(&mut pulse, &seqs_abs, 60.0, 1);
         assert_eq!(handler.pitch_seq_player.value(), 1);
+        handler.update_modulation(&mut pulse, &seqs_abs, 60.0, 1);
+        assert_eq!(handler.pitch_seq_player.value(), 2);
     }
 
     #[test]

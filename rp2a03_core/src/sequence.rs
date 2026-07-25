@@ -168,24 +168,31 @@ impl SequencePlayer {
         Self::default()
     }
 
-    /// Trigger the sequence (called on NoteOn). Resets position to 0
-    /// and reads the first value immediately.
+    /// Trigger the sequence (called on NoteOn). Reads step 0 immediately
+    /// into current_value and advances position to step 1.
     pub fn trigger(&mut self, seq: &Sequence) {
+        if seq.is_empty() {
+            self.state = SeqState::Disabled;
+            self.pos = 0;
+            self.current_value = 0;
+            return;
+        }
         self.pos = 0;
         self.state = SeqState::Running;
         self.is_releasing = false;
-        self.current_value = seq.get(0);
+        self.clock_tick(seq);
     }
 
     /// Release the sequence (called on NoteOff).
-    /// If the sequence has a release point (`/`), jumps `pos` to that release step.
+    /// If the sequence has a release point (`/`), jumps `pos` to that release step
+    /// and reads the release step value immediately.
     pub fn release(&mut self, seq: &Sequence) {
         self.is_releasing = true;
         if let Some(rel) = seq.release_point {
             if rel < seq.len() {
                 self.pos = rel;
                 self.state = SeqState::Running;
-                self.current_value = seq.get(rel);
+                self.clock_tick(seq);
             }
         }
     }
