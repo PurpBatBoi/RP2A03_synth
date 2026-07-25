@@ -2,9 +2,10 @@
 //!
 //! Provides Vibrato (pitch modulation) and Tremolo (volume modulation)
 //! algorithms using the authentic 256-byte DN-FamiTracker lookup table.
+//!
+//! Authentic 256-byte DN-FamiTracker vibrato/tremolo lookup table.
+//! Indexed by `(phase_0_to_15) | (depth_0_to_15 << 4)`.
 
-/// Authentic 256-byte DN-FamiTracker vibrato/tremolo lookup table.
-/// Indexed by `(phase_0_to_15) | (depth_0_to_15 << 4)`.
 pub static FT_VIBRATO_TABLE: [u8; 256] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,

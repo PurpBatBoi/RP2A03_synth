@@ -4,12 +4,13 @@
 //! Each `Sequence` holds a vector of signed 16-bit step values advanced at 60 Hz.
 //! Supports Loop markers (`|`) and Release markers (`/`).
 //! `SequencePlayer` tracks playback position, looping, and release tail state.
+//!
+//! A FamiTracker-style sequence of step values.
+//!
+//! Steps are advanced once per 60 Hz frame tick.
+//! - Loop marker `|`: defines step index where sequence loops back while key is held.
+//! - Release marker `/`: defines step index where playback jumps when key is released (`NoteOff`).
 
-/// A FamiTracker-style sequence of step values.
-///
-/// Steps are advanced once per 60 Hz frame tick.
-/// - Loop marker `|`: defines step index where sequence loops back while key is held.
-/// - Release marker `/`: defines step index where playback jumps when key is released (`NoteOff`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).

@@ -1,38 +1,86 @@
 ![RP2A03 Logo](logo.png)
 ---
 
-RP2A03 Synth is a WiP NES VST3/CLAP plugin for modern DAWs, The goal is to have a "modernized" version of Matt Montag's NES VST by focusing on faithful, hardware-accurate APU behavior and support for NES expansion audio chips.
+RP2A03 Synth is a WiP NES VST3/CLAP plugin for modern DAWs. The goal is to create a modernized, high-performance synthesizer focusing on faithful, hardware-accurate RP2A03 APU behavior, smooth playback modulation, and future support for NES expansion audio chips.
 
-**Crates in this workspace**
+## Workspace Structure
 
-- `rp2a03_core` — Core NES APU DSP: channels, timers, frame sequencer and BlipBuf integration.
-- `rp2a03_common` — Shared utilities and types used across crates.
-- `rp2a03_nice` — Plugin crate (CLAP / VST3) exposing the synth (`NES Multi-Synth`). See [rp2a03_nih/src/lib.rs](rp2a03_nice/src/lib.rs).
-- `xtask` — Workspace helper tasks and build automation.
+- `rp2a03_core` — Core NES APU DSP engine: pulse channels, envelope, frame counter, length counter, sweep, LFO, and BlipBuf sample synthesis.
+- `rp2a03_common` — Shared utilities, types, and constants.
+- `rp2a03_niceplug` — Plugin crate (CLAP / VST3) exposing the synth engine with MIDI handling and parameter management.
+- `xtask` — Workspace helper tasks and build automation scripts.
 
-**Building**
+---
 
-Prerequisites: Rust toolchain (stable, 2021 edition), development toolchain for target plugin formats if needed.
+## Building
 
-Build the whole workspace (release):
+**Prerequisites**: Rust toolchain (stable, 2021 edition).
 
-```
+Build the entire workspace (release):
+
+```bash
 cargo build --release
 ```
 
 Build only the plugin crate:
 
+```bash
+cargo build --release -p rp2a03_niceplug
 ```
-cargo build --release -p rp2a03_nice
+
+Release artifacts and bundled plugin outputs will be located in `target/bundled/` and `target/release/`.
+
+---
+
+## Credits & Attribution
+
+This synthesizer relies on foundational open-source code and deep research into NES APU behavior, emulation, and tracker design. We gratefully acknowledge the authors and projects below:
+
+### APU Architecture & DSP Reference
+
+* **[TetaNES](https://github.com/lukexor/tetanes)** (License: **MIT / Apache 2.0**)
+  * *Author*: Luke Petherbridge
+  * *Contribution*: The core APU channel structure, pulse timer, envelope, and frame counter implementations in `rp2a03_core` were adapted and referenced from TetaNES's core APU module.
+
+---
+
+### Reference Architecture
+
+The following projects were extensively referenced during research/development:
+
+* **[FamiStudio](https://famistudio.org/)** / **[FamiStudio GitHub](https://github.com/BleuBleu/FamiStudio)** (License: **MIT**)
+* **[Dn-FamiTracker](https://github.com/Dn-Programming-Core-Management/Dn-FamiTracker)** (License: **GPL-3.0-or-later**)
+* **[Furnace Tracker](https://github.com/tildearrow/furnace)** (License: **GPL-2.0-or-later**)
+* **[Mesen / MesenCE](https://github.com/SourMesen/Mesen2)** (License: **GPL-3.0-or-later**)
+* **[puNES](https://github.com/punesemu/puNES)** (License: **GPL-2.0-or-later**)
+
+
+---
+
+## License
+
+Original code written specifically for this project is released under the **WTFPL** (Do What The Fuck You Want To Public License). 
+
+Code adapted from upstream open-source projects continues to retain and respect their original permissive/open licenses (e.g. TetaNES and Dn-FamiTracker).
+
+```text
+            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+                    Version 2, December 2004
+
+ Copyright (C) 2026 Purpbatboi
+
+ Everyone is permitted to copy and distribute verbatim or modified
+ copies of this license document, and changing it is allowed as long
+ as the name is changed.
+
+            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+
+  0. You just DO WHAT THE FUCK YOU WANT TO.
 ```
 
-Release artifacts and bundled plugin outputs can be found under `target/` (for example `target/bundled/` and `target/release/`).
+---
 
-**Credits & Attribution**
+## AI Disclosure
 
-This project was developed with APU code from TetaNES
-- TetaNES: https://github.com/lukexor/tetanes
-
-# AI Disclosure
-
-OpenAI's Codex was used in the development of this plugin.
+OpenAI's Codex and Google Antigravity AI agents were used in the development of this plugin.
