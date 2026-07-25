@@ -5,10 +5,11 @@ RP2A03 Synth is a WiP NES VST3/CLAP plugin for modern DAWs. The goal is to creat
 
 ## Workspace Structure
 
-- `rp2a03_core` — Core NES APU DSP engine: pulse channels, envelope, frame counter, length counter, sweep, LFO, and BlipBuf sample synthesis.
-- `rp2a03_common` — Shared utilities, types, and constants.
-- `rp2a03_niceplug` — Plugin crate (CLAP / VST3) exposing the synth engine with MIDI handling and parameter management.
-- `xtask` — Workspace helper tasks and build automation scripts.
+- `rp2a03_core/` — NES APU emulation, sequencing, resampling, LFOs. Timing and register semantics directly affect sound.
+- `rp2a03_niceplug/` — CLAP/VST wrapper, parameters, audio processing, and MIDI handling. This crate is developed using the nice-plug framework and is the host-facing real-time boundary.
+- `rp2a03_ui/` — Egui editor, widgets, and UI state. UI and processor state must stay coherent.
+- `xtask/` — Workspace tooling. It encodes packaging, build automation, and development workflows.
+- `Ideas-ref-folder/` — External/legacy reference implementations. Read and adapt ideas; do not edit or copy blindly.
 
 ---
 
