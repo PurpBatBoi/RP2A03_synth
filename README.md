@@ -1,7 +1,7 @@
 ![RP2A03 Logo](logo.png)
 ---
 
-RP2A03 Synth is a WiP NES VST3/CLAP plugin for modern DAWs. The goal is to create a modernized, high-performance synthesizer focusing on faithful, hardware-accurate RP2A03 APU behavior, smooth playback modulation, and future support for NES expansion audio chips.
+RP2A03 Synth is a WiP NES VST3/CLAP plugin for modern DAWs. The goal is to create a modernized, high-performance synthesizer partially focusing on faithful, hardware-accurate RP2A03 APU behavior, ease of use, and future support for NES expansion audio chips.
 
 ## Workspace Structure
 
@@ -53,7 +53,7 @@ The following projects were extensively referenced during research/development:
 * **[Furnace Tracker](https://github.com/tildearrow/furnace)** (License: **GPL-2.0-or-later**)
 * **[Mesen / MesenCE](https://github.com/SourMesen/Mesen2)** (License: **GPL-3.0-or-later**)
 * **[puNES](https://github.com/punesemu/puNES)** (License: **GPL-2.0-or-later**)
-
+* **[NesDEV and its community](https://www.nesdev.org/wiki/Nesdev_Wiki)**
 
 ---
 
