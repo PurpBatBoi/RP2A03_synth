@@ -9,7 +9,6 @@ RP2A03 Synth is a WiP NES VST3/CLAP plugin for modern DAWs. The goal is to creat
 - `rp2a03_niceplug/` — CLAP/VST wrapper, parameters, audio processing, and MIDI handling. This crate is developed using the nice-plug framework and is the host-facing real-time boundary.
 - `rp2a03_ui/` — Egui editor, widgets, and UI state. UI and processor state must stay coherent.
 - `xtask/` — Workspace tooling. It encodes packaging, build automation, and development workflows.
-- `Ideas-ref-folder/` — External/legacy reference implementations. Read and adapt ideas; do not edit or copy blindly.
 
 ---
 
