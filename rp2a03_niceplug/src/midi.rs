@@ -674,4 +674,57 @@ mod tests {
         let freq_minus_128 = NTSC_CPU_CLOCK as f32 / (16.0 * (period_minus_128 as f32 + 0.5));
         assert!((freq_minus_128 - 1300.71).abs() < 10.0, "Expected ~1300.71 Hz, got {}", freq_minus_128);
     }
+
+    #[test]
+    fn test_all_envelope_editor_timings_1to1_famitracker() {
+        let mut handler = MidiHandler::new();
+        let mut pulse = Pulse::new(rp2a03_core::apu_pulse::PulseChannel::One);
+
+        let vol_seq = Sequence::parse("15 10 5");
+        let arp_seq = Sequence::parse("0 4 7");
+        let mut pitch_seq = Sequence::parse("1 2 3");
+        pitch_seq.pitch_mode = PitchMode::Relative;
+        let hipitch_seq = Sequence::parse("0 1 2");
+        let duty_seq = Sequence::parse("0 1 2");
+
+        let active_seqs = ActiveSequences {
+            vol_seq,
+            vol_enabled: true,
+            arp_seq,
+            arp_enabled: true,
+            pitch_seq,
+            pitch_enabled: true,
+            hipitch_seq,
+            hipitch_enabled: true,
+            duty_seq,
+            duty_enabled: true,
+        };
+
+        // On NoteOn attack (Frame 0): Step 0 is evaluated immediately across all envelope types
+        handler.note_on(60, 127, &mut pulse, &active_seqs);
+        assert_eq!(handler.vol_seq_player.value(), 15);
+        assert_eq!(handler.arp_seq_player.value(), 0);
+        assert_eq!(handler.duty_seq_player.value(), 0);
+        assert_eq!(handler.pitch_seq_player.value(), 1);
+        assert_eq!(handler.hipitch_seq_player.value(), 0);
+        assert_eq!(handler.pitch_accum, 1);
+
+        // Frame 1 tick (16.6ms): Step 1 evaluated
+        handler.update_modulation(&mut pulse, &active_seqs, 60.0, 1);
+        assert_eq!(handler.vol_seq_player.value(), 10);
+        assert_eq!(handler.arp_seq_player.value(), 4);
+        assert_eq!(handler.duty_seq_player.value(), 1);
+        assert_eq!(handler.pitch_seq_player.value(), 2);
+        assert_eq!(handler.hipitch_seq_player.value(), 1);
+        assert_eq!(handler.pitch_accum, 1 + 2 + (1 << 4)); // 1 + 2 + 16 = 19
+
+        // Frame 2 tick (33.3ms): Step 2 evaluated
+        handler.update_modulation(&mut pulse, &active_seqs, 60.0, 1);
+        assert_eq!(handler.vol_seq_player.value(), 5);
+        assert_eq!(handler.arp_seq_player.value(), 7);
+        assert_eq!(handler.duty_seq_player.value(), 2);
+        assert_eq!(handler.pitch_seq_player.value(), 3);
+        assert_eq!(handler.hipitch_seq_player.value(), 2);
+        assert_eq!(handler.pitch_accum, 19 + 3 + (2 << 4)); // 19 + 3 + 32 = 54
+    }
 }
