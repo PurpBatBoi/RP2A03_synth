@@ -265,6 +265,22 @@ impl Pulse {
         self.envelope.restart();
     }
 
+    /// Soft high-period update: updates only the high 3 bits of the timer period
+    /// **without** resetting the duty sequencer step or restarting the envelope.
+    ///
+    /// Use this during continuous pitch modulation (vibrato LFO, pitch sequences, fine
+    /// pitch) to avoid the audible click that `write_timer_hi` causes whenever the period
+    /// oscillates across a 256-boundary (e.g. MIDI notes 29, 45, 57).
+    ///
+    /// On note attacks, continue using `write_timer_hi` so the duty phase resets cleanly.
+    ///
+    /// This is the software-equivalent of Blaarg's smooth vibrato trick used by FamiStudio
+    /// (ChannelStateSquare.cs / famistudio_ca65.s) — adapted for a VST where we can update
+    /// the period register directly rather than manipulating the hardware sweep unit.
+    pub fn set_period_hi_soft(&mut self, hi_bits: u8) {
+        self.set_period((self.real_period & 0x00FF) | (u16::from(hi_bits & 0x07) << 8));
+    }
+
     // ── Enable / Status ─────────────────────
 
     /// Enable or disable from $4015.

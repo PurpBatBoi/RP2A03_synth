@@ -270,6 +270,12 @@ impl MidiHandler {
 
             pulse.set_enabled(true);
             pulse.write_sweep(0x08);
+
+            // Reset the sentinel so the next update_modulation frame is guaranteed to call
+            // write_timer_hi (full phase reset) regardless of whether the new note shares
+            // the same high-period bits as the previous note. 0xFF is never a valid 3-bit
+            // timer_hi value (valid range 0–7), so this safely signals "note just triggered".
+            self.prev_timer_hi = 0xFF;
         }
     }
 
@@ -468,7 +474,17 @@ impl MidiHandler {
         }
 
         if timer_hi_bits != self.prev_timer_hi {
-            pulse.write_timer_hi(0xF8 | timer_hi_bits);
+            if self.prev_timer_hi == 0xFF {
+                // Note attack (sentinel set by apply_top_note): use write_timer_hi so the
+                // duty sequencer and envelope reset cleanly for the new note's attack.
+                pulse.write_timer_hi(0xF8 | timer_hi_bits);
+            } else {
+                // Sustain: soft high-period update — skips duty.reset_step() and
+                // envelope.restart(), eliminating the click at period byte boundaries
+                // (e.g. 0x00FF ↔ 0x0100) during vibrato / LFO modulation.
+                // Mirrors Blaarg's smooth vibrato technique used in FamiStudio.
+                pulse.set_period_hi_soft(timer_hi_bits);
+            }
             self.prev_timer_hi = timer_hi_bits;
         }
 
