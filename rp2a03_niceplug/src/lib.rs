@@ -1,12 +1,16 @@
 //! rp2a03_niceplug\src\lib.rs
 //! RP2A03 Plugin wrapper using nice-plug.
 
-use egui::Color32;
 use nice_plug::prelude::*;
 use nice_plug_egui::{create_egui_editor, EguiSettings, EguiState};
 use parking_lot::Mutex;
 use rp2a03_common::{
-    render_editor_ui, ActiveSequences, HostAutomationControls, MidiHandler, SharedSequences,
+    render_editor_ui,
+    style,
+    ActiveSequences,
+    HostAutomationControls,
+    MidiHandler,
+    SharedSequences,
     MAX_SEQUENCES,
 };
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
@@ -219,10 +223,7 @@ impl Plugin for Rp2a03Plugin {
             (),
             EguiSettings::default(),
             move |ctx, _queue, _state| {
-                let mut visuals = egui::Visuals::dark();
-                visuals.panel_fill = Color32::from_rgb(14, 14, 14);
-                visuals.extreme_bg_color = Color32::from_rgb(10, 10, 10);
-                ctx.set_visuals(visuals);
+                ctx.set_style_of(egui::Theme::Dark, style());
             },
             move |ui, setter, _queue, _state| {
                 let mut data = shared.lock();

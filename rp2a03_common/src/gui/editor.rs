@@ -82,11 +82,9 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
 /// Returns a new shared sequence number when the user changes the spinbox. The
 /// plugin wrapper owns the automatable parameter and commits this change to the
 /// host through its parameter setter.
-pub fn render_editor_ui(
-    ui: &mut egui::Ui,
-    data: &mut SharedSequences,
-    shared_sequence_index: usize,
-) -> Option<usize> {
+
+
+fn draw_instrumentsettings_panel(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize, changed_sequence_index: &mut Option<usize>,) {
     const SEQ_TYPES: [(&str, usize); 5] = [
         ("Volume", 0),
         ("Arpeggio", 1),
@@ -95,125 +93,156 @@ pub fn render_editor_ui(
         ("Duty / Noise", 4),
     ];
 
-    data.set_all_selected_sequence_indices(shared_sequence_index);
-    let mut changed_sequence_index = None;
-
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(180.0);
-            ui.group(|ui| {
-                ui.label(egui::RichText::new("Instrument settings").strong());
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label("Sequence Index:");
-                    let mut index = shared_sequence_index;
-                    if ui
-                        .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
-                        .changed()
-                    {
-                        changed_sequence_index = Some(index);
-                    }
-                });
-                ui.add_space(6.0);
-                egui::Grid::new("seq_type_grid")
-                    .num_columns(2)
-                    .spacing([6.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("");
-                        ui.label("Effect name");
-                        ui.end_row();
-                        for (name, tab) in SEQ_TYPES {
-                            ui.checkbox(data.sequence_enabled_mut(tab), "");
-                            if ui
-                                .selectable_label(data.selected_tab == tab, name)
-                                .clicked()
-                            {
-                                if data.selected_tab != tab {
-                                    cleanup_tab_sequence(data, data.selected_tab);
-                                    data.selected_tab = tab;
-                                    cleanup_tab_sequence(data, tab);
-                                }
-                            }
-                            ui.end_row();
+    ui.vertical(|ui| {
+                ui.set_width(180.0);
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Instrument settings").strong());
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Sequence Index:");
+                        let mut index = shared_sequence_index;
+                        if ui
+                            .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
+                            .changed()
+                        {
+                            *changed_sequence_index = Some(index);
                         }
                     });
+                    ui.add_space(6.0);
+                    egui::Grid::new("seq_type_grid")
+                        .num_columns(2)
+                        .spacing([6.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("");
+                            ui.label("Effect name");
+                            ui.end_row();
+                            for (name, tab) in SEQ_TYPES {
+                                ui.checkbox(data.sequence_enabled_mut(tab), "");
+                                if ui
+                                    .selectable_label(data.selected_tab == tab, name)
+                                    .clicked()
+                                {
+                                    if data.selected_tab != tab {
+                                        cleanup_tab_sequence(data, data.selected_tab);
+                                        data.selected_tab = tab;
+                                        cleanup_tab_sequence(data, tab);
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
             });
-        });
+}
+
+fn draw_sequenceeditor_panel(ui: &mut egui::Ui, data: &mut SharedSequences,) {
+    ui.vertical(|ui| {
+                let tab = data.selected_tab;
+                // Same per-type ranges as sequence_range(): both graph editing and the
+                // text box below must clamp identically. Hi-pitch is -128..=127 in
+                // dnFamiTracker, same as pitch.
+                let (title, min_val, max_val) = match tab {
+                    0 => ("Volume", 0, 15),
+                    1 => ("Arpeggio", -96, 96),
+                    2 => ("Pitch", -128, 127),
+                    3 => ("Hi-pitch", -128, 127),
+                    _ => ("Duty / Noise", 0, 3),
+                };
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("Sequence editor - {}", title)).strong());
+                        if tab == 2 {
+                            ui.add_space(20.0);
+                            ui.label("Mode:");
+                            let (_, sequence) = data.selected_sequence_mut(tab);
+                            ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
+                            ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
+                        }
+                    });
+                    ui.add_space(4.0);
+                    let (text, sequence) = data.selected_sequence_mut(tab);
+                    if draw_envelope_bar_graph(ui, sequence, min_val, max_val) {
+                        *text = sequence_to_text(sequence);
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Size:");
+                        let cur_len = sequence.len();
+                        if ui.button("-").clicked() && cur_len > 0 {
+                            sequence.values.pop();
+                            let new_len = sequence.len();
+                            if sequence.loop_point.is_some_and(|p| p >= new_len) {
+                                sequence.loop_point = None;
+                            }
+                            if sequence.release_point.is_some_and(|p| p >= new_len) {
+                                sequence.release_point = None;
+                            }
+                            *text = sequence_to_text(sequence);
+                        }
+                        ui.label(egui::RichText::new(cur_len.to_string()).strong());
+                        if ui.button("+").clicked() {
+                            sequence.values.push(0);
+                            *text = sequence_to_text(sequence);
+                        }
+                        ui.add_space(15.0);
+                        ui.label(format!("{} ms", (cur_len * 1000) / 60));
+                    });
+                    ui.add_space(6.0);
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(text)
+                            .desired_width(420.0)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if edit.changed() {
+                        let sanitized = sanitize_sequence_text(text);
+                        let prev_mode = sequence.pitch_mode;
+                        *sequence = if sanitized.trim().is_empty() {
+                            Sequence::default()
+                        } else {
+                            Sequence::parse_clamped(&sanitized, min_val, max_val).0
+                        };
+                        sequence.pitch_mode = prev_mode;
+                    }
+                    if enter_pressed || edit.lost_focus() {
+                        *text = sequence_to_text(sequence);
+                    }
+                });
+            });
+}
+
+
+
+fn draw_main_content(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize, changed_sequence_index: &mut Option<usize>,) {
+    ui.horizontal(|ui| {
+        draw_instrumentsettings_panel(
+            ui,
+            data,
+            shared_sequence_index,
+            changed_sequence_index,
+        );
+
         ui.add_space(10.0);
-        ui.vertical(|ui| {
-            let tab = data.selected_tab;
-            // Same per-type ranges as sequence_range(): both graph editing and the
-            // text box below must clamp identically. Hi-pitch is -128..=127 in
-            // dnFamiTracker, same as pitch.
-            let (title, min_val, max_val) = match tab {
-                0 => ("Volume", 0, 15),
-                1 => ("Arpeggio", -96, 96),
-                2 => ("Pitch", -128, 127),
-                3 => ("Hi-pitch", -128, 127),
-                _ => ("Duty / Noise", 0, 3),
-            };
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("Sequence editor - {}", title)).strong());
-                    if tab == 2 {
-                        ui.add_space(20.0);
-                        ui.label("Mode:");
-                        let (_, sequence) = data.selected_sequence_mut(tab);
-                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
-                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
-                    }
-                });
-                ui.add_space(4.0);
-                let (text, sequence) = data.selected_sequence_mut(tab);
-                if draw_envelope_bar_graph(ui, sequence, min_val, max_val) {
-                    *text = sequence_to_text(sequence);
-                }
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label("Size:");
-                    let cur_len = sequence.len();
-                    if ui.button("-").clicked() && cur_len > 0 {
-                        sequence.values.pop();
-                        let new_len = sequence.len();
-                        if sequence.loop_point.is_some_and(|p| p >= new_len) {
-                            sequence.loop_point = None;
-                        }
-                        if sequence.release_point.is_some_and(|p| p >= new_len) {
-                            sequence.release_point = None;
-                        }
-                        *text = sequence_to_text(sequence);
-                    }
-                    ui.label(egui::RichText::new(cur_len.to_string()).strong());
-                    if ui.button("+").clicked() {
-                        sequence.values.push(0);
-                        *text = sequence_to_text(sequence);
-                    }
-                    ui.add_space(15.0);
-                    ui.label(format!("{} ms", (cur_len * 1000) / 60));
-                });
-                ui.add_space(6.0);
-                let edit = ui.add(
-                    egui::TextEdit::singleline(text)
-                        .desired_width(420.0)
-                        .font(egui::TextStyle::Monospace),
-                );
-                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if edit.changed() {
-                    let sanitized = sanitize_sequence_text(text);
-                    let prev_mode = sequence.pitch_mode;
-                    *sequence = if sanitized.trim().is_empty() {
-                        Sequence::default()
-                    } else {
-                        Sequence::parse_clamped(&sanitized, min_val, max_val).0
-                    };
-                    sequence.pitch_mode = prev_mode;
-                }
-                if enter_pressed || edit.lost_focus() {
-                    *text = sequence_to_text(sequence);
-                }
-            });
-        });
+
+        draw_sequenceeditor_panel(
+            ui,
+            data,
+        );
     });
+}
+
+
+pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize,) -> Option<usize> {
+    data.set_all_selected_sequence_indices(shared_sequence_index);
+
+    let mut changed_sequence_index = None;
+
+    draw_main_content(
+        ui,
+        data,
+        shared_sequence_index,
+        &mut changed_sequence_index,
+    );
 
     changed_sequence_index
 }
