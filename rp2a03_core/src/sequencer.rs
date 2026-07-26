@@ -1,4 +1,4 @@
-//! rp2a03_core\src\sequence.rs
+//! rp2a03_core\src\sequencer.rs
 //!
 //! FamiTracker-style sequence engine for volume, arpeggio, pitch, hi-pitch, and duty cycle envelopes.
 //!

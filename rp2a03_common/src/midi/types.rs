@@ -1,3 +1,4 @@
+//! rp2a03_common\src\midi\types.rs
 //! Core value types and note/frequency conversions used by the MIDI handler.
 
 use rp2a03_core::sequencer::Sequence;

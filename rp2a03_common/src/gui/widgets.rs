@@ -1,4 +1,4 @@
-//! rp2a03_ui\src\widgets.rs
+//! rp2a03_common\src\gui\widgets.rs
 //!
 //! Custom painter elements for sequence visualization and interactive envelope editing.
 

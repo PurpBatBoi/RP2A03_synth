@@ -1,4 +1,4 @@
-//! rp2a03_ui\src\state.rs
+//! rp2a03_common\src\gui\state.rs
 //! State structures for sequence banks and instrument settings.
 
 use rp2a03_core::sequencer::Sequence;

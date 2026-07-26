@@ -1,3 +1,4 @@
+//! rp2a03_common\src\midi\mod.rs
 //! Incoming MIDI handling and CC mapping for RP2A03 plugin.
 
 mod events;

@@ -1,3 +1,4 @@
+//! rp2a03_common\src\lib.rs
 //! `rp2a03_common` - Shared MIDI and GUI logic for RP2A03 Synth.
 
 pub mod gui;

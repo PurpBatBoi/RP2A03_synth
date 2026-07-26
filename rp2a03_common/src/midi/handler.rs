@@ -1,3 +1,4 @@
+//! rp2a03_common\src\midi\handler.rs
 //! `MidiHandler`: state container for note stack, sequence players, LFO, and
 //! per-tick modulation / register-write logic. NoteEvent ingestion (NoteOn,
 //! NoteOff, CC dispatch) lives in `events.rs`.

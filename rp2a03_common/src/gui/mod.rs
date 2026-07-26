@@ -1,3 +1,4 @@
+//! rp2a03_common\src\gui\mod.rs
 //! Reusable egui-based UI for editing FamiTracker-style sequences.
 
 mod editor;

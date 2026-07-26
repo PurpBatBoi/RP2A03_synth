@@ -1,3 +1,4 @@
+//! rp2a03_common\src\midi\tests.rs
 //! Tests for `MidiHandler` and its sequence/pitch/envelope processing.
 
 use super::*;

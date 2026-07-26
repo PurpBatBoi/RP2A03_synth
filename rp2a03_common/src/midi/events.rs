@@ -1,3 +1,4 @@
+//! rp2a03_common\src\midi\events.rs
 //! MIDI/NoteEvent ingestion: NoteOn/NoteOff handling, CC dispatch, and the
 //! trigger-time macro-period computation performed on NoteOn.
 
