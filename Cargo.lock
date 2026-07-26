@@ -1756,6 +1756,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp2a03_common"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "rp2a03_core",
+]
+
+[[package]]
 name = "rp2a03_core"
 version = "0.1.0"
 
@@ -1767,15 +1775,7 @@ dependencies = [
  "nice-plug",
  "nice-plug-egui",
  "parking_lot",
- "rp2a03_core",
- "rp2a03_ui",
-]
-
-[[package]]
-name = "rp2a03_ui"
-version = "0.1.0"
-dependencies = [
- "egui",
+ "rp2a03_common",
  "rp2a03_core",
 ]
 

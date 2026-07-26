@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::NTSC_CPU_CLOCK;
-use rp2a03_ui::{render_editor_ui, SharedSequences, MAX_SEQUENCES};
+use rp2a03_common::{render_editor_ui, SharedSequences, MAX_SEQUENCES};
 use std::sync::Arc;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
