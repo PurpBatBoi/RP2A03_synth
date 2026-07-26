@@ -1,3 +1,4 @@
+//! rp2a03_ui\src\editor.rs
 //! Layout rendering logic for the reusable sequence editor window.
 
 use super::state::{SharedSequences, MAX_SEQUENCES};
