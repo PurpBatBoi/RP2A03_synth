@@ -7,9 +7,7 @@
 //!
 //! See: <https://www.nesdev.org/wiki/APU_Pulse>
 
-use crate::apu_envelope::Envelope;
-use crate::apu_length_counter::LengthCounter;
-use crate::apu_timer::Timer;
+use crate::apu::{Envelope, LengthCounter, Timer};
 
 // ─────────────────────────────────────────────
 // Duty Sequencer
