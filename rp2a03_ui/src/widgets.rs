@@ -3,7 +3,7 @@
 //! Custom painter elements for sequence visualization and interactive envelope editing.
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use rp2a03_core::sequence::Sequence;
+use rp2a03_core::sequencer::Sequence;
 
 /// Renders a FamiTracker-style envelope bar graph and handles interactive mouse editing.
 /// Returns `true` when step values or markers change so text representation can be synchronized.

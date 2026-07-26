@@ -3,7 +3,7 @@
 
 use super::state::{SharedSequences, MAX_SEQUENCES};
 use super::widgets::draw_envelope_bar_graph;
-use rp2a03_core::sequence::{PitchMode, Sequence};
+use rp2a03_core::sequencer::{PitchMode, Sequence};
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
 pub fn sequence_to_text(seq: &Sequence) -> String {

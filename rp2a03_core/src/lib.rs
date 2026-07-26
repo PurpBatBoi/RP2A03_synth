@@ -9,5 +9,5 @@ pub mod apu_length_counter;
 pub mod apu_pulse;
 pub mod apu_timer;
 pub mod blip_buf;
-pub mod lfo;
-pub mod sequence;
+pub mod software_lfo;
+pub mod sequencer;

@@ -1,7 +1,7 @@
 //! rp2a03_ui\src\state.rs
 //! State structures for sequence banks and instrument settings.
 
-use rp2a03_core::sequence::Sequence;
+use rp2a03_core::sequencer::Sequence;
 
 /// The FamiTracker-compatible sequence-number range (`0..=127`).
 pub const MAX_SEQUENCES: usize = 128;

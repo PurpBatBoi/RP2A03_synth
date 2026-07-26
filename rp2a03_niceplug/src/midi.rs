@@ -3,8 +3,8 @@
 
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::Pulse;
-use rp2a03_core::lfo::{SoftwareLfo, DEFAULT_LFO_SPEED};
-use rp2a03_core::sequence::{PitchMode, SeqState, Sequence, SequencePlayer};
+use rp2a03_core::software_lfo::{SoftwareLfo, DEFAULT_LFO_SPEED};
+use rp2a03_core::sequencer::{PitchMode, SeqState, Sequence, SequencePlayer};
 use rp2a03_core::NTSC_CPU_CLOCK;
 
 /// Converts MIDI note number to frequency in Hz.
