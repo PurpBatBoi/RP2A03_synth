@@ -1,44 +1,55 @@
-// rp2a03_core\src\apu_timer.rs
-// Implementation based on the info from NESdev, Blaarg's "apu_ref" and Brad Taylor's "2A03 technical reference"
+//! Timer abstraction for APU units.
 
-#[derive(Debug, Clone)]
-pub struct ApuTimer {
-    period: u16,
-    counter: u16,
+/// Trait for types that have timers.
+pub trait TimerCycle {
+    fn cycle(&self) -> u32;
 }
 
-impl ApuTimer {
-    pub fn new(period: u16) -> Self {
+/// A timer that generates a clock signal based on a divider and a period. The timer is clocked
+/// every (period + 1) * divider cycles.
+#[derive(Default, Debug, Clone)]
+#[must_use]
+pub struct Timer {
+    pub cycle: u32,
+    pub counter: u16,
+    pub period: u16,
+}
+
+impl Timer {
+    pub const fn new(period: u16) -> Self {
         Self {
+            cycle: 0,
+            counter: 0,
             period,
-            counter: period,
         }
     }
 
-    pub fn counter(&self) -> u16 {
-        self.counter
+    pub const fn preload(period: u16) -> Self {
+        let mut timer = Self::new(period);
+        timer.counter = timer.period;
+        timer
     }
 
-    pub fn set_period(&mut self, period: u16) {
-        self.period = period;
-    }
-
-    pub fn period(&self) -> u16 {
-        self.period
-    }
-
-    pub fn restart(&mut self) {
+    pub const fn reload(&mut self) {
         self.counter = self.period;
     }
 
-    pub fn clock(&mut self) -> bool {
-        if self.counter > 0 {
-            self.counter -= 1;
-            false
-        } else {
-            self.restart();
-            true
+    pub const fn tick(&mut self) -> bool {
+        self.cycle += 1;
+        if self.counter == 0 {
+            self.counter = self.period;
+            return true;
         }
+        self.counter -= 1;
+        false
+    }
+}
+
+impl Timer {
+    pub fn reset(&mut self) {
+        self.counter = 0;
+        self.period = 0;
+        self.cycle = 0;
     }
 }
 
@@ -47,85 +58,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn timer_starts_loaded() {
-        let timer = ApuTimer::new(4);
-        assert_eq!(timer.period(), 4);
-        assert_eq!(timer.counter(), 4);
-    }
+    fn timer() {
+        // Period (10 + 1) == 11 + initial clock
+        let mut timer = Timer::new(10);
+        let mut expected = [false; 23];
+        expected[0] = true;
+        expected[11] = true;
+        expected[22] = true;
+        assert_eq!(expected, [(); 23].map(|_| timer.tick()));
+        assert_eq!(23, timer.cycle);
 
-    #[test]
-    fn clock_decrements_counter() {
-        let mut timer = ApuTimer::new(4);
-        let expired = timer.clock();
+        // Period (10 + 1) == 11
+        let mut timer = Timer::preload(10);
+        let mut expected = [false; 22];
+        expected[10] = true;
+        expected[21] = true;
+        assert_eq!(expected, [(); 22].map(|_| timer.tick()));
+        assert_eq!(22, timer.cycle);
 
-        assert!(!expired);
-        assert_eq!(timer.counter(), 3);
-    }
+        // Period (10 * 2) + 1 == 22 + initial clock
+        let mut timer = Timer::new((10 * 2) + 1);
+        let mut expected = [false; 45];
+        expected[0] = true;
+        expected[22] = true;
+        expected[44] = true;
+        assert_eq!(expected, [(); 45].map(|_| timer.tick()));
+        assert_eq!(45, timer.cycle);
 
-    #[test]
-    fn timer_does_not_expire_early() {
-        let mut timer = ApuTimer::new(4);
-
-        for _ in 0..4 {
-            assert!(!timer.clock());
-        }
-    }
-
-    #[test]
-    fn timer_expires_after_period_plus_one_clocks() {
-        let mut timer = ApuTimer::new(4);
-
-        for _ in 0..4 {
-            assert!(!timer.clock());
-        }
-        assert!(timer.clock());
-    }
-
-    #[test]
-    fn timer_reloads_after_expiring() {
-        let mut timer = ApuTimer::new(4);
-
-        for _ in 0..4 {
-            timer.clock();
-        }
-
-        assert!(timer.clock());
-
-        assert_eq!(timer.counter(), 4);
-    }
-
-    #[test]
-    fn changing_period_does_not_reload_counter() {
-        let mut timer = ApuTimer::new(4);
-
-        timer.clock();
-        timer.clock();
-
-        timer.set_period(10);
-
-        assert_eq!(timer.counter(), 2);
-        assert_eq!(timer.period(), 10);
-    }
-
-    #[test]
-    fn reload_uses_new_period() {
-        let mut timer = ApuTimer::new(4);
-
-        timer.set_period(10);
-
-        while !timer.clock() {}
-
-        assert_eq!(timer.counter(), 10);
-    }
-
-    #[test]
-    fn timer_output_sequence() {
-        let mut timer = ApuTimer::new(4);
-
-        let expected = [false, false, false, false, true, false, false];
-
-        for expected_value in expected {
-            assert_eq!(timer.clock(), expected_value);
-        }
+        // Period (10 * 2) + 1 == 22
+        let mut timer = Timer::preload((10 * 2) + 1);
+        let mut expected = [false; 44];
+        expected[21] = true;
+        expected[43] = true;
+        assert_eq!(expected, [(); 44].map(|_| timer.tick()));
+        assert_eq!(44, timer.cycle);
     }
 }

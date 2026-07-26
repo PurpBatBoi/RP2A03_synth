@@ -97,20 +97,13 @@ impl Default for Rp2a03Params {
 }
 
 impl Rp2a03Plugin {
-    fn generate_samples(&mut self, output: &mut [f32], seqs: &ActiveSequences) {
+    fn render_samples_with_current_modulation(&mut self, output: &mut [f32], master_gain: f32) {
         let sample_count = output.len() as u32;
         if sample_count == 0 {
             return;
         }
 
         let clocks_needed = self.blip.clocks_needed(sample_count);
-
-        let master_gain = self.midi_handler.update_modulation(
-            &mut self.pulse,
-            seqs,
-            self.sample_rate,
-            sample_count as usize,
-        );
 
         for clock in 0..clocks_needed {
             self.pulse.clock();
@@ -135,6 +128,33 @@ impl Rp2a03Plugin {
 
         for (i, sample) in buf_i16.iter().enumerate() {
             output[i] = (*sample as f32 / 32768.0) * master_gain;
+        }
+    }
+
+    fn generate_samples(&mut self, output: &mut [f32], seqs: &ActiveSequences) {
+        let mut rendered = 0;
+
+        while rendered < output.len() {
+            let master_gain = self
+                .midi_handler
+                .apply_current_modulation(&mut self.pulse, seqs);
+
+            let segment_len = if self.midi_handler.gate() {
+                self.midi_handler
+                    .samples_until_next_frame(self.sample_rate)
+                    .min(output.len() - rendered)
+            } else {
+                output.len() - rendered
+            };
+
+            self.render_samples_with_current_modulation(
+                &mut output[rendered..rendered + segment_len],
+                master_gain,
+            );
+
+            rendered += segment_len;
+            self.midi_handler
+                .advance_frame_samples(seqs, self.sample_rate, segment_len);
         }
     }
 

@@ -92,8 +92,11 @@ pub struct MidiHandler {
     pub active_note: u8,
     /// Software LFO engine from `rp2a03_core`
     pub lfo: SoftwareLfo,
-    /// Sample accumulator for 60 Hz frame tick timing
-    pub frame_sample_counter: f32,
+    /// Sample accumulator for 60 Hz frame tick timing.
+    ///
+    /// This is intentionally fractional so envelope frames land sample-accurately
+    /// across host buffer sizes whose length is not an exact multiple of 1/60 s.
+    pub frame_sample_counter: f64,
 
     /// 5 FamiTracker sequence players
     pub vol_seq_player: SequencePlayer,
@@ -457,15 +460,38 @@ impl MidiHandler {
         freq_to_period(midi_note_to_freq(note)) as i32
     }
 
-    /// Update sequence playback, LFO modulation, and write updated parameters to APU pulse channel.
-    /// Returns master gain multiplier (CC11 Expression).
-    pub fn update_modulation(
+    /// Number of samples that can be rendered before the next 60 Hz envelope tick.
+    pub fn samples_until_next_frame(&self, sample_rate: f32) -> usize {
+        let samples_per_tick = sample_rate as f64 / 60.0;
+        (samples_per_tick - self.frame_sample_counter)
+            .ceil()
+            .max(1.0) as usize
+    }
+
+    /// Account for samples that have just been rendered, advancing envelopes at the
+    /// exact sample boundary where each 60 Hz frame elapses.
+    pub fn advance_frame_samples(
         &mut self,
-        pulse: &mut Pulse,
         seqs: &ActiveSequences,
         sample_rate: f32,
         num_samples: usize,
-    ) -> f32 {
+    ) {
+        if !self.gate {
+            return;
+        }
+
+        let samples_per_tick = sample_rate as f64 / 60.0;
+        self.frame_sample_counter += num_samples as f64;
+        while self.frame_sample_counter >= samples_per_tick {
+            self.clock_sequences_one_frame(seqs);
+            self.lfo.clock_tick();
+            self.frame_sample_counter -= samples_per_tick;
+        }
+    }
+
+    /// Write the current sequence/LFO state to the APU pulse channel.
+    /// Returns master gain multiplier (CC11 Expression).
+    pub fn apply_current_modulation(&mut self, pulse: &mut Pulse, seqs: &ActiveSequences) -> f32 {
         let master_gain = self.cc_expression as f32 / 127.0;
 
         if !self.gate {
@@ -480,15 +506,6 @@ impl MidiHandler {
                 self.prev_ctrl = ctrl_byte;
             }
             return master_gain;
-        }
-
-        // Advance 60 Hz frame ticks for active non-empty sequences
-        let samples_per_tick = sample_rate / 60.0;
-        self.frame_sample_counter += num_samples as f32;
-        while self.frame_sample_counter >= samples_per_tick {
-            self.clock_sequences_one_frame(seqs);
-            self.lfo.clock_tick();
-            self.frame_sample_counter -= samples_per_tick;
         }
 
         // 1. Volume Sequence & Tremolo LFO (Fallback to 15 if sequence is empty)
@@ -558,6 +575,20 @@ impl MidiHandler {
         }
 
         master_gain
+    }
+
+    /// Update sequence playback, LFO modulation, and write updated parameters to APU pulse channel.
+    /// Returns master gain multiplier (CC11 Expression).
+    #[cfg(test)]
+    pub fn update_modulation(
+        &mut self,
+        pulse: &mut Pulse,
+        seqs: &ActiveSequences,
+        sample_rate: f32,
+        num_samples: usize,
+    ) -> f32 {
+        self.advance_frame_samples(seqs, sample_rate, num_samples);
+        self.apply_current_modulation(pulse, seqs)
     }
 
     /// Check if gate is currently active.
@@ -880,6 +911,35 @@ mod tests {
         // Frame 3 tick: all sequences finished (3 items each); macro period holds
         handler.update_modulation(&mut pulse, &active_seqs, 60.0, 1);
         assert_eq!(handler.macro_period, period_arp7 + 3 + 32);
+    }
+
+    #[test]
+    fn envelope_ticks_land_on_sample_boundaries_inside_large_host_buffers() {
+        let mut handler = MidiHandler::new();
+        let mut pulse = Pulse::new(rp2a03_core::apu_pulse::PulseChannel::One);
+        let seqs = ActiveSequences {
+            vol_seq: Sequence::parse("15 10 5"),
+            vol_enabled: true,
+            ..default_seqs()
+        };
+
+        handler.note_on(60, 127, &mut pulse, &seqs);
+        assert_eq!(handler.vol_seq_player.value(), 15);
+        assert_eq!(handler.samples_until_next_frame(44_100.0), 735);
+
+        handler.advance_frame_samples(&seqs, 44_100.0, 734);
+        assert_eq!(
+            handler.vol_seq_player.value(),
+            15,
+            "step 1 must not be applied early at the start of a large host buffer"
+        );
+
+        handler.advance_frame_samples(&seqs, 44_100.0, 1);
+        assert_eq!(handler.vol_seq_player.value(), 10);
+        assert_eq!(handler.samples_until_next_frame(44_100.0), 735);
+
+        handler.advance_frame_samples(&seqs, 44_100.0, 735);
+        assert_eq!(handler.vol_seq_player.value(), 5);
     }
 
     #[test]

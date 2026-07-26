@@ -402,7 +402,7 @@ mod tests {
 
         player.trigger(&seq); // value 1
         assert_eq!(player.clock_tick(&seq), 2); // step 1
-                                                // Boundary: pointer reached release + 1 while key held, no loop -> freeze at step 2
+        // Boundary: pointer reached release + 1 while key held, no loop -> freeze at step 2
         assert_eq!(player.clock_tick(&seq), 3);
         assert_eq!(player.state, SeqState::Running);
         // dn re-processes the release-point step every tick during the wait (matters for
@@ -458,7 +458,7 @@ mod tests {
 
         player.trigger(&seq); // value 8, pos = 1 (release + 1 = 2 not reached yet)
         assert_eq!(player.clock_tick(&seq), 7); // step 1; pos = 2 == release + 1
-                                                // loop branch fails (3 < 1 is false), pos < items (2 < 5), key held -> wait on step 1
+        // loop branch fails (3 < 1 is false), pos < items (2 < 5), key held -> wait on step 1
         assert_eq!(player.state, SeqState::Running);
         assert_eq!(player.clock_tick(&seq), 7); // frozen wait re-reads the release step
 
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(player.clock_tick(&seq), 7); // release step processed on next tick
         assert_eq!(player.clock_tick(&seq), 6); // step 2
         assert_eq!(player.clock_tick(&seq), 5); // step 3
-                                                // step 4 is the last item; pos = 5 >= items and loop 3 >= release 1 -> jump to 3
+        // step 4 is the last item; pos = 5 >= items and loop 3 >= release 1 -> jump to 3
         assert_eq!(player.clock_tick(&seq), 4);
         assert_eq!(player.state, SeqState::Running);
         assert_eq!(player.clock_tick(&seq), 5); // loops forever from the loop point

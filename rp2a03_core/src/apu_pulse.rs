@@ -9,7 +9,7 @@
 
 use crate::apu_envelope::Envelope;
 use crate::apu_length_counter::LengthCounter;
-use crate::apu_timer::ApuTimer;
+use crate::apu_timer::Timer;
 
 // ─────────────────────────────────────────────
 // Duty Sequencer
@@ -151,7 +151,7 @@ impl Sweep {
 pub struct Pulse {
     channel: PulseChannel,
     real_period: u16,
-    timer: ApuTimer,
+    timer: Timer,
     duty: DutySequencer,
     length: LengthCounter,
     envelope: Envelope,
@@ -163,7 +163,7 @@ impl Pulse {
         Self {
             channel,
             real_period: 0,
-            timer: ApuTimer::new(0),
+            timer: Timer::new(0),
             duty: DutySequencer::new(),
             length: LengthCounter::new(),
             envelope: Envelope::new(),
@@ -199,7 +199,7 @@ impl Pulse {
         self.real_period = period;
         // The pulse timer is clocked every other CPU cycle,
         // so the effective timer period is (period * 2) + 1.
-        self.timer.set_period((period * 2) + 1);
+        self.timer.period = (period * 2) + 1;
         self.update_target_period();
     }
 
@@ -303,7 +303,7 @@ impl Pulse {
     /// Also applies any pending length counter reload (must happen each cycle).
     pub fn clock(&mut self) {
         self.length.reload();
-        if self.timer.clock() {
+        if self.timer.tick() {
             self.duty.clock();
         }
     }
@@ -336,7 +336,7 @@ impl Pulse {
     /// Reset all sub-components.
     pub fn reset(&mut self) {
         self.real_period = 0;
-        self.timer = ApuTimer::new(0);
+        self.timer = Timer::new(0);
         self.duty = DutySequencer::new();
         self.length.reset();
         self.envelope.reset();
