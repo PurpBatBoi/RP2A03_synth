@@ -1,3 +1,4 @@
 /target
 /Ideas-ref-folder
 .agents
+Cargo.lock
