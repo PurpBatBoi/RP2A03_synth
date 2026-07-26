@@ -37,12 +37,15 @@ pub fn sanitize_sequence_text(text: &str) -> String {
         .collect()
 }
 
+/// dnFamiTracker keeps all sequence items as `signed char`; the editor clamps each
+/// envelope type to its documented range. Pitch and hi-pitch share one graph editor
+/// (`CPitchGraphEditor`) clamped to [-128, 127] (GraphEditor.cpp: DrawRange(127, -128)).
 fn sequence_range(tab: usize) -> (i16, i16) {
     match tab {
         0 => (0, 15),
         1 => (-96, 96),
         2 => (-128, 127),
-        3 => (-64, 63),
+        3 => (-128, 127),
         _ => (0, 3),
     }
 }
@@ -139,11 +142,14 @@ pub fn render_editor_ui(
         ui.add_space(10.0);
         ui.vertical(|ui| {
             let tab = data.selected_tab;
+            // Same per-type ranges as sequence_range(): both graph editing and the
+            // text box below must clamp identically. Hi-pitch is -128..=127 in
+            // dnFamiTracker, same as pitch.
             let (title, min_val, max_val) = match tab {
                 0 => ("Volume", 0, 15),
                 1 => ("Arpeggio", -96, 96),
                 2 => ("Pitch", -128, 127),
-                3 => ("Hi-pitch", -64, 63),
+                3 => ("Hi-pitch", -128, 127),
                 _ => ("Duty / Noise", 0, 3),
             };
             ui.group(|ui| {
@@ -244,5 +250,23 @@ mod tests {
         assert_eq!(data.selected_sequence(0).len(), 0);
         data.set_selected_sequence_index(0, 0);
         assert_eq!(data.selected_sequence(0).values, vec![15, 12]);
+    }
+
+    #[test]
+    fn hi_pitch_and_pitch_accept_the_full_dn_signed_char_range() {
+        // dnFamiTracker's CPitchGraphEditor serves both tabs with a 127..-128 axis, and
+        // both the graph and the text box must agree on it.
+        assert_eq!(sequence_range(2), (-128, 127));
+        assert_eq!(sequence_range(3), (-128, 127));
+
+        let mut data = SharedSequences::default();
+        data.selected_sequence_mut(3)
+            .0
+            .push_str("127 -128 64 -64 200 -200");
+        cleanup_tab_sequence(&mut data, 3);
+        assert_eq!(
+            data.selected_sequence(3).values,
+            vec![127, -128, 64, -64, 127, -128]
+        );
     }
 }

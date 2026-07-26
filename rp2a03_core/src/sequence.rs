@@ -1,15 +1,16 @@
 //! rp2a03_core\src\sequence.rs
+//!
 //! FamiTracker-style sequence engine for volume, arpeggio, pitch, hi-pitch, and duty cycle envelopes.
 //!
 //! Each `Sequence` holds a vector of signed 16-bit step values advanced at 60 Hz.
-//! Supports Loop markers (`|`) and Release markers (`/`).
+//! Supports Loop markers `|`) and Release markers `/`).
 //! `SequencePlayer` tracks playback position, looping, and release tail state.
 //!
 //! A FamiTracker-style sequence of step values.
 //!
 //! Steps are advanced once per 60 Hz frame tick.
 //! - Loop marker `|`: defines step index where sequence loops back while key is held.
-//! - Release marker `/`: defines step index where playback jumps when key is released (`NoteOff`).
+//! - Release marker `/`: defines step index where playback jumps when key is released `NoteOff`).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -22,10 +23,13 @@ pub enum PitchMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
+    ///
+    /// Dn-FamiTracker stores sequence items as `signed char`, so every envelope type
+    /// (including hi-pitch) can hold -128..=127.
     pub values: Vec<i16>,
-    /// Optional loop point index (`|`).
+    /// Optional loop point index `|`).
     pub loop_point: Option<usize>,
-    /// Optional release point index (`/`).
+    /// Optional release point index `/`).
     pub release_point: Option<usize>,
     /// Pitch mode for pitch sequences (Relative vs Absolute).
     pub pitch_mode: PitchMode,
@@ -127,18 +131,39 @@ impl Sequence {
     }
 }
 
-/// Playback state for a sequence.
+/// Playback state for a sequence, mirroring dnFamiTracker's `CSeqInstHandler` states
+/// (`SEQ_STATE_RUNNING` / `SEQ_STATE_END` / `SEQ_STATE_HALT` / `SEQ_STATE_DISABLED`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeqState {
-    /// Sequence is not active / disabled.
+    /// Sequence is not active / disabled (dn: `SEQ_STATE_DISABLED`).
     Disabled,
-    /// Sequence is running and advancing.
+    /// Sequence is running and advancing (dn: `SEQ_STATE_RUNNING`). This also covers
+    /// dn's "waiting for release" condition, which stays in the RUNNING state with the
+    /// pointer frozen on the release-point step and re-processes that step every tick.
     Running,
-    /// Sequence has reached its end and holds the last value.
-    Held,
+    /// Sequence has fully played out (dn: `SEQ_STATE_END` collapsing into `SEQ_STATE_HALT`
+    /// on the next tick). The last processed value holds, but no further step values are
+    /// processed — important for accumulating (relative) pitch/hi-pitch sequences.
+    End,
 }
 
 /// Plays back a `Sequence`, advancing one step per 60 Hz tick.
+///
+/// The state machine and pointer arithmetic are kept 1:1 with dnFamiTracker's
+/// `CSeqInstHandler::UpdateInstrument()` so envelope timing matches exactly:
+///
+/// - After processing step `pos` the pointer advances; the boundary check fires when
+///   the pointer reaches `release_point + 1` **or** the end of the sequence. This means
+///   the step *at* the release point is processed once while the key is still held
+///   (dn: `m_iSeqPointer[i] == (Release + 1)`), before looping or waiting.
+/// - A loop is only honored while not releasing (or when no release point exists) and
+///   only if `loop_point < release_point`.
+/// - At end-of-sequence, a loop placed inside/after the release tail keeps looping;
+///   otherwise the player moves to `End` and processes nothing further.
+/// - "Waiting for release" (release boundary reached, key held, no valid loop) freezes
+///   the pointer at `release_point` and keeps re-reading that step every tick while
+///   remaining in `Running`. In dn this causes relative pitch/hi-pitch steps to keep
+///   accumulating during the wait, which this model reproduces.
 #[derive(Debug, Clone)]
 pub struct SequencePlayer {
     /// Current step position.
@@ -169,7 +194,9 @@ impl SequencePlayer {
     }
 
     /// Trigger the sequence (called on NoteOn). Reads step 0 immediately
-    /// into current_value and advances position to step 1.
+    /// into current_value and advances position to step 1, matching dnFamiTracker
+    /// triggering the instrument and processing sequence step 0 within the same
+    /// engine frame (TriggerInstrument -> UpdateInstrument).
     pub fn trigger(&mut self, seq: &Sequence) {
         if seq.is_empty() {
             self.state = SeqState::Disabled;
@@ -184,83 +211,72 @@ impl SequencePlayer {
     }
 
     /// Release the sequence (called on NoteOff).
-    /// If the sequence has a release point (`/`), jumps `pos` to that release step
-    /// and reads the release step value immediately.
+    ///
+    /// 1:1 with dn's `CSeqInstHandler::ReleaseInstrument()`: the release flag is always
+    /// set, but the pointer only jumps when the sequence is still `Running` or already
+    /// `End` (never when `Disabled`), and only with a valid release point. The release
+    /// step value is *not* read here — dn applies it on the next engine tick via
+    /// `UpdateInstrument`, so this does not call `clock_tick`.
     pub fn release(&mut self, seq: &Sequence) {
         self.is_releasing = true;
-        if let Some(rel) = seq.release_point {
-            if rel < seq.len() {
-                self.pos = rel;
-                self.state = SeqState::Running;
-                self.clock_tick(seq);
+        if matches!(self.state, SeqState::Running | SeqState::End) {
+            if let Some(rel) = seq.release_point {
+                if rel < seq.len() {
+                    self.pos = rel;
+                    self.state = SeqState::Running;
+                }
             }
         }
     }
 
     /// Advance the sequence by one 60 Hz tick. Returns the current step value.
+    ///
+    /// Port of dnFamiTracker `CSeqInstHandler::UpdateInstrument()` step-advance logic.
+    /// Steps are only processed while `Running`; `End` and `Disabled` hold their value
+    /// and process nothing (returns the held value / 0, matching dn's END/HALT handling
+    /// where no sequence item is applied anymore).
     pub fn clock_tick(&mut self, seq: &Sequence) -> i16 {
         if self.state == SeqState::Disabled || seq.is_empty() {
             return 0;
         }
+        if self.state == SeqState::End {
+            return self.current_value;
+        }
 
         let seq_len = seq.len();
 
-        match self.state {
-            SeqState::Running => {
-                // Read current step value
-                self.current_value = seq.get(self.pos);
+        self.current_value = seq.get(self.pos);
+        self.pos += 1;
 
-                // Advance pointer
-                self.pos += 1;
+        // dn uses -1 sentinels for "no loop/release point"; translate with signed math
+        // so the comparisons below read exactly like CSeqInstHandler::UpdateInstrument.
+        let release = seq.release_point.map(|r| r as isize).unwrap_or(-1);
+        let loop_pt = seq.loop_point.map(|l| l as isize).unwrap_or(-1);
+        let items = seq_len as isize;
+        let pos = self.pos as isize;
 
-                let loop_pt = seq.loop_point;
-                let rel_pt = seq.release_point;
-
-                let hit_release_boundary = rel_pt.map_or(false, |r| self.pos >= r);
-                let hit_seq_end = self.pos >= seq_len;
-
-                if hit_release_boundary || hit_seq_end {
-                    if let (Some(l), Some(r)) = (loop_pt, rel_pt) {
-                        if l < r {
-                            // Standard loop before release (Loop < Release)
-                            if !self.is_releasing {
-                                // While key is held, loop back to loop_pt at release boundary
-                                self.pos = l;
-                            } else if hit_seq_end {
-                                // After release tail reaches end of sequence, hold on last step
-                                self.pos = seq_len.saturating_sub(1);
-                                self.state = SeqState::Held;
-                            }
-                        } else {
-                            // Loop point is in/after release tail (Loop >= Release)
-                            if hit_seq_end {
-                                self.pos = l.min(seq_len.saturating_sub(1));
-                            } else if !self.is_releasing {
-                                // Waiting before release
-                                self.pos = self.pos.saturating_sub(1);
-                                self.state = SeqState::Held;
-                            }
-                        }
-                    } else if hit_seq_end {
-                        // No release point, or loop only
-                        if let Some(l) = loop_pt {
-                            self.pos = l.min(seq_len.saturating_sub(1));
-                        } else {
-                            self.pos = seq_len.saturating_sub(1);
-                            self.state = SeqState::Held;
-                        }
-                    } else if !self.is_releasing && rel_pt.is_some() {
-                        // Reached release boundary without loop: hold at release - 1
-                        self.pos = self.pos.saturating_sub(1);
-                        self.state = SeqState::Held;
-                    }
+        if pos == release + 1 || pos >= items {
+            // End point reached
+            if loop_pt != -1 && !(self.is_releasing && release != -1) && loop_pt < release {
+                // Standard loop before release (Loop < Release), key still held
+                // (or ignored once releasing with a release point set)
+                self.pos = loop_pt as usize;
+            } else if pos >= items {
+                // End of sequence
+                if loop_pt >= release && loop_pt != -1 {
+                    // Loop point is in/after the release tail: keep looping forever
+                    self.pos = (loop_pt as usize).min(seq_len.saturating_sub(1));
+                } else {
+                    self.state = SeqState::End;
                 }
-
-                self.current_value
+            } else if !self.is_releasing {
+                // Waiting for release (dn: `--m_iSeqPointer[i]`): stay Running with the
+                // pointer frozen on the release-point step, re-reading it every tick.
+                self.pos -= 1;
             }
-            SeqState::Held => self.current_value,
-            SeqState::Disabled => 0,
         }
+
+        self.current_value
     }
 
     /// Get current output value without advancing.
@@ -301,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_signed_bipolar_values() {
-        let (seq, _) = Sequence::parse_clamped("0 4 7 12 -12 | 0 -4 -7 / -12", -96, 96);
+        let (seq, _) = Sequence::parse_clamped("0 4 7 12 -12 | 0 -4 -7 / -12", -128, 127);
         assert_eq!(seq.values, vec![0, 4, 7, 12, -12, 0, -4, -7, -12]);
         assert_eq!(seq.loop_point, Some(5));
         assert_eq!(seq.release_point, Some(8));
@@ -311,5 +327,177 @@ mod tests {
     fn test_pitch_mode_defaults() {
         let seq = Sequence::default();
         assert_eq!(seq.pitch_mode, PitchMode::Relative);
+    }
+
+    // ── SequencePlayer dn-parity tests ──
+    // Expected step values below are traced from dnFamiTracker
+    // CSeqInstHandler::UpdateInstrument() / ReleaseInstrument().
+
+    #[test]
+    fn player_no_markers_ends_and_holds_last_value() {
+        let seq = Sequence::parse("5 7");
+        let mut player = SequencePlayer::new();
+
+        player.trigger(&seq); // reads step 0 immediately
+        assert_eq!(player.value(), 5);
+        assert_eq!(player.state, SeqState::Running);
+
+        assert_eq!(player.clock_tick(&seq), 7); // step 1; pointer passes end -> End
+        assert_eq!(player.state, SeqState::End);
+
+        // dn END/HALT: value holds but no further step processing happens
+        assert_eq!(player.clock_tick(&seq), 7);
+        assert_eq!(player.clock_tick(&seq), 7);
+        assert_eq!(player.state, SeqState::End);
+    }
+
+    #[test]
+    fn player_loop_only_repeats_from_loop_point() {
+        let seq = Sequence::parse("1 2 | 3");
+        let mut player = SequencePlayer::new();
+
+        player.trigger(&seq);
+        for expected in [2, 3, 3, 3, 3] {
+            assert_eq!(player.clock_tick(&seq), expected);
+            assert_eq!(player.state, SeqState::Running);
+        }
+    }
+
+    #[test]
+    fn player_loop_includes_release_point_step_before_release() {
+        // dn: loopback check is pointer == release + 1, so the release-point step (value 4)
+        // is processed once per loop pass while the key is held.
+        let seq = Sequence::parse("1 | 2 3 / 4 5"); // loop = 1, release = 3
+        let mut player = SequencePlayer::new();
+
+        player.trigger(&seq);
+        let expected = [2, 3, 4, 2, 3, 4, 2, 3];
+        for e in expected {
+            assert_eq!(player.clock_tick(&seq), e);
+        }
+
+        // 1:1 with dn ReleaseInstrument: pointer jumps now, value is processed next tick
+        player.release(&seq);
+        assert_eq!(
+            player.value(),
+            3,
+            "release() must not read the release step early"
+        );
+        assert_eq!(player.state, SeqState::Running);
+
+        // Release tail: reads step 3 again, then step 4, then ends
+        assert_eq!(player.clock_tick(&seq), 4);
+        assert_eq!(player.state, SeqState::Running);
+        assert_eq!(player.clock_tick(&seq), 5);
+        assert_eq!(player.state, SeqState::End);
+        assert_eq!(player.clock_tick(&seq), 5);
+    }
+
+    #[test]
+    fn player_waiting_for_release_rereads_release_step_every_tick() {
+        // release = 2 with one more step after it, so the wait branch (pos == release + 1
+        // while pos < items) actually engages instead of falling into end-of-sequence.
+        let seq = Sequence::parse("1 2 / 3 4");
+        let mut player = SequencePlayer::new();
+
+        player.trigger(&seq); // value 1
+        assert_eq!(player.clock_tick(&seq), 2); // step 1
+                                                // Boundary: pointer reached release + 1 while key held, no loop -> freeze at step 2
+        assert_eq!(player.clock_tick(&seq), 3);
+        assert_eq!(player.state, SeqState::Running);
+        // dn re-processes the release-point step every tick during the wait (matters for
+        // accumulating relative pitch/hi-pitch sequences)
+        assert_eq!(player.clock_tick(&seq), 3);
+        assert_eq!(player.clock_tick(&seq), 3);
+        assert_eq!(player.state, SeqState::Running);
+
+        player.release(&seq);
+        // Release tail: release step processed again on the next tick, then the final step
+        assert_eq!(player.clock_tick(&seq), 3);
+        assert_eq!(player.state, SeqState::Running);
+        assert_eq!(player.clock_tick(&seq), 4);
+        assert_eq!(player.state, SeqState::End);
+        assert_eq!(player.clock_tick(&seq), 4);
+    }
+
+    #[test]
+    fn player_release_without_release_point_keeps_looping() {
+        let seq = Sequence::parse("1 | 2 3");
+        let mut player = SequencePlayer::new();
+
+        player.trigger(&seq);
+        player.release(&seq); // no release point: only the flag changes
+        assert!(player.is_releasing);
+        assert_eq!(player.state, SeqState::Running);
+
+        // dn: with no release point the loop condition ignores the release flag
+        for expected in [2, 3, 2, 3] {
+            assert_eq!(player.clock_tick(&seq), expected);
+            assert_eq!(player.state, SeqState::Running);
+        }
+    }
+
+    #[test]
+    fn player_release_does_nothing_when_disabled() {
+        let seq = Sequence::parse("1 / 2 3");
+        let mut player = SequencePlayer::new();
+
+        // Never triggered: dn ReleaseInstrument skips sequences that are not RUNNING/END
+        player.release(&seq);
+        assert_eq!(player.state, SeqState::Disabled);
+        assert_eq!(player.clock_tick(&seq), 0);
+    }
+
+    #[test]
+    fn player_loop_at_or_after_release_point_loops_through_end() {
+        // Loop inside the release tail (loop = 3 >= release = 1): dn's pre-release loop
+        // branch requires loop < release, so this freezes at the release step while held;
+        // after release the tail plays out and then keeps looping from the loop point.
+        let seq = Sequence::parse("8 / 7 6 | 5 4"); // values [8,7,6,5,4], release = 1, loop = 3
+        let mut player = SequencePlayer::new();
+
+        player.trigger(&seq); // value 8, pos = 1 (release + 1 = 2 not reached yet)
+        assert_eq!(player.clock_tick(&seq), 7); // step 1; pos = 2 == release + 1
+                                                // loop branch fails (3 < 1 is false), pos < items (2 < 5), key held -> wait on step 1
+        assert_eq!(player.state, SeqState::Running);
+        assert_eq!(player.clock_tick(&seq), 7); // frozen wait re-reads the release step
+
+        player.release(&seq);
+        assert_eq!(player.clock_tick(&seq), 7); // release step processed on next tick
+        assert_eq!(player.clock_tick(&seq), 6); // step 2
+        assert_eq!(player.clock_tick(&seq), 5); // step 3
+                                                // step 4 is the last item; pos = 5 >= items and loop 3 >= release 1 -> jump to 3
+        assert_eq!(player.clock_tick(&seq), 4);
+        assert_eq!(player.state, SeqState::Running);
+        assert_eq!(player.clock_tick(&seq), 5); // loops forever from the loop point
+        assert_eq!(player.clock_tick(&seq), 4);
+        assert_eq!(player.state, SeqState::Running);
+    }
+
+    #[test]
+    fn player_end_can_be_released_into_release_tail() {
+        // dn ReleaseInstrument accepts sequences in SEQ_STATE_END and restarts them at the
+        // release point (only reachable when reaching the end, e.g. release point on the
+        // last step with no loop: pos == release + 1 == items -> End).
+        let seq = Sequence::parse("1 2 3 / 5"); // values [1,2,3,5], release = 3
+        let mut player = SequencePlayer::new();
+
+        player.trigger(&seq);
+        assert_eq!(player.clock_tick(&seq), 2);
+        assert_eq!(player.clock_tick(&seq), 3);
+        // After step 3 (value 5): pos = 4 == release + 1 == items -> no loop -> End
+        assert_eq!(player.clock_tick(&seq), 5);
+        assert_eq!(player.state, SeqState::End);
+
+        // From End, a release re-enters at the release point and plays it once more
+        player.release(&seq);
+        assert_eq!(player.state, SeqState::Running);
+        assert_eq!(
+            player.value(),
+            5,
+            "release() must not read the release step early"
+        );
+        assert_eq!(player.clock_tick(&seq), 5);
+        assert_eq!(player.state, SeqState::End);
     }
 }
