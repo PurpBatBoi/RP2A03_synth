@@ -1,6 +1,7 @@
+//! rp2a03_core\src\apu_timer.rs
 //! Timer abstraction for APU units.
-
-/// Trait for types that have timers.
+//! Adapted from TetaNES: https://github.com/lukexor/tetanes/blob/main/tetanes-core/src/apu/length_counter.rs
+//! Trait for types that have timers.
 pub trait TimerCycle {
     fn cycle(&self) -> u32;
 }

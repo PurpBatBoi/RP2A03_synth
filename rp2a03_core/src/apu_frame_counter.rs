@@ -2,7 +2,6 @@
 //!
 //!
 //! Adapted from TetaNES: https://github.com/lukexor/tetanes/blob/main/tetanes-core/src/apu/frame_counter.rs
-//!
 //! APU Frame Counter implementation (NTSC only).
 //!
 //! See: <https://www.nesdev.org/wiki/APU_Frame_Counter>

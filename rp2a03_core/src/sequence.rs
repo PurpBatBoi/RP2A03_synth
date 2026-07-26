@@ -6,7 +6,6 @@
 //! Supports Loop markers `|`) and Release markers `/`).
 //! `SequencePlayer` tracks playback position, looping, and release tail state.
 //!
-//! A FamiTracker-style sequence of step values.
 //!
 //! Steps are advanced once per 60 Hz frame tick.
 //! - Loop marker `|`: defines step index where sequence loops back while key is held.
