@@ -1,17 +1,17 @@
 //! rp2a03_niceplug\src\lib.rs
 //! RP2A03 Plugin wrapper using nice-plug.
 
-mod midi;
-
 use egui::Color32;
-use midi::{ActiveSequences, HostAutomationControls, MidiHandler};
 use nice_plug::prelude::*;
 use nice_plug_egui::{create_egui_editor, EguiSettings, EguiState};
 use parking_lot::Mutex;
+use rp2a03_common::{
+    render_editor_ui, ActiveSequences, HostAutomationControls, MidiHandler, SharedSequences,
+    MAX_SEQUENCES,
+};
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::NTSC_CPU_CLOCK;
-use rp2a03_common::{render_editor_ui, SharedSequences, MAX_SEQUENCES};
 use std::sync::Arc;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;

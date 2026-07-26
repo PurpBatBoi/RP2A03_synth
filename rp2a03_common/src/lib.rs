@@ -1,13 +1,11 @@
-//! rp2a03_ui\src\lib.rs
-//!
-//! `rp2a03_ui` - Dedicated egui User Interface for RP2A03 Synth.
+//! `rp2a03_common` - Shared MIDI and GUI logic for RP2A03 Synth.
 
-pub mod editor;
-pub mod state;
-pub mod widgets;
+pub mod gui;
+pub mod midi;
 
-pub use editor::{
-    cleanup_tab_sequence, render_editor_ui, sanitize_sequence_text, sequence_to_text,
+pub use gui::{
+    cleanup_tab_sequence, draw_envelope_bar_graph, render_editor_ui, sanitize_sequence_text,
+    sequence_to_text, SequenceBank, SequenceSlot, SharedSequences, MAX_SEQUENCES,
+    SEQUENCE_TYPE_COUNT,
 };
-pub use state::{SequenceBank, SequenceSlot, SharedSequences, MAX_SEQUENCES, SEQUENCE_TYPE_COUNT};
-pub use widgets::draw_envelope_bar_graph;
+pub use midi::{freq_to_period, midi_note_to_freq, ActiveSequences, HostAutomationControls, MidiHandler};

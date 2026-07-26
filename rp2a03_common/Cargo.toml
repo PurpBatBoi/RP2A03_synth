@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 rp2a03_core = { path = "../rp2a03_core" }
+nice-plug = { git = "https://codeberg.org/RustAudio/nice-plug.git" }
 egui = "0.35.0"

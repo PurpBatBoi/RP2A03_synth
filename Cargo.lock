@@ -1760,6 +1760,7 @@ name = "rp2a03_common"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "nice-plug",
  "rp2a03_core",
 ]
 
