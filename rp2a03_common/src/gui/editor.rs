@@ -84,7 +84,39 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
 /// host through its parameter setter.
 
 
-fn draw_instrumentsettings_panel(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize, changed_sequence_index: &mut Option<usize>,) {
+fn draw_header(ui: &mut egui::Ui) {
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_height(120.0);
+
+        ui.horizontal(|ui| {
+            ui.heading("RP2A03_Synth");
+
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    let _ = ui.button("Settings");
+                },
+            );
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Waveform:");
+            ui.label("2A03 Pulse");
+        });
+    });
+
+    ui.add_space(6.0);
+}
+
+fn draw_chip_tabs(ui: &mut egui::Ui, data: &mut SharedSequences) {
+    ui.horizontal(|ui| {
+        let _ = ui.selectable_label(true, "Envelopes");
+    });
+
+    ui.separator();
+}
+
+fn draw_instrument_settings_panel(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize, changed_sequence_index: &mut Option<usize>,) {
     const SEQ_TYPES: [(&str, usize); 5] = [
         ("Volume", 0),
         ("Arpeggio", 1),
@@ -135,7 +167,7 @@ fn draw_instrumentsettings_panel(ui: &mut egui::Ui, data: &mut SharedSequences, 
             });
 }
 
-fn draw_sequenceeditor_panel(ui: &mut egui::Ui, data: &mut SharedSequences,) {
+fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences,) {
     ui.vertical(|ui| {
                 let tab = data.selected_tab;
                 // Same per-type ranges as sequence_range(): both graph editing and the
@@ -211,11 +243,9 @@ fn draw_sequenceeditor_panel(ui: &mut egui::Ui, data: &mut SharedSequences,) {
             });
 }
 
-
-
 fn draw_main_content(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize, changed_sequence_index: &mut Option<usize>,) {
     ui.horizontal(|ui| {
-        draw_instrumentsettings_panel(
+        draw_instrument_settings_panel(
             ui,
             data,
             shared_sequence_index,
@@ -224,18 +254,43 @@ fn draw_main_content(ui: &mut egui::Ui, data: &mut SharedSequences, shared_seque
 
         ui.add_space(10.0);
 
-        draw_sequenceeditor_panel(
+        draw_sequence_editor_panel(
             ui,
             data,
         );
     });
 }
 
+fn draw_footer(ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.separator();
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Ready")
+                .weak(),
+        );
+
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.label(
+                    egui::RichText::new("RP2A03")
+                        .weak(),
+                );
+            },
+        );
+    });
+}
 
 pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize,) -> Option<usize> {
     data.set_all_selected_sequence_indices(shared_sequence_index);
 
     let mut changed_sequence_index = None;
+
+
+    draw_header(ui);
+    draw_chip_tabs(ui, data);
 
     draw_main_content(
         ui,
@@ -243,6 +298,8 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences, shared_se
         shared_sequence_index,
         &mut changed_sequence_index,
     );
+
+    draw_footer(ui);
 
     changed_sequence_index
 }
