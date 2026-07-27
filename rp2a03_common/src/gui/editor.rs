@@ -108,7 +108,7 @@ fn draw_header(ui: &mut egui::Ui) {
     ui.add_space(6.0);
 }
 
-fn draw_chip_tabs(ui: &mut egui::Ui, data: &mut SharedSequences) {
+fn draw_chip_tabs(ui: &mut egui::Ui, _data: &mut SharedSequences) {
     ui.horizontal(|ui| {
         let _ = ui.selectable_label(true, "Envelopes");
     });
