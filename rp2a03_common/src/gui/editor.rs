@@ -91,16 +91,11 @@ fn draw_header(ui: &mut egui::Ui) {
 
     ui.allocate_ui(egui::vec2(ui.available_width(), HEADER_H), |ui| {
         let origin = ui.min_rect().min;
-
+        
         //------------------------------------------------------
         // Logo
         //------------------------------------------------------
-        ui.put(
-            egui::Rect::from_min_size(origin, egui::vec2(LOGO_W, LOGO_H)),
-            egui::Image::new(egui::include_image!("logo.png"))
-                .fit_to_exact_size(egui::vec2(LOGO_W, LOGO_H))
-                .tint(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 130)),
-        );
+
 
         //------------------------------------------------------
         // Layout constants

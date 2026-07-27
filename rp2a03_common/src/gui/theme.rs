@@ -35,7 +35,7 @@ pub fn style() -> Arc<Style> {
     style.visuals.widgets.active.bg_stroke.width         = stroke;
 
     // Thicker window border
-    style.visuals.window_stroke = egui::Stroke::new(1.5, BORDER);
+    style.visuals.window_stroke = egui::Stroke::new(1.5_f32, BORDER);
 
     // Font sizes
     use egui::{FontId, TextStyle};

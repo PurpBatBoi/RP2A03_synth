@@ -17,7 +17,6 @@ use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::NTSC_CPU_CLOCK;
 use std::sync::Arc;
-use egui_extras;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
@@ -224,7 +223,6 @@ impl Plugin for Rp2a03Plugin {
             (),
             EguiSettings::default(),
             move |ctx, _queue, _state| {
-                egui_extras::install_image_loaders(ctx);
                 ctx.set_style_of(egui::Theme::Dark, style());
             },
             move |ui, setter, _queue, _state| {
