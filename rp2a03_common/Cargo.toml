@@ -5,5 +5,5 @@ edition = "2021"
 
 [dependencies]
 rp2a03_core = { path = "../rp2a03_core" }
-nice-plug = "0.2.0"
-egui = "0.35.0"
+nice-plug = "0.1.10"
+egui = "0.34.1"
