@@ -3,7 +3,17 @@ members = [
     "rp2a03_core",
     "rp2a03_niceplug",
     "rp2a03_common",
+    "rp2a03_preview",
     "xtask",
+]
+
+# Only the plugin crates are built by default.
+# The preview window must be requested explicitly:
+#   cargo run -p rp2a03_preview
+default-members = [
+    "rp2a03_core",
+    "rp2a03_niceplug",
+    "rp2a03_common",
 ]
 
 resolver = "2"

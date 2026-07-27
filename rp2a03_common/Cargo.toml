@@ -7,3 +7,4 @@ edition = "2021"
 rp2a03_core = { path = "../rp2a03_core" }
 nice-plug = "0.1.10"
 egui = "0.34.1"
+egui_extras = { version = "0.34", features = ["all_loaders"] }

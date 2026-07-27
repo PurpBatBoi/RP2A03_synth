@@ -85,26 +85,42 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
 
 
 fn draw_header(ui: &mut egui::Ui) {
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_height(120.0);
+    // Temporary values
+    let mut waveform = 0;
+    let mut polyphony = false;
 
-        ui.horizontal(|ui| {
-            ui.heading("RP2A03_Synth");
+    ui.horizontal(|ui| {
+        // Left side: logo
+        ui.add(
+            egui::Image::new(egui::include_image!("logo.png"))
+                .fit_to_exact_size(egui::vec2(311.5, 92.0)),
+        );
 
-            ui.with_layout(
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    let _ = ui.button("Settings");
-                },
-            );
-        });
+        ui.add_space(20.0);
 
-        ui.horizontal(|ui| {
-            ui.label("Waveform:");
-            ui.label("2A03 Pulse");
+        // Right side
+        ui.vertical(|ui| {
+            egui::ComboBox::from_id_salt("waveform")
+                .selected_text(match waveform {
+                    0 => "2A03 Pulse",
+                    1 => "2A03 Triangle",
+                    2 => "2A03 Noise",
+                    _ => "2A03 DMC",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut waveform, 0, "2A03 Pulse");
+                    ui.selectable_value(&mut waveform, 1, "2A03 Triangle");
+                    ui.selectable_value(&mut waveform, 2, "2A03 Noise");
+                    ui.selectable_value(&mut waveform, 3, "2A03 DMC");
+                });
+
+            ui.add_space(6.0);
+
+            ui.checkbox(&mut polyphony, "Polyphony");
         });
     });
 
+    ui.separator();
     ui.add_space(6.0);
 }
 
