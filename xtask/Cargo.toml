@@ -5,4 +5,4 @@ edition = "2021"
 publish = false
 
 [dependencies]
-nice-plug-xtask = { git = "https://codeberg.org/RustAudio/nice-plug.git" }
+nice-plug-xtask = "0.1.0"
