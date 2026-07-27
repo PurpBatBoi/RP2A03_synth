@@ -5,10 +5,36 @@ RP2A03 Synth is a WiP NES VST3/CLAP plugin for modern DAWs. The goal is to creat
 
 ## Workspace Structure
 
-- `rp2a03_core/` — NES APU emulation, sequencing, resampling, LFOs. Timing and register semantics directly affect sound.
-- `rp2a03_niceplug/` — CLAP/VST wrapper, parameters, audio processing, and MIDI handling. This crate is developed using the nice-plug framework and is the host-facing real-time boundary.
-- `rp2a03_ui/` — Egui editor, widgets, and UI state. UI and processor state must stay coherent.
-- `xtask/` — Workspace tooling. It encodes packaging, build automation, and development workflows.
+```
+RP2A03-SYNTH/
+├── rp2a03_core/
+|   ├── apu.rs
+│   ├── apu_pulse.rs
+│   ├── apu_triangle.rs
+│   ├── apu_noise.rs
+│   ├── software_lfo.rs
+│   ├── blip_buf.rs
+│   ├── sequencer.rs
+|   └── lib.rs
+├── rp2a03_common
+│   ├── gui/
+│   │   ├── mod.rs
+│   │   ├── state.rs
+│   │   ├── editor.rs
+│   │   ├── theme.rs
+│   │   └── widgets.rs
+│   ├── midi/
+│   │   ├── mod.rs
+│   │   ├── handler.rs
+│   │   ├── events.rs
+│   │   ├── types.rs
+│   │   └── tests.rs
+│   └── lib.rs
+├── rp2a03_niceplug/
+│   └── lib.rs
+└── rp2a03_fl/ - Soon!
+    └── lib.rs
+```
 
 ---
 
