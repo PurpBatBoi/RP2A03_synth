@@ -77,51 +77,136 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
     }
 }
 
-/// Renders the pulse instrument settings and a generic selected-sequence editor.
-///
-/// Returns a new shared sequence number when the user changes the spinbox. The
-/// plugin wrapper owns the automatable parameter and commits this change to the
-/// host through its parameter setter.
-
-
 fn draw_header(ui: &mut egui::Ui) {
-    // Temporary values
     let mut waveform = 0;
     let mut polyphony = false;
+    let mut legato = false;
+    let mut portamento = false;
+    let mut portamento_amount = 24u8;
 
-    ui.horizontal(|ui| {
-        // Left side: logo
-        ui.add(
+    const HEADER_H: f32 = 92.0;
+    const LOGO_W: f32 = 312.0;
+    const LOGO_H: f32 = 92.0;
+    const CENTER_Y: f32 = LOGO_H / 2.0; // 46.0 — everything centers on this
+
+    ui.allocate_ui(egui::vec2(ui.available_width(), HEADER_H), |ui| {
+        let origin = ui.min_rect().min;
+
+        //------------------------------------------------------
+        // Logo
+        //------------------------------------------------------
+        ui.put(
+            egui::Rect::from_min_size(origin, egui::vec2(LOGO_W, LOGO_H)),
             egui::Image::new(egui::include_image!("logo.png"))
-                .fit_to_exact_size(egui::vec2(311.5, 92.0)),
+                .fit_to_exact_size(egui::vec2(LOGO_W, LOGO_H))
+                .tint(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 130)),
         );
 
-        ui.add_space(20.0);
+        //------------------------------------------------------
+        // Layout constants
+        //------------------------------------------------------
 
-        // Right side
-        ui.vertical(|ui| {
-            egui::ComboBox::from_id_salt("waveform")
-                .selected_text(match waveform {
-                    0 => "2A03 Pulse",
-                    1 => "2A03 Triangle",
-                    2 => "2A03 Noise",
-                    _ => "2A03 DMC",
+        let controls_x = LOGO_W + 28.0;
+
+        // Dropdown + checkbox row treated as ONE block, then that
+        // block is centered on CENTER_Y.
+        const COMBO_H: f32 = 24.0;
+        const CHECK_H: f32 = 22.0;
+        const ROW_GAP: f32 = 6.0;
+        const BLOCK_H: f32 = COMBO_H + ROW_GAP + CHECK_H;
+
+        let block_top = CENTER_Y - BLOCK_H / 2.0;
+        let combo_y = block_top;
+        let check_y = block_top + COMBO_H + ROW_GAP;
+
+        //------------------------------------------------------
+        // Dropdown
+        //------------------------------------------------------
+
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                egui::pos2(origin.x + controls_x, origin.y + combo_y),
+                egui::vec2(190.0, COMBO_H),
+            )),
+            |ui| {
+                egui::ComboBox::from_id_salt("waveform")
+                    .width(180.0)
+                    .selected_text(match waveform {
+                        0 => "2A03 Pulse",
+                        1 => "2A03 Triangle",
+                        2 => "2A03 Noise",
+                        3 => "2A03 DMC",
+                        4 => "VRC6 Pulse",
+                        5 => "VRC6 Saw",
+                        _ => "S5B PSG",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut waveform, 0, "2A03 Pulse");
+                        ui.selectable_value(&mut waveform, 1, "2A03 Triangle");
+                        ui.selectable_value(&mut waveform, 2, "2A03 Noise");
+                        ui.selectable_value(&mut waveform, 3, "2A03 DMC");
+                        ui.selectable_value(&mut waveform, 4, "VRC6 Pulse");
+                        ui.selectable_value(&mut waveform, 5, "VRC6 Saw");
+                        ui.selectable_value(&mut waveform, 6, "S5B PSG");
+                    });
+            },
+        );
+
+        //------------------------------------------------------
+        // Checkboxes
+        //------------------------------------------------------
+
+        // Capture the row's response so we can measure its actual width,
+        // rather than guessing a constant.
+        let check_row = ui.scope_builder(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                egui::pos2(origin.x + controls_x, origin.y + check_y),
+                egui::vec2(340.0, CHECK_H),
+            )),
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut polyphony, "Polyphony");
+                    ui.checkbox(&mut legato, "Legato");
+                    ui.checkbox(&mut portamento, "Portamento");
                 })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut waveform, 0, "2A03 Pulse");
-                    ui.selectable_value(&mut waveform, 1, "2A03 Triangle");
-                    ui.selectable_value(&mut waveform, 2, "2A03 Noise");
-                    ui.selectable_value(&mut waveform, 3, "2A03 DMC");
+                .response
+            },
+        );
+
+        let check_row_w = check_row.inner.rect.width();
+
+        //------------------------------------------------------
+        // Portamento knob
+        //------------------------------------------------------
+
+        const CONTROL_W: f32 = 100.0;
+        const CONTROL_H: f32 = 50.0;
+        const CONTROL_GAP_FROM_ROW: f32 = 20.0;
+
+        let control_x = controls_x + check_row_w + CONTROL_GAP_FROM_ROW;
+        let control_top = CENTER_Y - CONTROL_H / 2.0;
+
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                egui::pos2(origin.x + control_x, origin.y + control_top),
+                egui::vec2(CONTROL_W, CONTROL_H),
+            )),
+            |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label("Speed");
+                    ui.add(
+                        egui::DragValue::new(&mut portamento_amount)
+                            .range(0..=127)
+                            .speed(1.0),
+                    );
                 });
-
-            ui.add_space(6.0);
-
-            ui.checkbox(&mut polyphony, "Polyphony");
-        });
+            },
+        );
     });
 
+    ui.add_space(12.0);
     ui.separator();
-    ui.add_space(6.0);
+    ui.add_space(5.0);
 }
 
 fn draw_chip_tabs(ui: &mut egui::Ui, _data: &mut SharedSequences) {
@@ -132,7 +217,12 @@ fn draw_chip_tabs(ui: &mut egui::Ui, _data: &mut SharedSequences) {
     ui.separator();
 }
 
-fn draw_instrument_settings_panel(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize, changed_sequence_index: &mut Option<usize>,) {
+fn draw_instrument_settings_panel(
+    ui: &mut egui::Ui,
+    data: &mut SharedSequences,
+    shared_sequence_index: usize,
+    changed_sequence_index: &mut Option<usize>,
+) {
     const SEQ_TYPES: [(&str, usize); 5] = [
         ("Volume", 0),
         ("Arpeggio", 1),
@@ -142,138 +232,130 @@ fn draw_instrument_settings_panel(ui: &mut egui::Ui, data: &mut SharedSequences,
     ];
 
     ui.vertical(|ui| {
-                ui.set_width(180.0);
-                ui.group(|ui| {
-                    ui.label(egui::RichText::new("Instrument settings").strong());
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Sequence Index:");
-                        let mut index = shared_sequence_index;
-                        if ui
-                            .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
-                            .changed()
-                        {
-                            *changed_sequence_index = Some(index);
-                        }
-                    });
-                    ui.add_space(6.0);
-                    egui::Grid::new("seq_type_grid")
-                        .num_columns(2)
-                        .spacing([6.0, 6.0])
-                        .show(ui, |ui| {
-                            ui.label("");
-                            ui.label("Effect name");
-                            ui.end_row();
-                            for (name, tab) in SEQ_TYPES {
-                                ui.checkbox(data.sequence_enabled_mut(tab), "");
-                                if ui
-                                    .selectable_label(data.selected_tab == tab, name)
-                                    .clicked()
-                                {
-                                    if data.selected_tab != tab {
-                                        cleanup_tab_sequence(data, data.selected_tab);
-                                        data.selected_tab = tab;
-                                        cleanup_tab_sequence(data, tab);
-                                    }
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
+        ui.set_width(180.0);
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Instrument settings").strong());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Sequence Index:");
+                let mut index = shared_sequence_index;
+                if ui
+                    .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
+                    .changed()
+                {
+                    *changed_sequence_index = Some(index);
+                }
             });
+            ui.add_space(6.0);
+            egui::Grid::new("seq_type_grid")
+                .num_columns(2)
+                .spacing([6.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("");
+                    ui.label("Effect name");
+                    ui.end_row();
+                    for (name, tab) in SEQ_TYPES {
+                        ui.checkbox(data.sequence_enabled_mut(tab), "");
+                        if ui.selectable_label(data.selected_tab == tab, name).clicked() {
+                            if data.selected_tab != tab {
+                                cleanup_tab_sequence(data, data.selected_tab);
+                                data.selected_tab = tab;
+                                cleanup_tab_sequence(data, tab);
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+    });
 }
 
-fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences,) {
+fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences) {
     ui.vertical(|ui| {
-                let tab = data.selected_tab;
-                // Same per-type ranges as sequence_range(): both graph editing and the
-                // text box below must clamp identically. Hi-pitch is -128..=127 in
-                // dnFamiTracker, same as pitch.
-                let (title, min_val, max_val) = match tab {
-                    0 => ("Volume", 0, 15),
-                    1 => ("Arpeggio", -96, 96),
-                    2 => ("Pitch", -128, 127),
-                    3 => ("Hi-pitch", -128, 127),
-                    _ => ("Duty / Noise", 0, 3),
-                };
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("Sequence editor - {}", title)).strong());
-                        if tab == 2 {
-                            ui.add_space(20.0);
-                            ui.label("Mode:");
-                            let (_, sequence) = data.selected_sequence_mut(tab);
-                            ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
-                            ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
-                        }
-                    });
-                    ui.add_space(4.0);
-                    let (text, sequence) = data.selected_sequence_mut(tab);
-                    if draw_envelope_bar_graph(ui, sequence, min_val, max_val) {
-                        *text = sequence_to_text(sequence);
-                    }
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Size:");
-                        let cur_len = sequence.len();
-                        if ui.button("-").clicked() && cur_len > 0 {
-                            sequence.values.pop();
-                            let new_len = sequence.len();
-                            if sequence.loop_point.is_some_and(|p| p >= new_len) {
-                                sequence.loop_point = None;
-                            }
-                            if sequence.release_point.is_some_and(|p| p >= new_len) {
-                                sequence.release_point = None;
-                            }
-                            *text = sequence_to_text(sequence);
-                        }
-                        ui.label(egui::RichText::new(cur_len.to_string()).strong());
-                        if ui.button("+").clicked() {
-                            sequence.values.push(0);
-                            *text = sequence_to_text(sequence);
-                        }
-                        ui.add_space(15.0);
-                        ui.label(format!("{} ms", (cur_len * 1000) / 60));
-                    });
-                    ui.add_space(6.0);
-                    let edit = ui.add(
-                        egui::TextEdit::singleline(text)
-                            .desired_width(420.0)
-                            .font(egui::TextStyle::Monospace),
-                    );
-                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if edit.changed() {
-                        let sanitized = sanitize_sequence_text(text);
-                        let prev_mode = sequence.pitch_mode;
-                        *sequence = if sanitized.trim().is_empty() {
-                            Sequence::default()
-                        } else {
-                            Sequence::parse_clamped(&sanitized, min_val, max_val).0
-                        };
-                        sequence.pitch_mode = prev_mode;
-                    }
-                    if enter_pressed || edit.lost_focus() {
-                        *text = sequence_to_text(sequence);
-                    }
-                });
+        let tab = data.selected_tab;
+        // Same per-type ranges as sequence_range(): both graph editing and the
+        // text box below must clamp identically. Hi-pitch is -128..=127 in
+        // dnFamiTracker, same as pitch.
+        let (title, min_val, max_val) = match tab {
+            0 => ("Volume", 0, 15),
+            1 => ("Arpeggio", -96, 96),
+            2 => ("Pitch", -128, 127),
+            3 => ("Hi-pitch", -128, 127),
+            _ => ("Duty / Noise", 0, 3),
+        };
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("Sequence editor - {}", title)).strong());
+                if tab == 2 {
+                    ui.add_space(20.0);
+                    ui.label("Mode:");
+                    let (_, sequence) = data.selected_sequence_mut(tab);
+                    ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
+                    ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
+                }
             });
+            ui.add_space(4.0);
+            let (text, sequence) = data.selected_sequence_mut(tab);
+            if draw_envelope_bar_graph(ui, sequence, min_val, max_val) {
+                *text = sequence_to_text(sequence);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Size:");
+                let cur_len = sequence.len();
+                if ui.button("-").clicked() && cur_len > 0 {
+                    sequence.values.pop();
+                    let new_len = sequence.len();
+                    if sequence.loop_point.is_some_and(|p| p >= new_len) {
+                        sequence.loop_point = None;
+                    }
+                    if sequence.release_point.is_some_and(|p| p >= new_len) {
+                        sequence.release_point = None;
+                    }
+                    *text = sequence_to_text(sequence);
+                }
+                ui.label(egui::RichText::new(cur_len.to_string()).strong());
+                if ui.button("+").clicked() {
+                    sequence.values.push(0);
+                    *text = sequence_to_text(sequence);
+                }
+                ui.add_space(15.0);
+                ui.label(format!("{} ms", (cur_len * 1000) / 60));
+            });
+            ui.add_space(6.0);
+            let edit = ui.add(
+                egui::TextEdit::singleline(text)
+                    .desired_width(420.0)
+                    .font(egui::TextStyle::Monospace),
+            );
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if edit.changed() {
+                let sanitized = sanitize_sequence_text(text);
+                let prev_mode = sequence.pitch_mode;
+                *sequence = if sanitized.trim().is_empty() {
+                    Sequence::default()
+                } else {
+                    Sequence::parse_clamped(&sanitized, min_val, max_val).0
+                };
+                sequence.pitch_mode = prev_mode;
+            }
+            if enter_pressed || edit.lost_focus() {
+                *text = sequence_to_text(sequence);
+            }
+        });
+    });
 }
 
-fn draw_main_content(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize, changed_sequence_index: &mut Option<usize>,) {
+fn draw_main_content(
+    ui: &mut egui::Ui,
+    data: &mut SharedSequences,
+    shared_sequence_index: usize,
+    changed_sequence_index: &mut Option<usize>,
+) {
     ui.horizontal(|ui| {
-        draw_instrument_settings_panel(
-            ui,
-            data,
-            shared_sequence_index,
-            changed_sequence_index,
-        );
-
+        draw_instrument_settings_panel(ui, data, shared_sequence_index, changed_sequence_index);
         ui.add_space(10.0);
-
-        draw_sequence_editor_panel(
-            ui,
-            data,
-        );
+        draw_sequence_editor_panel(ui, data);
     });
 }
 
@@ -282,39 +364,25 @@ fn draw_footer(ui: &mut egui::Ui) {
     ui.separator();
 
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Ready")
-                .weak(),
-        );
-
-        ui.with_layout(
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new("RP2A03")
-                        .weak(),
-                );
-            },
-        );
+        ui.label(egui::RichText::new("Ready").weak());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new("RP2A03").weak());
+        });
     });
 }
 
-pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize,) -> Option<usize> {
+pub fn render_editor_ui(
+    ui: &mut egui::Ui,
+    data: &mut SharedSequences,
+    shared_sequence_index: usize,
+) -> Option<usize> {
     data.set_all_selected_sequence_indices(shared_sequence_index);
 
     let mut changed_sequence_index = None;
 
-
     draw_header(ui);
     draw_chip_tabs(ui, data);
-
-    draw_main_content(
-        ui,
-        data,
-        shared_sequence_index,
-        &mut changed_sequence_index,
-    );
-
+    draw_main_content(ui, data, shared_sequence_index, &mut changed_sequence_index);
     draw_footer(ui);
 
     changed_sequence_index

@@ -10,7 +10,7 @@
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title("RP2A03 Synth — UI Preview")
-                .with_inner_size([758.0, 506.0])
+                .with_inner_size([758.0, 520.0])
                 .with_resizable(true),
             ..Default::default()
         };

@@ -82,7 +82,7 @@ impl Default for Rp2a03Plugin {
 impl Default for Rp2a03Params {
     fn default() -> Self {
         Self {
-            egui_state: EguiState::from_size(758, 506),
+            egui_state: EguiState::from_size(758, 520),
             sequence_number: IntParam::new(
                 "Sequence Index",
                 0,

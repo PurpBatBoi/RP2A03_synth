@@ -27,5 +27,25 @@ pub fn style() -> Arc<Style> {
     style.visuals.popup_shadow.offset = [0, 0];
     style.visuals.popup_shadow.spread = 2;
 
+    // Thicker widget strokes
+    let stroke = 1.5;
+    style.visuals.widgets.noninteractive.bg_stroke.width = stroke;
+    style.visuals.widgets.inactive.bg_stroke.width       = stroke;
+    style.visuals.widgets.hovered.bg_stroke.width        = stroke;
+    style.visuals.widgets.active.bg_stroke.width         = stroke;
+
+    // Thicker window border
+    style.visuals.window_stroke = egui::Stroke::new(1.5, BORDER);
+
+    // Font sizes
+    use egui::{FontId, TextStyle};
+    style.text_styles = [
+        (TextStyle::Heading,  FontId::proportional(20.0)),
+        (TextStyle::Body,     FontId::proportional(15.0)),
+        (TextStyle::Button,   FontId::proportional(15.0)),
+        (TextStyle::Small,    FontId::proportional(10.0)),
+        (TextStyle::Monospace, FontId::monospace(12.0)),
+    ].into();
+
     Arc::new(style)
 }
