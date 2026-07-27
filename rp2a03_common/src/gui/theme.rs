@@ -47,5 +47,13 @@ pub fn style() -> Arc<Style> {
         (TextStyle::Monospace, FontId::monospace(12.0)),
     ].into();
 
+    style.visuals.widgets.noninteractive.corner_radius = 8.0.into();
+    style.visuals.widgets.inactive.corner_radius = 8.0.into();
+    style.visuals.widgets.hovered.corner_radius = 8.0.into();
+    style.visuals.widgets.active.corner_radius = 8.0.into();
+
+    style.visuals.window_corner_radius = 10.0.into();
+
+
     Arc::new(style)
 }

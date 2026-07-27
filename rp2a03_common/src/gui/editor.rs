@@ -2,7 +2,7 @@
 //! Layout rendering logic for the reusable sequence editor window.
 
 use super::state::{SharedSequences, MAX_SEQUENCES};
-use super::widgets::draw_envelope_bar_graph;
+use super::widgets::{draw_envelope_bar_graph, group_box};
 use rp2a03_core::sequencer::{PitchMode, Sequence};
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
@@ -127,22 +127,20 @@ fn draw_header(ui: &mut egui::Ui) {
                 egui::ComboBox::from_id_salt("waveform")
                     .width(180.0)
                     .selected_text(match waveform {
-                        0 => "2A03 Pulse",
-                        1 => "2A03 Triangle",
-                        2 => "2A03 Noise",
-                        3 => "2A03 DMC",
-                        4 => "VRC6 Pulse",
-                        5 => "VRC6 Saw",
-                        _ => "S5B PSG",
+                        0 => "2A03 | Pulse",
+                        1 => "2A03 | Triangle",
+                        2 => "2A03 | Noise",
+                        3 => "VRC6 | Pulse",
+                        4 => "VRC6 | Saw",
+                        _ => "S5B | PSG",
                     })
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut waveform, 0, "2A03 Pulse");
-                        ui.selectable_value(&mut waveform, 1, "2A03 Triangle");
-                        ui.selectable_value(&mut waveform, 2, "2A03 Noise");
-                        ui.selectable_value(&mut waveform, 3, "2A03 DMC");
-                        ui.selectable_value(&mut waveform, 4, "VRC6 Pulse");
-                        ui.selectable_value(&mut waveform, 5, "VRC6 Saw");
-                        ui.selectable_value(&mut waveform, 6, "S5B PSG");
+                        ui.selectable_value(&mut waveform, 0, "2A03 | Pulse");
+                        ui.selectable_value(&mut waveform, 1, "2A03 | Triangle");
+                        ui.selectable_value(&mut waveform, 2, "2A03 | Noise");
+                        ui.selectable_value(&mut waveform, 3, "VRC6 | Pulse");
+                        ui.selectable_value(&mut waveform, 4, "VRC6 | Saw");
+                        ui.selectable_value(&mut waveform, 5, "S5B | PSG");
                     });
             },
         );
@@ -228,9 +226,8 @@ fn draw_instrument_settings_panel(
 
     ui.vertical(|ui| {
         ui.set_width(180.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Instrument settings").strong());
-            ui.add_space(6.0);
+        ui.add_space(16.0); // or 6.0
+        group_box(ui, "Instrument settings", |ui| {
             ui.horizontal(|ui| {
                 ui.label("Sequence Index:");
                 let mut index = shared_sequence_index;
@@ -268,9 +265,7 @@ fn draw_instrument_settings_panel(
 fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences) {
     ui.vertical(|ui| {
         let tab = data.selected_tab;
-        // Same per-type ranges as sequence_range(): both graph editing and the
-        // text box below must clamp identically. Hi-pitch is -128..=127 in
-        // dnFamiTracker, same as pitch.
+
         let (title, min_val, max_val) = match tab {
             0 => ("Volume", 0, 15),
             1 => ("Arpeggio", -96, 96),
@@ -278,62 +273,97 @@ fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences) {
             3 => ("Hi-pitch", -128, 127),
             _ => ("Duty / Noise", 0, 3),
         };
-        ui.group(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("Sequence editor - {}", title)).strong());
-                if tab == 2 {
-                    ui.add_space(20.0);
-                    ui.label("Mode:");
-                    let (_, sequence) = data.selected_sequence_mut(tab);
-                    ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
-                    ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
-                }
-            });
-            ui.add_space(4.0);
+
+        ui.add_space(16.0); // or 6.0
+        group_box(ui, &format!("Sequence editor - {}", title), |ui| {
             let (text, sequence) = data.selected_sequence_mut(tab);
+
             if draw_envelope_bar_graph(ui, sequence, min_val, max_val) {
                 *text = sequence_to_text(sequence);
             }
+
             ui.add_space(6.0);
+
             ui.horizontal(|ui| {
                 ui.label("Size:");
+
                 let cur_len = sequence.len();
+
                 if ui.button("-").clicked() && cur_len > 0 {
                     sequence.values.pop();
+
                     let new_len = sequence.len();
+
                     if sequence.loop_point.is_some_and(|p| p >= new_len) {
                         sequence.loop_point = None;
                     }
+
                     if sequence.release_point.is_some_and(|p| p >= new_len) {
                         sequence.release_point = None;
                     }
+
                     *text = sequence_to_text(sequence);
                 }
+
                 ui.label(egui::RichText::new(cur_len.to_string()).strong());
+
                 if ui.button("+").clicked() {
                     sequence.values.push(0);
                     *text = sequence_to_text(sequence);
                 }
+
                 ui.add_space(15.0);
+
                 ui.label(format!("{} ms", (cur_len * 1000) / 60));
+
+                if tab == 2 {
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.radio_value(
+                                &mut sequence.pitch_mode,
+                                PitchMode::Absolute,
+                                "Absolute",
+                            );
+
+                            ui.radio_value(
+                                &mut sequence.pitch_mode,
+                                PitchMode::Relative,
+                                "Relative",
+                            );
+
+                            ui.label(
+                                egui::RichText::new("Mode:")
+                                    .weak(),
+                            );
+                        },
+                    );
+                }
             });
+
             ui.add_space(6.0);
+
             let edit = ui.add(
                 egui::TextEdit::singleline(text)
-                    .desired_width(420.0)
+                    .desired_width(ui.available_width())
                     .font(egui::TextStyle::Monospace),
             );
+
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+
             if edit.changed() {
                 let sanitized = sanitize_sequence_text(text);
                 let prev_mode = sequence.pitch_mode;
+
                 *sequence = if sanitized.trim().is_empty() {
                     Sequence::default()
                 } else {
                     Sequence::parse_clamped(&sanitized, min_val, max_val).0
                 };
+
                 sequence.pitch_mode = prev_mode;
             }
+
             if enter_pressed || edit.lost_focus() {
                 *text = sequence_to_text(sequence);
             }
@@ -348,9 +378,20 @@ fn draw_main_content(
     changed_sequence_index: &mut Option<usize>,
 ) {
     ui.horizontal(|ui| {
-        draw_instrument_settings_panel(ui, data, shared_sequence_index, changed_sequence_index);
+        draw_instrument_settings_panel(
+            ui,
+            data,
+            shared_sequence_index,
+            changed_sequence_index,
+        );
+
         ui.add_space(10.0);
-        draw_sequence_editor_panel(ui, data);
+
+        ui.vertical(|ui| {
+            ui.set_min_width(ui.available_width());
+
+            draw_sequence_editor_panel(ui, data);
+        });
     });
 }
 
@@ -366,11 +407,11 @@ fn draw_footer(ui: &mut egui::Ui) {
     });
 }
 
-pub fn render_editor_ui(
-    ui: &mut egui::Ui,
-    data: &mut SharedSequences,
-    shared_sequence_index: usize,
-) -> Option<usize> {
+
+
+pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize,) -> Option<usize> {
+    
+    
     data.set_all_selected_sequence_indices(shared_sequence_index);
 
     let mut changed_sequence_index = None;
@@ -381,6 +422,8 @@ pub fn render_editor_ui(
     draw_footer(ui);
 
     changed_sequence_index
+
+
 }
 
 #[cfg(test)]

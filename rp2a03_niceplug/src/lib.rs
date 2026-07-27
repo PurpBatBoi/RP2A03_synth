@@ -228,13 +228,19 @@ impl Plugin for Rp2a03Plugin {
             move |ui, setter, _queue, _state| {
                 let mut data = shared.lock();
                 let sequence_index = data.selected_sequence_index(0);
-                if let Some(new_index) = render_editor_ui(ui, &mut data, sequence_index) {
-                    data.set_all_selected_sequence_indices(new_index);
-                    let new_index = new_index as i32;
-                    setter.begin_set_parameter(&params.sequence_number);
-                    setter.set_parameter(&params.sequence_number, new_index);
-                    setter.end_set_parameter(&params.sequence_number);
-                }
+
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        if let Some(new_index) = render_editor_ui(ui, &mut data, sequence_index) {
+                            data.set_all_selected_sequence_indices(new_index);
+
+                            let new_index = new_index as i32;
+                            setter.begin_set_parameter(&params.sequence_number);
+                            setter.set_parameter(&params.sequence_number, new_index);
+                            setter.end_set_parameter(&params.sequence_number);
+                        }
+                    });
             },
         )
     }

@@ -2,7 +2,14 @@
 //!
 //! Custom painter elements for sequence visualization and interactive envelope editing.
 
-use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use egui::{
+    Color32,
+    Pos2,
+    Rect,
+    Sense,
+    Stroke,
+    Vec2,
+};
 use rp2a03_core::sequencer::Sequence;
 
 /// Renders a FamiTracker-style envelope bar graph and handles interactive mouse editing.
@@ -13,7 +20,7 @@ pub fn draw_envelope_bar_graph(
     min_val: i16,
     max_val: i16,
 ) -> bool {
-    let desired_size = Vec2::new(450.0, 220.0);
+    let desired_size = Vec2::new(ui.available_width(), 220.0);
     let (rect, response) = ui.allocate_at_least(desired_size, Sense::click_and_drag());
 
     let painter = ui.painter_at(rect);
@@ -283,4 +290,63 @@ pub fn draw_envelope_bar_graph(
     );
 
     text_needs_sync
+}
+
+
+pub fn group_box<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    const TITLE_HEIGHT: i8 = 10;
+    const PADDING: i8 = 10;
+    const ROUNDING: u8 = 8;
+
+    let frame = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: PADDING,
+            right: PADDING,
+            top: PADDING + TITLE_HEIGHT,
+            bottom: PADDING,
+        });
+
+    let inner = frame.show(ui, add_contents);
+
+    let rect = inner.response.rect;
+
+    let painter = ui.painter();
+
+    let stroke = egui::Stroke::new(
+        1.0_f32,
+        ui.visuals().widgets.noninteractive.bg_stroke.color,
+    );
+
+    let galley = painter.layout_no_wrap(
+        title.to_owned(),
+        egui::FontId::proportional(16.0),
+        ui.visuals().text_color(),
+    );
+
+    let title_pos = egui::pos2(rect.left() + 10.0, rect.top() - galley.size().y * 0.5);
+
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(ROUNDING),
+        stroke,
+        egui::StrokeKind::Outside,
+    );
+
+    // Erase only behind the title
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(title_pos.x - 4.0, rect.top() - 2.0),
+            egui::pos2(title_pos.x + galley.size().x + 4.0, rect.top() + 2.0),
+        ),
+        egui::CornerRadius::ZERO,
+        ui.visuals().panel_fill,
+    );
+
+    painter.galley(title_pos, galley, ui.visuals().text_color());
+
+    inner.inner
 }

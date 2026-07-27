@@ -3,7 +3,6 @@ members = [
     "rp2a03_core",
     "rp2a03_niceplug",
     "rp2a03_common",
-    "rp2a03_preview",
     "xtask",
 ]
 
