@@ -186,7 +186,7 @@ fn draw_header(ui: &mut egui::Ui) {
             )),
             |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label("Speed");
+                    ui.label("Portamento Amount");
                     ui.add(
                         egui::DragValue::new(&mut portamento_amount)
                             .range(0..=127)
@@ -226,26 +226,25 @@ fn draw_instrument_settings_panel(
 
     ui.vertical(|ui| {
         ui.set_width(180.0);
-        ui.add_space(16.0); // or 6.0
+        ui.add_space(16.0);
         group_box(ui, "Instrument settings", |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Sequence Index:");
-                let mut index = shared_sequence_index;
-                if ui
-                    .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
-                    .changed()
-                {
-                    *changed_sequence_index = Some(index);
-                }
-            });
-            ui.add_space(6.0);
+            // Grid with checkboxes and effect names
             egui::Grid::new("seq_type_grid")
                 .num_columns(2)
                 .spacing([6.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("");
-                    ui.label("Effect name");
+                    ui.label(
+                        egui::RichText::new("Effect name")
+                            .color(egui::Color32::from_rgb(130, 130, 130)), // Darker text color
+                    );
                     ui.end_row();
+
+                    // Separator line under header row
+                    ui.separator();
+                    ui.separator();
+                    ui.end_row();
+
                     for (name, tab) in SEQ_TYPES {
                         ui.checkbox(data.sequence_enabled_mut(tab), "");
                         if ui.selectable_label(data.selected_tab == tab, name).clicked() {
@@ -258,6 +257,21 @@ fn draw_instrument_settings_panel(
                         ui.end_row();
                     }
                 });
+
+            // Sequence Index control inside the frame, below the grid
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Sequence Index:");
+                let mut index = shared_sequence_index;
+                if ui
+                    .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
+                    .changed()
+                {
+                    *changed_sequence_index = Some(index);
+                }
+            });
         });
     });
 }
@@ -396,22 +410,32 @@ fn draw_main_content(
 }
 
 fn draw_footer(ui: &mut egui::Ui) {
-    ui.add_space(8.0);
     ui.separator();
+    ui.add_space(4.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Ready").weak());
+        ui.label(egui::RichText::new("0.0.05").weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new("RP2A03").weak());
+            ui.button("Settings")
         });
     });
 }
 
 
 
-pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences, shared_sequence_index: usize,) -> Option<usize> {
-    
-    
+pub fn render_editor_ui(
+    ui: &mut egui::Ui,
+    data: &mut SharedSequences,
+    shared_sequence_index: usize,
+) -> Option<usize> {
+    // Apply non-selectable labels to the global Context style so all child scopes,
+    // grids, and group boxes inherit it
+    ui.ctx().global_style_mut(|style| {
+        style.interaction.selectable_labels = false;
+    });
+
+    ui.set_min_height(ui.available_height());
+
     data.set_all_selected_sequence_indices(shared_sequence_index);
 
     let mut changed_sequence_index = None;
@@ -419,11 +443,15 @@ pub fn render_editor_ui(ui: &mut egui::Ui, data: &mut SharedSequences, shared_se
     draw_header(ui);
     draw_chip_tabs(ui, data);
     draw_main_content(ui, data, shared_sequence_index, &mut changed_sequence_index);
+
+    // Calculate remaining vertical space and push footer to the bottom edge
+    const FOOTER_HEIGHT: f32 = 30.0;
+    let space_to_bottom = (ui.available_height() - FOOTER_HEIGHT).max(0.0);
+    ui.add_space(space_to_bottom);
+
     draw_footer(ui);
 
     changed_sequence_index
-
-
 }
 
 #[cfg(test)]
