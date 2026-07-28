@@ -5,18 +5,16 @@ use nice_plug::prelude::*;
 use nice_plug_egui::{create_egui_editor, EguiSettings, EguiState};
 use parking_lot::Mutex;
 use rp2a03_common::{
-    render_editor_ui,
-    style,
-    ActiveSequences,
-    HostAutomationControls,
-    MidiHandler,
-    SharedSequences,
-    MAX_SEQUENCES,
+    render_editor_ui, style, ActiveSequences, HostAutomationControls, MidiHandler,
+    SequencePlayheads, SharedSequences, MAX_SEQUENCES, NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT,
 };
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::blip_buf::BlipBuf;
+use rp2a03_core::sequencer::{SeqState, Sequence, SequencePlayer};
 use rp2a03_core::NTSC_CPU_CLOCK;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
@@ -32,6 +30,7 @@ pub struct Rp2a03Plugin {
     midi_program_index: Option<usize>,
     last_sequence_parameter: i32,
     shared_sequences: Arc<Mutex<SharedSequences>>,
+    sequence_playheads: Arc<[AtomicUsize; SEQUENCE_TYPE_COUNT]>,
 }
 
 #[derive(Params)]
@@ -74,6 +73,9 @@ impl Default for Rp2a03Plugin {
             midi_program_index: None,
             last_sequence_parameter: 0,
             shared_sequences: Arc::new(Mutex::new(SharedSequences::default())),
+            sequence_playheads: Arc::new(std::array::from_fn(|_| {
+                AtomicUsize::new(NO_PLAYHEAD_STEP)
+            })),
         }
     }
 }
@@ -189,6 +191,69 @@ impl Rp2a03Plugin {
             duty_enabled: data.sequence_enabled(4),
         }
     }
+
+    fn publish_sequence_playheads(&self, seqs: &ActiveSequences) {
+        let steps = [
+            sequence_play_step(
+                &self.midi_handler.vol_seq_player,
+                &seqs.vol_seq,
+                seqs.vol_enabled,
+            ),
+            sequence_play_step(
+                &self.midi_handler.arp_seq_player,
+                &seqs.arp_seq,
+                seqs.arp_enabled,
+            ),
+            sequence_play_step(
+                &self.midi_handler.pitch_seq_player,
+                &seqs.pitch_seq,
+                seqs.pitch_enabled,
+            ),
+            sequence_play_step(
+                &self.midi_handler.hipitch_seq_player,
+                &seqs.hipitch_seq,
+                seqs.hipitch_enabled,
+            ),
+            sequence_play_step(
+                &self.midi_handler.duty_seq_player,
+                &seqs.duty_seq,
+                seqs.duty_enabled,
+            ),
+        ];
+
+        for (playhead, step) in self.sequence_playheads.iter().zip(steps) {
+            playhead.store(step.unwrap_or(NO_PLAYHEAD_STEP), Ordering::Relaxed);
+        }
+    }
+
+    fn clear_sequence_playheads(&self) {
+        for playhead in self.sequence_playheads.iter() {
+            playhead.store(NO_PLAYHEAD_STEP, Ordering::Relaxed);
+        }
+    }
+}
+
+fn sequence_play_step(
+    player: &SequencePlayer,
+    sequence: &Sequence,
+    enabled: bool,
+) -> Option<usize> {
+    if enabled
+        && !sequence.is_empty()
+        && player.state == SeqState::Running
+        && player.pos < sequence.len()
+    {
+        Some(player.pos)
+    } else {
+        None
+    }
+}
+
+fn load_sequence_playheads(playheads: &[AtomicUsize; SEQUENCE_TYPE_COUNT]) -> SequencePlayheads {
+    SequencePlayheads::from_steps(std::array::from_fn(|index| {
+        let step = playheads[index].load(Ordering::Relaxed);
+        (step != NO_PLAYHEAD_STEP).then_some(step)
+    }))
 }
 
 impl Plugin for Rp2a03Plugin {
@@ -217,6 +282,7 @@ impl Plugin for Rp2a03Plugin {
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let shared = self.shared_sequences.clone();
         let params = self.params.clone();
+        let playheads = self.sequence_playheads.clone();
 
         create_egui_editor(
             self.params.egui_state.clone(),
@@ -229,11 +295,16 @@ impl Plugin for Rp2a03Plugin {
             move |ui, setter, _queue, _state| {
                 let mut data = shared.lock();
                 let sequence_index = data.selected_sequence_index(0);
+                let playheads = load_sequence_playheads(&playheads);
+
+                ui.ctx().request_repaint_after(Duration::from_millis(30));
 
                 egui::Frame::NONE
                     .inner_margin(egui::Margin::same(12))
                     .show(ui, |ui| {
-                        if let Some(new_index) = render_editor_ui(ui, &mut data, sequence_index) {
+                        if let Some(new_index) =
+                            render_editor_ui(ui, &mut data, sequence_index, &playheads)
+                        {
                             data.set_all_selected_sequence_indices(new_index);
 
                             let new_index = new_index as i32;
@@ -263,6 +334,7 @@ impl Plugin for Rp2a03Plugin {
         self.midi_handler.reset();
         self.midi_program_index = None;
         self.last_sequence_parameter = self.params.sequence_number.value();
+        self.clear_sequence_playheads();
         true
     }
 
@@ -275,6 +347,7 @@ impl Plugin for Rp2a03Plugin {
         self.midi_handler.reset();
         self.midi_program_index = None;
         self.last_sequence_parameter = self.params.sequence_number.value();
+        self.clear_sequence_playheads();
     }
 
     fn process(
@@ -338,6 +411,8 @@ impl Plugin for Rp2a03Plugin {
                 break;
             }
         }
+
+        self.publish_sequence_playheads(&active_seqs);
 
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
             for out_sample in channel_samples {

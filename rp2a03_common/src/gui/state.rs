@@ -6,6 +6,34 @@ use rp2a03_core::sequencer::Sequence;
 /// The FamiTracker-compatible sequence-number range (`0..=127`).
 pub const MAX_SEQUENCES: usize = 128;
 pub const SEQUENCE_TYPE_COUNT: usize = 5;
+pub const NO_PLAYHEAD_STEP: usize = usize::MAX;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SequencePlayheads {
+    steps: [Option<usize>; SEQUENCE_TYPE_COUNT],
+}
+
+impl Default for SequencePlayheads {
+    fn default() -> Self {
+        Self {
+            steps: [None; SEQUENCE_TYPE_COUNT],
+        }
+    }
+}
+
+impl SequencePlayheads {
+    pub fn from_steps(steps: [Option<usize>; SEQUENCE_TYPE_COUNT]) -> Self {
+        Self { steps }
+    }
+
+    pub fn step(&self, tab: usize) -> Option<usize> {
+        self.steps[Self::tab_index(tab)]
+    }
+
+    fn tab_index(tab: usize) -> usize {
+        tab.min(SEQUENCE_TYPE_COUNT - 1)
+    }
+}
 
 /// A numbered sequence and its editable FamiTracker text representation.
 #[derive(Debug, Clone, Default)]

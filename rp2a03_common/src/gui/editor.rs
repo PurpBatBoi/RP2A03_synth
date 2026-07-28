@@ -1,10 +1,9 @@
 //! rp2a03_common\src\gui\editor.rs
 //! Layout rendering logic for the reusable sequence editor window.
 
-use super::state::{SharedSequences, MAX_SEQUENCES};
+use super::state::{SequencePlayheads, SharedSequences, MAX_SEQUENCES};
 use super::widgets::{draw_envelope_bar_graph, group_box, repeating_button};
 use rp2a03_core::sequencer::{PitchMode, Sequence};
-
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
 pub fn sequence_to_text(seq: &Sequence) -> String {
@@ -92,7 +91,7 @@ fn draw_header(ui: &mut egui::Ui) {
 
     ui.allocate_ui(egui::vec2(ui.available_width(), HEADER_H), |ui| {
         let origin = ui.min_rect().min;
-        
+
         //------------------------------------------------------
         // Logo
         //------------------------------------------------------
@@ -261,7 +260,10 @@ fn draw_instrument_settings_panel(
 
                     for (name, tab) in SEQ_TYPES {
                         ui.checkbox(data.sequence_enabled_mut(tab), "");
-                        if ui.selectable_label(data.selected_tab == tab, name).clicked() {
+                        if ui
+                            .selectable_label(data.selected_tab == tab, name)
+                            .clicked()
+                        {
                             if data.selected_tab != tab {
                                 cleanup_tab_sequence(data, data.selected_tab);
                                 data.selected_tab = tab;
@@ -290,7 +292,11 @@ fn draw_instrument_settings_panel(
     });
 }
 
-fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences) {
+fn draw_sequence_editor_panel(
+    ui: &mut egui::Ui,
+    data: &mut SharedSequences,
+    playheads: &SequencePlayheads,
+) {
     ui.vertical(|ui| {
         let tab = data.selected_tab;
 
@@ -307,7 +313,14 @@ fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences) {
             let (text, sequence) = data.selected_sequence_mut(tab);
 
             let is_arpeggio = tab == 1;
-            if draw_envelope_bar_graph(ui, sequence, min_val, max_val, is_arpeggio) {
+            if draw_envelope_bar_graph(
+                ui,
+                sequence,
+                min_val,
+                max_val,
+                is_arpeggio,
+                playheads.step(tab),
+            ) {
                 *text = sequence_to_text(sequence);
             }
 
@@ -349,27 +362,13 @@ fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences) {
                 ui.label(format!("{} ms", (cur_len * 1000) / 60));
 
                 if tab == 2 {
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            ui.radio_value(
-                                &mut sequence.pitch_mode,
-                                PitchMode::Absolute,
-                                "Absolute",
-                            );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
 
-                            ui.radio_value(
-                                &mut sequence.pitch_mode,
-                                PitchMode::Relative,
-                                "Relative",
-                            );
+                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
 
-                            ui.label(
-                                egui::RichText::new("Mode:")
-                                    .weak(),
-                            );
-                        },
-                    );
+                        ui.label(egui::RichText::new("Mode:").weak());
+                    });
                 }
             });
 
@@ -408,21 +407,17 @@ fn draw_main_content(
     data: &mut SharedSequences,
     shared_sequence_index: usize,
     changed_sequence_index: &mut Option<usize>,
+    playheads: &SequencePlayheads,
 ) {
     ui.horizontal(|ui| {
-        draw_instrument_settings_panel(
-            ui,
-            data,
-            shared_sequence_index,
-            changed_sequence_index,
-        );
+        draw_instrument_settings_panel(ui, data, shared_sequence_index, changed_sequence_index);
 
         ui.add_space(10.0);
 
         ui.vertical(|ui| {
             ui.set_min_width(ui.available_width());
 
-            draw_sequence_editor_panel(ui, data);
+            draw_sequence_editor_panel(ui, data, playheads);
         });
     });
 }
@@ -439,12 +434,11 @@ fn draw_footer(ui: &mut egui::Ui) {
     });
 }
 
-
-
 pub fn render_editor_ui(
     ui: &mut egui::Ui,
     data: &mut SharedSequences,
     shared_sequence_index: usize,
+    playheads: &SequencePlayheads,
 ) -> Option<usize> {
     // Apply non-selectable labels to the global Context style so all child scopes,
     // grids, and group boxes inherit it
@@ -460,7 +454,13 @@ pub fn render_editor_ui(
 
     draw_header(ui);
     draw_chip_tabs(ui, data);
-    draw_main_content(ui, data, shared_sequence_index, &mut changed_sequence_index);
+    draw_main_content(
+        ui,
+        data,
+        shared_sequence_index,
+        &mut changed_sequence_index,
+        playheads,
+    );
 
     // Calculate remaining vertical space and push footer to the bottom edge
     const FOOTER_HEIGHT: f32 = 30.0;

@@ -2,15 +2,10 @@
 //!
 //! Custom painter elements for sequence visualization and interactive envelope editing.
 
-use egui::{
-    Color32,
-    Pos2,
-    Rect,
-    Sense,
-    Stroke,
-    Vec2,
-};
+use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use rp2a03_core::sequencer::Sequence;
+
+use super::theme;
 
 #[derive(Clone, Copy, Default)]
 struct RepeatingButtonState {
@@ -32,6 +27,7 @@ pub fn draw_envelope_bar_graph(
     min_val: i16,
     max_val: i16,
     is_arpeggio: bool,
+    playhead_step: Option<usize>,
 ) -> bool {
     let desired_size = Vec2::new(ui.available_width(), 220.0f32);
     let (rect, _response) = ui.allocate_at_least(desired_size, Sense::hover());
@@ -51,10 +47,7 @@ pub fn draw_envelope_bar_graph(
 
     // Arpeggio scroll state handling
     let scroll_id = ui.make_persistent_id("arpeggio_scroll_center");
-    let mut scroll_center: i16 = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(scroll_id))
-        .unwrap_or(0i16);
+    let mut scroll_center: i16 = ui.ctx().data_mut(|d| d.get_temp(scroll_id)).unwrap_or(0i16);
 
     let visible_span = 10i16; // +/- 10 semitones (21 visible rows)
     let min_center = (min_val + visible_span).min(0);
@@ -107,7 +100,11 @@ pub fn draw_envelope_bar_graph(
         if scroll_delta.abs() > 0.0f32 {
             let change = (scroll_delta / 8.0f32).round() as i16;
             let step_change = if change == 0 {
-                if scroll_delta > 0.0f32 { 1 } else { -1 }
+                if scroll_delta > 0.0f32 {
+                    1
+                } else {
+                    -1
+                }
             } else {
                 change
             };
@@ -144,7 +141,8 @@ pub fn draw_envelope_bar_graph(
         if scrollbar_response.dragged() || scrollbar_response.clicked() {
             if let Some(pos) = scrollbar_response.interact_pointer_pos() {
                 if !top_btn_rect.contains(pos) && !bot_btn_rect.contains(pos) {
-                    let thumb_h = (track_rect.height() * (21.0f32 / 193.0f32)).clamp(16.0f32, track_rect.height());
+                    let thumb_h = (track_rect.height() * (21.0f32 / 193.0f32))
+                        .clamp(16.0f32, track_rect.height());
                     let travel_h = track_rect.height() - thumb_h;
                     if travel_h > 0.0f32 {
                         let rel_y = pos.y - track_rect.min.y - thumb_h / 2.0f32;
@@ -158,7 +156,8 @@ pub fn draw_envelope_bar_graph(
         }
     }
 
-    ui.ctx().data_mut(|d| d.insert_temp(scroll_id, scroll_center));
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(scroll_id, scroll_center));
 
     let mut text_needs_sync = false;
 
@@ -185,8 +184,8 @@ pub fn draw_envelope_bar_graph(
 
         if let Some(pos) = pointer_pos {
             let x = pos.x.clamp(header_rect.min.x, header_rect.max.x - 1.0f32);
-            let current_step = (((x - header_rect.min.x) / step_width).floor() as usize)
-                .clamp(0, num_steps - 1);
+            let current_step =
+                (((x - header_rect.min.x) / step_width).floor() as usize).clamp(0, num_steps - 1);
 
             // Left Mouse Button (Primary) -> Loop Point
             if header_response.drag_started_by(egui::PointerButton::Primary) {
@@ -205,7 +204,8 @@ pub fn draw_envelope_bar_graph(
                     text_needs_sync = true;
                 }
             } else if header_response.dragged_by(egui::PointerButton::Primary) {
-                let state: Option<MarkerDragState> = ui.ctx().data_mut(|d| d.get_temp(loop_drag_id));
+                let state: Option<MarkerDragState> =
+                    ui.ctx().data_mut(|d| d.get_temp(loop_drag_id));
                 if let Some(st) = state {
                     if current_step != st.start_step || !st.was_existing {
                         if seq.loop_point != Some(current_step) {
@@ -217,7 +217,8 @@ pub fn draw_envelope_bar_graph(
             }
 
             if header_response.clicked_by(egui::PointerButton::Primary) {
-                let state: Option<MarkerDragState> = ui.ctx().data_mut(|d| d.get_temp(loop_drag_id));
+                let state: Option<MarkerDragState> =
+                    ui.ctx().data_mut(|d| d.get_temp(loop_drag_id));
                 if let Some(st) = state {
                     if current_step == st.start_step && st.was_existing {
                         seq.loop_point = None;
@@ -234,7 +235,8 @@ pub fn draw_envelope_bar_graph(
                     }
                     text_needs_sync = true;
                 }
-                ui.ctx().data_mut(|d| d.remove_temp::<MarkerDragState>(loop_drag_id));
+                ui.ctx()
+                    .data_mut(|d| d.remove_temp::<MarkerDragState>(loop_drag_id));
             }
 
             // Right Mouse Button (Secondary) -> Release Point
@@ -285,7 +287,8 @@ pub fn draw_envelope_bar_graph(
                     }
                     text_needs_sync = true;
                 }
-                ui.ctx().data_mut(|d| d.remove_temp::<MarkerDragState>(rel_drag_id));
+                ui.ctx()
+                    .data_mut(|d| d.remove_temp::<MarkerDragState>(rel_drag_id));
             }
         }
     }
@@ -298,8 +301,7 @@ pub fn draw_envelope_bar_graph(
             || graph_response.clicked_by(egui::PointerButton::Primary)
         {
             if let Some(pointer_pos) = graph_response.interact_pointer_pos() {
-                let step_idx = (((pointer_pos.x - graph_rect.min.x) / step_width).floor()
-                    as i32)
+                let step_idx = (((pointer_pos.x - graph_rect.min.x) / step_width).floor() as i32)
                     .clamp(0, num_steps as i32 - 1) as usize;
 
                 let rel_y = (pointer_pos.y - graph_rect.min.y).clamp(0.0f32, graph_rect.height());
@@ -380,7 +382,8 @@ pub fn draw_envelope_bar_graph(
 
         let center_range = (max_center - min_center).max(1) as f32;
         let norm_center = (max_center - scroll_center) as f32 / center_range;
-        let thumb_h = (track_rect.height() * (21.0f32 / 193.0f32)).clamp(16.0f32, track_rect.height());
+        let thumb_h =
+            (track_rect.height() * (21.0f32 / 193.0f32)).clamp(16.0f32, track_rect.height());
         let thumb_travel = track_rect.height() - thumb_h;
         let thumb_top = track_rect.min.y + norm_center * thumb_travel;
 
@@ -439,7 +442,10 @@ pub fn draw_envelope_bar_graph(
                 Color32::from_rgb(24, 24, 24)
             };
             painter.line_segment(
-                [Pos2::new(graph_rect.min.x, y), Pos2::new(graph_rect.max.x, y)],
+                [
+                    Pos2::new(graph_rect.min.x, y),
+                    Pos2::new(graph_rect.max.x, y),
+                ],
                 Stroke::new(1.0f32, line_color),
             );
         }
@@ -539,6 +545,16 @@ pub fn draw_envelope_bar_graph(
         }
     }
 
+    if let Some(step) = playhead_step.filter(|step| *step < num_steps) {
+        let bar_x_min = graph_rect.min.x + step as f32 * step_width;
+        let bar_x_max = bar_x_min + step_width - 1.0f32;
+        let col_rect = Rect::from_min_max(
+            Pos2::new(bar_x_min, graph_rect.min.y),
+            Pos2::new(bar_x_max, graph_rect.max.y),
+        );
+        draw_playhead_rect(&painter, col_rect);
+    }
+
     // Render loop/release region headers
     painter.rect_filled(header_rect, 0.0f32, Color32::from_rgb(25, 25, 25));
 
@@ -636,13 +652,12 @@ pub fn group_box<R>(
     const PADDING: i8 = 10;
     const ROUNDING: u8 = 8;
 
-    let frame = egui::Frame::new()
-        .inner_margin(egui::Margin {
-            left: PADDING,
-            right: PADDING,
-            top: PADDING + TITLE_HEIGHT,
-            bottom: PADDING,
-        });
+    let frame = egui::Frame::new().inner_margin(egui::Margin {
+        left: PADDING,
+        right: PADDING,
+        top: PADDING + TITLE_HEIGHT,
+        bottom: PADDING,
+    });
 
     let inner = frame.show(ui, add_contents);
 
@@ -650,10 +665,7 @@ pub fn group_box<R>(
 
     let painter = ui.painter();
 
-    let stroke = egui::Stroke::new(
-        1.0_f32,
-        ui.visuals().widgets.noninteractive.bg_stroke.color,
-    );
+    let stroke = egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color);
 
     let galley = painter.layout_no_wrap(
         title.to_owned(),
@@ -702,7 +714,9 @@ pub fn repeating_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) ->
         false
     };
 
-    let state = ui.ctx().data_mut(|d| d.get_temp::<RepeatingButtonState>(id));
+    let state = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<RepeatingButtonState>(id));
 
     if primary_down {
         match state {
@@ -753,4 +767,33 @@ pub fn repeating_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) ->
     }
 
     triggered
+}
+
+fn draw_playhead_rect(painter: &egui::Painter, rect: Rect) {
+    let rect = rect.shrink2(Vec2::new(1.0f32, 1.0f32));
+    if rect.is_negative() {
+        return;
+    }
+
+    let top_rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
+    let bottom_rect = Rect::from_min_max(Pos2::new(rect.min.x, rect.center().y), rect.max);
+
+    painter.rect_filled(top_rect, 1.0f32, theme::PLAYHEAD_TOP);
+    painter.rect_filled(bottom_rect, 1.0f32, theme::PLAYHEAD_BOTTOM);
+    painter.line_segment(
+        [rect.left_top(), rect.right_top()],
+        Stroke::new(1.0f32, theme::PLAYHEAD_EDGE_TOP),
+    );
+    painter.line_segment(
+        [rect.left_top(), rect.left_bottom()],
+        Stroke::new(1.0f32, theme::PLAYHEAD_EDGE_TOP),
+    );
+    painter.line_segment(
+        [rect.right_top(), rect.right_bottom()],
+        Stroke::new(1.0f32, theme::PLAYHEAD_EDGE_BOTTOM),
+    );
+    painter.line_segment(
+        [rect.left_bottom(), rect.right_bottom()],
+        Stroke::new(1.0f32, theme::PLAYHEAD_EDGE_BOTTOM),
+    );
 }

@@ -9,22 +9,12 @@ mod widgets;
 pub use theme::style;
 
 pub use editor::{
-    cleanup_tab_sequence,
-    render_editor_ui,
-    sanitize_sequence_text,
-    sequence_to_text,
+    cleanup_tab_sequence, render_editor_ui, sanitize_sequence_text, sequence_to_text,
 };
 
 pub use state::{
-    SequenceBank,
-    SequenceSlot,
-    SharedSequences,
-    MAX_SEQUENCES,
-    SEQUENCE_TYPE_COUNT,
+    SequenceBank, SequencePlayheads, SequenceSlot, SharedSequences, MAX_SEQUENCES,
+    NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT,
 };
 
-pub use widgets::{
-    draw_envelope_bar_graph,
-    group_box,
-    repeating_button,
-};
+pub use widgets::{draw_envelope_bar_graph, group_box, repeating_button};
