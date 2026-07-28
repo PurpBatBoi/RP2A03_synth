@@ -1,9 +1,11 @@
 [package]
 name = "rp2a03_common"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-rp2a03_core = { path = "../rp2a03_core" }
-nice-plug = "0.1.10"
-egui = "0.34.1"
+rp2a03_core = { workspace = true }
+nice-plug = { workspace = true }
+egui = { workspace = true }
+egui_extras = { workspace = true }
+image = { workspace = true }

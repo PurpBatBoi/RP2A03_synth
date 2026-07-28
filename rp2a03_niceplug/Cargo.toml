@@ -1,15 +1,17 @@
 [package]
 name = "rp2a03_niceplug"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-rp2a03_core = { path = "../rp2a03_core" }
-rp2a03_common = { path = "../rp2a03_common" }
-nice-plug = "0.1.10"
-nice-plug-egui = "0.1.5"
-egui = "0.34.1"
-parking_lot = "0.12"
+rp2a03_core = { workspace = true }
+rp2a03_common = { workspace = true }
+nice-plug = { workspace = true }
+nice-plug-egui = { workspace = true }
+egui = { workspace = true }
+parking_lot = { workspace = true }
+egui_extras = { workspace = true }
+image = { workspace = true }
