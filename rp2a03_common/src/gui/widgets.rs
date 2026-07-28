@@ -18,6 +18,12 @@ struct RepeatingButtonState {
     last_trigger_time: f64,
 }
 
+#[derive(Clone, Copy, Default)]
+struct MarkerDragState {
+    start_step: usize,
+    was_existing: bool,
+}
+
 /// Renders a FamiTracker-style envelope bar graph and handles interactive mouse editing.
 /// Returns `true` when step values or markers change so text representation can be synchronized.
 pub fn draw_envelope_bar_graph(
@@ -167,34 +173,119 @@ pub fn draw_envelope_bar_graph(
     };
 
     // Header interaction (Loop / Release points)
+    let loop_drag_id = ui.make_persistent_id("loop_drag_state");
+    let rel_drag_id = ui.make_persistent_id("release_drag_state");
+
     if num_steps > 0 {
         let step_width = header_rect.width() / num_steps as f32;
 
-        if header_response.clicked() {
-            if let Some(pointer_pos) = header_response.interact_pointer_pos() {
-                let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width).floor()
-                    as usize)
-                    .clamp(0, num_steps - 1);
+        let pointer_pos = header_response
+            .interact_pointer_pos()
+            .or_else(|| ui.input(|i| i.pointer.hover_pos()));
 
-                if seq.loop_point == Some(clicked_step) {
-                    seq.loop_point = None;
-                } else {
-                    seq.loop_point = Some(clicked_step);
+        if let Some(pos) = pointer_pos {
+            let x = pos.x.clamp(header_rect.min.x, header_rect.max.x - 1.0f32);
+            let current_step = (((x - header_rect.min.x) / step_width).floor() as usize)
+                .clamp(0, num_steps - 1);
+
+            // Left Mouse Button (Primary) -> Loop Point
+            if header_response.drag_started_by(egui::PointerButton::Primary) {
+                let was_existing = seq.loop_point == Some(current_step);
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        loop_drag_id,
+                        MarkerDragState {
+                            start_step: current_step,
+                            was_existing,
+                        },
+                    );
+                });
+                if !was_existing {
+                    seq.loop_point = Some(current_step);
+                    text_needs_sync = true;
                 }
-                text_needs_sync = true;
+            } else if header_response.dragged_by(egui::PointerButton::Primary) {
+                let state: Option<MarkerDragState> = ui.ctx().data_mut(|d| d.get_temp(loop_drag_id));
+                if let Some(st) = state {
+                    if current_step != st.start_step || !st.was_existing {
+                        if seq.loop_point != Some(current_step) {
+                            seq.loop_point = Some(current_step);
+                            text_needs_sync = true;
+                        }
+                    }
+                }
             }
-        } else if header_response.secondary_clicked() {
-            if let Some(pointer_pos) = header_response.interact_pointer_pos() {
-                let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width).floor()
-                    as usize)
-                    .clamp(0, num_steps - 1);
 
-                if seq.release_point == Some(clicked_step) {
-                    seq.release_point = None;
+            if header_response.clicked_by(egui::PointerButton::Primary) {
+                let state: Option<MarkerDragState> = ui.ctx().data_mut(|d| d.get_temp(loop_drag_id));
+                if let Some(st) = state {
+                    if current_step == st.start_step && st.was_existing {
+                        seq.loop_point = None;
+                        text_needs_sync = true;
+                    } else if !st.was_existing {
+                        seq.loop_point = Some(current_step);
+                        text_needs_sync = true;
+                    }
                 } else {
-                    seq.release_point = Some(clicked_step);
+                    if seq.loop_point == Some(current_step) {
+                        seq.loop_point = None;
+                    } else {
+                        seq.loop_point = Some(current_step);
+                    }
+                    text_needs_sync = true;
                 }
-                text_needs_sync = true;
+                ui.ctx().data_mut(|d| d.remove_temp::<MarkerDragState>(loop_drag_id));
+            }
+
+            // Right Mouse Button (Secondary) -> Release Point
+            if header_response.drag_started_by(egui::PointerButton::Secondary) {
+                let was_existing = seq.release_point == Some(current_step);
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        rel_drag_id,
+                        MarkerDragState {
+                            start_step: current_step,
+                            was_existing,
+                        },
+                    );
+                });
+                if !was_existing {
+                    seq.release_point = Some(current_step);
+                    text_needs_sync = true;
+                }
+            } else if header_response.dragged_by(egui::PointerButton::Secondary) {
+                let state: Option<MarkerDragState> = ui.ctx().data_mut(|d| d.get_temp(rel_drag_id));
+                if let Some(st) = state {
+                    if current_step != st.start_step || !st.was_existing {
+                        if seq.release_point != Some(current_step) {
+                            seq.release_point = Some(current_step);
+                            text_needs_sync = true;
+                        }
+                    }
+                }
+            }
+
+            if header_response.clicked_by(egui::PointerButton::Secondary)
+                || header_response.secondary_clicked()
+            {
+                let state: Option<MarkerDragState> = ui.ctx().data_mut(|d| d.get_temp(rel_drag_id));
+                if let Some(st) = state {
+                    if current_step == st.start_step && st.was_existing {
+                        seq.release_point = None;
+                        text_needs_sync = true;
+                    } else if !st.was_existing {
+                        seq.release_point = Some(current_step);
+                        text_needs_sync = true;
+                    }
+                } else {
+                    if seq.release_point == Some(current_step) {
+                        seq.release_point = None;
+                    } else {
+                        seq.release_point = Some(current_step);
+                    }
+                    text_needs_sync = true;
+                }
+                ui.ctx().data_mut(|d| d.remove_temp::<MarkerDragState>(rel_drag_id));
             }
         }
     }
@@ -377,12 +468,22 @@ pub fn draw_envelope_bar_graph(
 
         let bar_color = if is_loop_release_mode && i >= loop_idx {
             Color32::from_rgb(230, 190, 40)
-        } else if i >= rel_idx {
-            Color32::from_rgb(200, 120, 220)
-        } else if i >= loop_idx {
-            Color32::from_rgb(100, 200, 220)
+        } else if loop_idx < rel_idx {
+            if i >= rel_idx {
+                Color32::from_rgb(200, 120, 220)
+            } else if i >= loop_idx {
+                Color32::from_rgb(100, 200, 220)
+            } else {
+                Color32::from_rgb(220, 220, 220)
+            }
         } else {
-            Color32::from_rgb(220, 220, 220)
+            if i >= loop_idx && loop_idx < num_steps {
+                Color32::from_rgb(100, 200, 220)
+            } else if i >= rel_idx && rel_idx < num_steps {
+                Color32::from_rgb(200, 120, 220)
+            } else {
+                Color32::from_rgb(220, 220, 220)
+            }
         };
 
         if is_arpeggio {
@@ -441,9 +542,10 @@ pub fn draw_envelope_bar_graph(
     // Render loop/release region headers
     painter.rect_filled(header_rect, 0.0f32, Color32::from_rgb(25, 25, 25));
 
-    let is_loop_release_mode = loop_idx < num_steps && rel_idx == loop_idx;
+    let has_loop = loop_idx < num_steps;
+    let has_release = rel_idx < num_steps;
 
-    if is_loop_release_mode {
+    if has_loop && has_release && loop_idx == rel_idx {
         let x_min = header_rect.min.x + loop_idx as f32 * step_width;
         let x_max = header_rect.max.x;
         let lr_rect = Rect::from_min_max(
@@ -459,14 +561,14 @@ pub fn draw_envelope_bar_graph(
             Color32::WHITE,
         );
     } else {
-        let loop_end = if rel_idx < usize::MAX {
-            rel_idx
-        } else {
-            num_steps
-        };
-
-        if loop_idx < num_steps {
-            let x_min = header_rect.min.x + loop_idx as f32 * step_width;
+        if has_loop {
+            let loop_start = loop_idx;
+            let loop_end = if has_release && loop_idx < rel_idx {
+                rel_idx
+            } else {
+                num_steps
+            };
+            let x_min = header_rect.min.x + loop_start as f32 * step_width;
             let x_max = header_rect.min.x + loop_end as f32 * step_width;
             let l_rect = Rect::from_min_max(
                 Pos2::new(x_min, header_rect.min.y),
@@ -482,9 +584,15 @@ pub fn draw_envelope_bar_graph(
             );
         }
 
-        if rel_idx < num_steps {
-            let x_min = header_rect.min.x + rel_idx as f32 * step_width;
-            let x_max = header_rect.max.x;
+        if has_release {
+            let rel_start = rel_idx;
+            let rel_end = if has_loop && rel_idx < loop_idx {
+                loop_idx
+            } else {
+                num_steps
+            };
+            let x_min = header_rect.min.x + rel_start as f32 * step_width;
+            let x_max = header_rect.min.x + rel_end as f32 * step_width;
             let r_rect = Rect::from_min_max(
                 Pos2::new(x_min, header_rect.min.y),
                 Pos2::new(x_max, header_rect.max.y),
