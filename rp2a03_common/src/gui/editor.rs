@@ -289,11 +289,12 @@ fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences) {
             _ => ("Duty / Noise", 0, 3),
         };
 
-        ui.add_space(16.0); // or 6.0
+        ui.add_space(16.0);
         group_box(ui, &format!("Sequence editor - {}", title), |ui| {
             let (text, sequence) = data.selected_sequence_mut(tab);
 
-            if draw_envelope_bar_graph(ui, sequence, min_val, max_val) {
+            let is_arpeggio = tab == 1;
+            if draw_envelope_bar_graph(ui, sequence, min_val, max_val, is_arpeggio) {
                 *text = sequence_to_text(sequence);
             }
 

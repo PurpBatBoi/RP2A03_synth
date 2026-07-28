@@ -25,99 +25,280 @@ pub fn draw_envelope_bar_graph(
     seq: &mut Sequence,
     min_val: i16,
     max_val: i16,
+    is_arpeggio: bool,
 ) -> bool {
-    let desired_size = Vec2::new(ui.available_width(), 220.0);
-    let (rect, response) = ui.allocate_at_least(desired_size, Sense::click_and_drag());
+    let desired_size = Vec2::new(ui.available_width(), 220.0f32);
+    let (rect, _response) = ui.allocate_at_least(desired_size, Sense::hover());
 
     let painter = ui.painter_at(rect);
 
     // Background panel
-    painter.rect_filled(rect, 2.0, Color32::from_rgb(8, 8, 8));
+    painter.rect_filled(rect, 2.0f32, Color32::from_rgb(8, 8, 8));
     painter.rect_stroke(
         rect,
-        2.0,
+        2.0f32,
         Stroke::new(1.0f32, Color32::from_rgb(35, 35, 35)),
         egui::StrokeKind::Outside,
     );
 
     let num_steps = seq.len();
 
-    let header_height = 20.0;
-    let graph_rect =
-        Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - header_height));
-    let header_rect =
-        Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - header_height), rect.max);
+    // Arpeggio scroll state handling
+    let scroll_id = ui.make_persistent_id("arpeggio_scroll_center");
+    let mut scroll_center: i16 = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(scroll_id))
+        .unwrap_or(0i16);
 
-    let mut text_needs_sync = false;
+    let visible_span = 10i16; // +/- 10 semitones (21 visible rows)
+    let min_center = (min_val + visible_span).min(0);
+    let max_center = (max_val - visible_span).max(0);
 
-    // Handle mouse interactions when sequence is non-empty
-    if num_steps > 0 {
-        let step_width = graph_rect.width() / num_steps as f32;
+    let scrollbar_width = if is_arpeggio { 14.0f32 } else { 0.0f32 };
+    let header_height = 20.0f32;
 
-        if let Some(pointer_pos) = response.interact_pointer_pos() {
-            let is_header_click = pointer_pos.y >= graph_rect.max.y;
+    let graph_rect = Rect::from_min_max(
+        rect.min,
+        Pos2::new(rect.max.x - scrollbar_width, rect.max.y - header_height),
+    );
+    let scrollbar_rect = Rect::from_min_max(
+        Pos2::new(rect.max.x - scrollbar_width, rect.min.y),
+        Pos2::new(rect.max.x, rect.max.y - header_height),
+    );
+    let header_rect = Rect::from_min_max(
+        Pos2::new(rect.min.x, rect.max.y - header_height),
+        Pos2::new(rect.max.x - scrollbar_width, rect.max.y),
+    );
 
-            if is_header_click {
-                // Header interaction: Loop / Release point toggling
-                if response.clicked() {
-                    let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width).floor()
-                        as usize)
-                        .clamp(0, num_steps - 1);
+    // Sub-region interactive responses
+    let graph_response = ui.interact(
+        graph_rect,
+        ui.make_persistent_id("arpeggio_graph_area"),
+        Sense::click_and_drag(),
+    );
+    let header_response = ui.interact(
+        header_rect,
+        ui.make_persistent_id("arpeggio_header_area"),
+        Sense::click_and_drag(),
+    );
+    let scrollbar_response = if is_arpeggio {
+        ui.interact(
+            scrollbar_rect,
+            ui.make_persistent_id("arpeggio_scrollbar_area"),
+            Sense::click_and_drag(),
+        )
+    } else {
+        ui.interact(
+            Rect::NOTHING,
+            ui.make_persistent_id("arpeggio_scrollbar_dummy"),
+            Sense::hover(),
+        )
+    };
 
-                    if seq.loop_point == Some(clicked_step) {
-                        seq.loop_point = None;
-                    } else {
-                        seq.loop_point = Some(clicked_step);
-                    }
-                    text_needs_sync = true;
-                } else if response.secondary_clicked() {
-                    let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width).floor()
-                        as usize)
-                        .clamp(0, num_steps - 1);
-
-                    if seq.release_point == Some(clicked_step) {
-                        seq.release_point = None;
-                    } else {
-                        seq.release_point = Some(clicked_step);
-                    }
-                    text_needs_sync = true;
-                }
+    // Handle mouse wheel scrolling for Arpeggio
+    if is_arpeggio && (graph_response.hovered() || scrollbar_response.hovered()) {
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll_delta.abs() > 0.0f32 {
+            let change = (scroll_delta / 8.0f32).round() as i16;
+            let step_change = if change == 0 {
+                if scroll_delta > 0.0f32 { 1 } else { -1 }
             } else {
-                // Bar graph area interaction: Real-time envelope drawing
-                if response.dragged_by(egui::PointerButton::Primary)
-                    || response.clicked_by(egui::PointerButton::Primary)
-                {
-                    let step_idx = (((pointer_pos.x - graph_rect.min.x) / step_width).floor()
-                        as i32)
-                        .clamp(0, num_steps as i32 - 1) as usize;
+                change
+            };
+            scroll_center = (scroll_center + step_change).clamp(min_center, max_center);
+        }
+    }
 
-                    let rel_y = (pointer_pos.y - graph_rect.min.y).clamp(0.0, graph_rect.height());
-                    let norm_y = rel_y / graph_rect.height();
-                    let raw_val = max_val as f32 - norm_y * (max_val as f32 - min_val as f32);
-                    let mut new_val = raw_val.round() as i16;
+    // Scrollbar interactions
+    if is_arpeggio {
+        let button_h = 14.0f32;
+        let top_btn_rect = Rect::from_min_max(
+            scrollbar_rect.min,
+            Pos2::new(scrollbar_rect.max.x, scrollbar_rect.min.y + button_h),
+        );
+        let bot_btn_rect = Rect::from_min_max(
+            Pos2::new(scrollbar_rect.min.x, scrollbar_rect.max.y - button_h),
+            scrollbar_rect.max,
+        );
+        let track_rect = Rect::from_min_max(
+            Pos2::new(scrollbar_rect.min.x, scrollbar_rect.min.y + button_h),
+            Pos2::new(scrollbar_rect.max.x, scrollbar_rect.max.y - button_h),
+        );
 
-                    // Zero-axis snap for bipolar sequences
-                    if min_val < 0 {
-                        let snap_threshold = (max_val as f32 - min_val as f32) * 0.03;
-                        if raw_val.abs() <= snap_threshold {
-                            new_val = 0;
-                        }
-                    }
-
-                    let clamped_val = new_val.clamp(min_val, max_val);
-                    if seq.values[step_idx] != clamped_val {
-                        seq.values[step_idx] = clamped_val;
-                        text_needs_sync = true;
-                    }
+        if scrollbar_response.clicked() {
+            if let Some(pos) = scrollbar_response.interact_pointer_pos() {
+                if top_btn_rect.contains(pos) {
+                    scroll_center = (scroll_center + 1).clamp(min_center, max_center);
+                } else if bot_btn_rect.contains(pos) {
+                    scroll_center = (scroll_center - 1).clamp(min_center, max_center);
                 }
             }
         }
 
-        if response.drag_stopped_by(egui::PointerButton::Primary)
-            || response.clicked_by(egui::PointerButton::Primary)
+        if scrollbar_response.dragged() || scrollbar_response.clicked() {
+            if let Some(pos) = scrollbar_response.interact_pointer_pos() {
+                if !top_btn_rect.contains(pos) && !bot_btn_rect.contains(pos) {
+                    let thumb_h = (track_rect.height() * (21.0f32 / 193.0f32)).clamp(16.0f32, track_rect.height());
+                    let travel_h = track_rect.height() - thumb_h;
+                    if travel_h > 0.0f32 {
+                        let rel_y = pos.y - track_rect.min.y - thumb_h / 2.0f32;
+                        let norm = (rel_y / travel_h).clamp(0.0f32, 1.0f32);
+                        let center_range = (max_center - min_center) as f32;
+                        scroll_center = (max_center as f32 - norm * center_range).round() as i16;
+                        scroll_center = scroll_center.clamp(min_center, max_center);
+                    }
+                }
+            }
+        }
+    }
+
+    ui.ctx().data_mut(|d| d.insert_temp(scroll_id, scroll_center));
+
+    let mut text_needs_sync = false;
+
+    // Determine visible Y-axis range for rendering and mouse interaction
+    let (vis_min, vis_max) = if is_arpeggio {
+        (
+            (scroll_center - visible_span).max(min_val),
+            (scroll_center + visible_span).min(max_val),
+        )
+    } else {
+        (min_val, max_val)
+    };
+
+    // Header interaction (Loop / Release points)
+    if num_steps > 0 {
+        let step_width = header_rect.width() / num_steps as f32;
+
+        if header_response.clicked() {
+            if let Some(pointer_pos) = header_response.interact_pointer_pos() {
+                let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width).floor()
+                    as usize)
+                    .clamp(0, num_steps - 1);
+
+                if seq.loop_point == Some(clicked_step) {
+                    seq.loop_point = None;
+                } else {
+                    seq.loop_point = Some(clicked_step);
+                }
+                text_needs_sync = true;
+            }
+        } else if header_response.secondary_clicked() {
+            if let Some(pointer_pos) = header_response.interact_pointer_pos() {
+                let clicked_step = (((pointer_pos.x - header_rect.min.x) / step_width).floor()
+                    as usize)
+                    .clamp(0, num_steps - 1);
+
+                if seq.release_point == Some(clicked_step) {
+                    seq.release_point = None;
+                } else {
+                    seq.release_point = Some(clicked_step);
+                }
+                text_needs_sync = true;
+            }
+        }
+    }
+
+    // Graph canvas interaction (Sequence drawing)
+    if num_steps > 0 {
+        let step_width = graph_rect.width() / num_steps as f32;
+
+        if graph_response.dragged_by(egui::PointerButton::Primary)
+            || graph_response.clicked_by(egui::PointerButton::Primary)
+        {
+            if let Some(pointer_pos) = graph_response.interact_pointer_pos() {
+                let step_idx = (((pointer_pos.x - graph_rect.min.x) / step_width).floor()
+                    as i32)
+                    .clamp(0, num_steps as i32 - 1) as usize;
+
+                let rel_y = (pointer_pos.y - graph_rect.min.y).clamp(0.0f32, graph_rect.height());
+                let norm_y = rel_y / graph_rect.height();
+
+                let clamped_val = if is_arpeggio {
+                    let num_slots = (vis_max - vis_min + 1) as f32;
+                    let slot_idx = (norm_y * num_slots).floor() as i16;
+                    (vis_max - slot_idx).clamp(vis_min, vis_max)
+                } else {
+                    let raw_val = max_val as f32 - norm_y * (max_val as f32 - min_val as f32);
+                    let mut new_val = raw_val.round() as i16;
+
+                    if min_val < 0 {
+                        let snap_threshold = (max_val as f32 - min_val as f32) * 0.03f32;
+                        if raw_val.abs() <= snap_threshold {
+                            new_val = 0;
+                        }
+                    }
+                    new_val.clamp(min_val, max_val)
+                };
+
+                if seq.values[step_idx] != clamped_val {
+                    seq.values[step_idx] = clamped_val;
+                    text_needs_sync = true;
+                }
+            }
+        }
+
+        if graph_response.drag_stopped_by(egui::PointerButton::Primary)
+            || graph_response.clicked_by(egui::PointerButton::Primary)
         {
             text_needs_sync = true;
         }
+    }
+
+    // Render vertical scrollbar visuals
+    if is_arpeggio {
+        painter.rect_filled(scrollbar_rect, 0.0f32, Color32::from_rgb(18, 18, 18));
+        painter.rect_stroke(
+            scrollbar_rect,
+            0.0f32,
+            Stroke::new(1.0f32, Color32::from_rgb(35, 35, 35)),
+            egui::StrokeKind::Outside,
+        );
+
+        let button_h = 14.0f32;
+        let top_btn_rect = Rect::from_min_max(
+            scrollbar_rect.min,
+            Pos2::new(scrollbar_rect.max.x, scrollbar_rect.min.y + button_h),
+        );
+        let bot_btn_rect = Rect::from_min_max(
+            Pos2::new(scrollbar_rect.min.x, scrollbar_rect.max.y - button_h),
+            scrollbar_rect.max,
+        );
+        let track_rect = Rect::from_min_max(
+            Pos2::new(scrollbar_rect.min.x, scrollbar_rect.min.y + button_h),
+            Pos2::new(scrollbar_rect.max.x, scrollbar_rect.max.y - button_h),
+        );
+
+        painter.rect_filled(top_btn_rect, 0.0f32, Color32::from_rgb(30, 30, 30));
+        painter.text(
+            top_btn_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "▲",
+            egui::FontId::proportional(8.0f32),
+            Color32::from_rgb(180, 180, 180),
+        );
+
+        painter.rect_filled(bot_btn_rect, 0.0f32, Color32::from_rgb(30, 30, 30));
+        painter.text(
+            bot_btn_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "▼",
+            egui::FontId::proportional(8.0f32),
+            Color32::from_rgb(180, 180, 180),
+        );
+
+        let center_range = (max_center - min_center).max(1) as f32;
+        let norm_center = (max_center - scroll_center) as f32 / center_range;
+        let thumb_h = (track_rect.height() * (21.0f32 / 193.0f32)).clamp(16.0f32, track_rect.height());
+        let thumb_travel = track_rect.height() - thumb_h;
+        let thumb_top = track_rect.min.y + norm_center * thumb_travel;
+
+        let thumb_rect = Rect::from_min_max(
+            Pos2::new(scrollbar_rect.min.x + 1.5f32, thumb_top),
+            Pos2::new(scrollbar_rect.max.x - 1.5f32, thumb_top + thumb_h),
+        );
+
+        painter.rect_filled(thumb_rect, 2.0f32, Color32::from_rgb(120, 120, 120));
     }
 
     if num_steps == 0 {
@@ -125,7 +306,7 @@ pub fn draw_envelope_bar_graph(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Empty Sequence (0 steps)",
-            egui::FontId::proportional(13.0),
+            egui::FontId::proportional(13.0f32),
             Color32::from_rgb(90, 90, 90),
         );
         return text_needs_sync;
@@ -135,21 +316,12 @@ pub fn draw_envelope_bar_graph(
     let loop_idx = seq.loop_point.unwrap_or(usize::MAX);
     let rel_idx = seq.release_point.unwrap_or(usize::MAX);
 
-    let is_bipolar = min_val < 0;
-
-    // Zero-axis Y offset calculation
-    let zero_y = if is_bipolar {
-        let range = (max_val as f32 - min_val as f32).max(1.0);
-        let norm_zero = (0.0 - min_val as f32) / range;
-        graph_rect.max.y - (norm_zero * graph_rect.height())
-    } else {
-        graph_rect.max.y
-    };
+    let is_bipolar = !is_arpeggio && min_val < 0;
 
     // Draw step column backgrounds
     for i in 0..num_steps {
         let bar_x_min = graph_rect.min.x + i as f32 * step_width;
-        let bar_x_max = bar_x_min + step_width - 1.0;
+        let bar_x_max = bar_x_min + step_width - 1.0f32;
 
         let col_rect = Rect::from_min_max(
             Pos2::new(bar_x_min, graph_rect.min.y),
@@ -160,11 +332,31 @@ pub fn draw_envelope_bar_graph(
         } else {
             Color32::from_rgb(20, 20, 20)
         };
-        painter.rect_filled(col_rect, 0.0, bg_color);
+        painter.rect_filled(col_rect, 0.0f32, bg_color);
     }
 
-    // Draw zero-axis reference line for bipolar graphs
-    if is_bipolar {
+    // Grid lines
+    if is_arpeggio {
+        let num_slots = (vis_max - vis_min + 1) as f32;
+        let slot_h = graph_rect.height() / num_slots;
+        for slot in 0..=(vis_max - vis_min) {
+            let val = vis_max - slot;
+            let y = graph_rect.min.y + slot as f32 * slot_h;
+            let line_color = if val == 0 {
+                Color32::from_rgb(55, 55, 55)
+            } else {
+                Color32::from_rgb(24, 24, 24)
+            };
+            painter.line_segment(
+                [Pos2::new(graph_rect.min.x, y), Pos2::new(graph_rect.max.x, y)],
+                Stroke::new(1.0f32, line_color),
+            );
+        }
+    } else if is_bipolar {
+        let range = (max_val as f32 - min_val as f32).max(1.0f32);
+        let norm_zero = (0.0f32 - min_val as f32) / range;
+        let zero_y = graph_rect.max.y - (norm_zero * graph_rect.height());
+
         painter.line_segment(
             [
                 Pos2::new(graph_rect.min.x, zero_y),
@@ -174,31 +366,12 @@ pub fn draw_envelope_bar_graph(
         );
     }
 
-    // Draw step bars
+    // Draw step bars / blocks
     for i in 0..num_steps {
         let val = seq.values[i].clamp(min_val, max_val);
 
         let bar_x_min = graph_rect.min.x + i as f32 * step_width;
-        let bar_x_max = bar_x_min + step_width - 1.0;
-
-        let bar_rect = if is_bipolar {
-            let range = (max_val as f32 - min_val as f32).max(1.0);
-            let norm_val = (val as f32 - min_val as f32) / range;
-            let bar_y = graph_rect.max.y - (norm_val * graph_rect.height());
-            if val >= 0 {
-                Rect::from_min_max(Pos2::new(bar_x_min, bar_y), Pos2::new(bar_x_max, zero_y))
-            } else {
-                Rect::from_min_max(Pos2::new(bar_x_min, zero_y), Pos2::new(bar_x_max, bar_y))
-            }
-        } else {
-            let range = max_val.max(1) as f32;
-            let norm_val = val as f32 / range;
-            let bar_y_min = graph_rect.max.y - (norm_val * graph_rect.height());
-            Rect::from_min_max(
-                Pos2::new(bar_x_min, bar_y_min),
-                Pos2::new(bar_x_max, graph_rect.max.y),
-            )
-        };
+        let bar_x_max = bar_x_min + step_width - 1.0f32;
 
         let is_loop_release_mode = loop_idx < num_steps && rel_idx == loop_idx;
 
@@ -212,13 +385,61 @@ pub fn draw_envelope_bar_graph(
             Color32::from_rgb(220, 220, 220)
         };
 
-        if val != 0 || !is_bipolar {
-            painter.rect_filled(bar_rect, 1.0, bar_color);
+        if is_arpeggio {
+            if val > vis_max {
+                let ind_rect = Rect::from_min_max(
+                    Pos2::new(bar_x_min + 2.0f32, graph_rect.min.y + 1.0f32),
+                    Pos2::new(bar_x_max - 2.0f32, graph_rect.min.y + 4.0f32),
+                );
+                painter.rect_filled(ind_rect, 1.0f32, Color32::from_rgb(255, 200, 80));
+            } else if val < vis_min {
+                let ind_rect = Rect::from_min_max(
+                    Pos2::new(bar_x_min + 2.0f32, graph_rect.max.y - 4.0f32),
+                    Pos2::new(bar_x_max - 2.0f32, graph_rect.max.y - 1.0f32),
+                );
+                painter.rect_filled(ind_rect, 1.0f32, Color32::from_rgb(255, 200, 80));
+            } else {
+                let num_slots = (vis_max - vis_min + 1) as f32;
+                let slot_h = graph_rect.height() / num_slots;
+                let slot_idx = (vis_max - val) as f32;
+                let bar_y_min = graph_rect.min.y + slot_idx * slot_h;
+                let bar_y_max = bar_y_min + slot_h;
+                let bar_rect = Rect::from_min_max(
+                    Pos2::new(bar_x_min + 0.5f32, bar_y_min + 0.5f32),
+                    Pos2::new(bar_x_max - 0.5f32, bar_y_max - 0.5f32),
+                );
+                painter.rect_filled(bar_rect, 1.0f32, bar_color);
+            }
+        } else {
+            let bar_rect = if is_bipolar {
+                let range = (max_val as f32 - min_val as f32).max(1.0f32);
+                let norm_zero = (0.0f32 - min_val as f32) / range;
+                let zero_y = graph_rect.max.y - (norm_zero * graph_rect.height());
+                let norm_val = (val as f32 - min_val as f32) / range;
+                let bar_y = graph_rect.max.y - (norm_val * graph_rect.height());
+                if val >= 0 {
+                    Rect::from_min_max(Pos2::new(bar_x_min, bar_y), Pos2::new(bar_x_max, zero_y))
+                } else {
+                    Rect::from_min_max(Pos2::new(bar_x_min, zero_y), Pos2::new(bar_x_max, bar_y))
+                }
+            } else {
+                let range = max_val.max(1) as f32;
+                let norm_val = val as f32 / range;
+                let bar_y_min = graph_rect.max.y - (norm_val * graph_rect.height());
+                Rect::from_min_max(
+                    Pos2::new(bar_x_min, bar_y_min),
+                    Pos2::new(bar_x_max, graph_rect.max.y),
+                )
+            };
+
+            if val != 0 || !is_bipolar {
+                painter.rect_filled(bar_rect, 1.0f32, bar_color);
+            }
         }
     }
 
     // Render loop/release region headers
-    painter.rect_filled(header_rect, 0.0, Color32::from_rgb(25, 25, 25));
+    painter.rect_filled(header_rect, 0.0f32, Color32::from_rgb(25, 25, 25));
 
     let is_loop_release_mode = loop_idx < num_steps && rel_idx == loop_idx;
 
@@ -229,12 +450,12 @@ pub fn draw_envelope_bar_graph(
             Pos2::new(x_min, header_rect.min.y),
             Pos2::new(x_max, header_rect.max.y),
         );
-        painter.rect_filled(lr_rect, 0.0, Color32::from_rgb(180, 140, 20));
+        painter.rect_filled(lr_rect, 0.0f32, Color32::from_rgb(180, 140, 20));
         painter.text(
-            Pos2::new(x_min + 4.0, header_rect.min.y + 2.0),
+            Pos2::new(x_min + 4.0f32, header_rect.min.y + 2.0f32),
             egui::Align2::LEFT_TOP,
             "Loop, Release",
-            egui::FontId::proportional(12.0),
+            egui::FontId::proportional(12.0f32),
             Color32::WHITE,
         );
     } else {
@@ -251,12 +472,12 @@ pub fn draw_envelope_bar_graph(
                 Pos2::new(x_min, header_rect.min.y),
                 Pos2::new(x_max, header_rect.max.y),
             );
-            painter.rect_filled(l_rect, 0.0, Color32::from_rgb(0, 120, 130));
+            painter.rect_filled(l_rect, 0.0f32, Color32::from_rgb(0, 120, 130));
             painter.text(
-                Pos2::new(x_min + 4.0, header_rect.min.y + 2.0),
+                Pos2::new(x_min + 4.0f32, header_rect.min.y + 2.0f32),
                 egui::Align2::LEFT_TOP,
                 "Loop",
-                egui::FontId::proportional(12.0),
+                egui::FontId::proportional(12.0f32),
                 Color32::WHITE,
             );
         }
@@ -268,12 +489,12 @@ pub fn draw_envelope_bar_graph(
                 Pos2::new(x_min, header_rect.min.y),
                 Pos2::new(x_max, header_rect.max.y),
             );
-            painter.rect_filled(r_rect, 0.0, Color32::from_rgb(120, 0, 130));
+            painter.rect_filled(r_rect, 0.0f32, Color32::from_rgb(120, 0, 130));
             painter.text(
-                Pos2::new(x_min + 4.0, header_rect.min.y + 2.0),
+                Pos2::new(x_min + 4.0f32, header_rect.min.y + 2.0f32),
                 egui::Align2::LEFT_TOP,
                 "Release",
-                egui::FontId::proportional(12.0),
+                egui::FontId::proportional(12.0f32),
                 Color32::WHITE,
             );
         }
@@ -281,17 +502,17 @@ pub fn draw_envelope_bar_graph(
 
     // Min / Max labels
     painter.text(
-        Pos2::new(graph_rect.min.x + 6.0, graph_rect.min.y + 2.0),
+        Pos2::new(graph_rect.min.x + 6.0f32, graph_rect.min.y + 2.0f32),
         egui::Align2::LEFT_TOP,
-        format!("{}", max_val),
-        egui::FontId::proportional(11.0),
+        format!("{}", vis_max),
+        egui::FontId::proportional(11.0f32),
         Color32::from_rgb(160, 160, 160),
     );
     painter.text(
-        Pos2::new(graph_rect.min.x + 6.0, graph_rect.max.y - 14.0),
+        Pos2::new(graph_rect.min.x + 6.0f32, graph_rect.max.y - 14.0f32),
         egui::Align2::LEFT_TOP,
-        format!("{}", min_val),
-        egui::FontId::proportional(11.0),
+        format!("{}", vis_min),
+        egui::FontId::proportional(11.0f32),
         Color32::from_rgb(160, 160, 160),
     );
 
@@ -328,11 +549,11 @@ pub fn group_box<R>(
 
     let galley = painter.layout_no_wrap(
         title.to_owned(),
-        egui::FontId::proportional(16.0),
+        egui::FontId::proportional(16.0f32),
         ui.visuals().text_color(),
     );
 
-    let title_pos = egui::pos2(rect.left() + 10.0, rect.top() - galley.size().y * 0.5);
+    let title_pos = egui::pos2(rect.left() + 10.0f32, rect.top() - galley.size().y * 0.5f32);
 
     painter.rect_stroke(
         rect,
@@ -344,8 +565,8 @@ pub fn group_box<R>(
     // Erase only behind the title
     painter.rect_filled(
         egui::Rect::from_min_max(
-            egui::pos2(title_pos.x - 4.0, rect.top() - 2.0),
-            egui::pos2(title_pos.x + galley.size().x + 4.0, rect.top() + 2.0),
+            egui::pos2(title_pos.x - 4.0f32, rect.top() - 2.0f32),
+            egui::pos2(title_pos.x + galley.size().x + 4.0f32, rect.top() + 2.0f32),
         ),
         egui::CornerRadius::ZERO,
         ui.visuals().panel_fill,
@@ -358,7 +579,6 @@ pub fn group_box<R>(
 
 /// Renders a button that triggers immediately on click and auto-repeats continuously when held down.
 pub fn repeating_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> bool {
-    // Adding .sense(egui::Sense::click_and_drag()) keeps the button visually pressed during mouse movement
     let button = egui::Button::new(text).sense(egui::Sense::click_and_drag());
     let response = ui.add(button);
     let id = response.id;
@@ -368,9 +588,8 @@ pub fn repeating_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) ->
     let (primary_down, pointer_pos) =
         ui.input(|i| (i.pointer.primary_down(), i.pointer.hover_pos()));
 
-    // Slight margin expansion so micro mouse movements don't cancel holding
     let pointer_over_button = if let Some(pos) = pointer_pos {
-        response.rect.expand(2.0).contains(pos)
+        response.rect.expand(2.0f32).contains(pos)
     } else {
         false
     };
@@ -380,7 +599,6 @@ pub fn repeating_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) ->
     if primary_down {
         match state {
             None => {
-                // Initial press must originate on this button
                 if response.is_pointer_button_down_on() {
                     ui.ctx().request_repaint();
                     let now = ui.input(|i| i.time);
