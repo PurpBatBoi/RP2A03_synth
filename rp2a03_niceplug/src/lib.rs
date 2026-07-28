@@ -223,6 +223,7 @@ impl Plugin for Rp2a03Plugin {
             (),
             EguiSettings::default(),
             move |ctx, _queue, _state| {
+                egui_extras::install_image_loaders(ctx);
                 ctx.set_style_of(egui::Theme::Dark, style());
             },
             move |ui, setter, _queue, _state| {

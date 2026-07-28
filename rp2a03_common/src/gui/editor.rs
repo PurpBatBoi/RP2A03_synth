@@ -97,6 +97,19 @@ fn draw_header(ui: &mut egui::Ui) {
         // Logo
         //------------------------------------------------------
 
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                origin,
+                egui::vec2(LOGO_W, LOGO_H),
+            )),
+            |ui| {
+                ui.add(
+                    egui::Image::new(egui::include_image!("logo.png"))
+                        .fit_to_exact_size(egui::vec2(LOGO_W, LOGO_H))
+                        .tint(egui::Color32::from_white_alpha(128)),
+                );
+            },
+        );
 
         //------------------------------------------------------
         // Layout constants
