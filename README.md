@@ -36,8 +36,6 @@ RP2A03-SYNTH/
     └── lib.rs
 ```
 
----
-
 ## Building
 
 **Prerequisites**: Rust toolchain (stable, 2021 edition).

@@ -2,8 +2,9 @@
 //! Layout rendering logic for the reusable sequence editor window.
 
 use super::state::{SharedSequences, MAX_SEQUENCES};
-use super::widgets::{draw_envelope_bar_graph, group_box};
+use super::widgets::{draw_envelope_bar_graph, group_box, repeating_button};
 use rp2a03_core::sequencer::{PitchMode, Sequence};
+
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
 pub fn sequence_to_text(seq: &Sequence) -> String {
@@ -303,7 +304,7 @@ fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences) {
 
                 let cur_len = sequence.len();
 
-                if ui.button("-").clicked() && cur_len > 0 {
+                if repeating_button(ui, "-") && cur_len > 0 {
                     sequence.values.pop();
 
                     let new_len = sequence.len();
@@ -319,9 +320,12 @@ fn draw_sequence_editor_panel(ui: &mut egui::Ui, data: &mut SharedSequences) {
                     *text = sequence_to_text(sequence);
                 }
 
-                ui.label(egui::RichText::new(cur_len.to_string()).strong());
+                ui.add_sized(
+                    [28.0, 18.0],
+                    egui::Label::new(egui::RichText::new(cur_len.to_string()).strong()),
+                );
 
-                if ui.button("+").clicked() {
+                if repeating_button(ui, "+") {
                     sequence.values.push(0);
                     *text = sequence_to_text(sequence);
                 }

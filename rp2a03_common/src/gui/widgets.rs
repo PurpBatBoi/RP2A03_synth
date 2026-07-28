@@ -12,6 +12,12 @@ use egui::{
 };
 use rp2a03_core::sequencer::Sequence;
 
+#[derive(Clone, Copy, Default)]
+struct RepeatingButtonState {
+    start_time: f64,
+    last_trigger_time: f64,
+}
+
 /// Renders a FamiTracker-style envelope bar graph and handles interactive mouse editing.
 /// Returns `true` when step values or markers change so text representation can be synchronized.
 pub fn draw_envelope_bar_graph(
@@ -292,7 +298,6 @@ pub fn draw_envelope_bar_graph(
     text_needs_sync
 }
 
-
 pub fn group_box<R>(
     ui: &mut egui::Ui,
     title: &str,
@@ -349,4 +354,77 @@ pub fn group_box<R>(
     painter.galley(title_pos, galley, ui.visuals().text_color());
 
     inner.inner
+}
+
+/// Renders a button that triggers immediately on click and auto-repeats continuously when held down.
+pub fn repeating_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> bool {
+    // Adding .sense(egui::Sense::click_and_drag()) keeps the button visually pressed during mouse movement
+    let button = egui::Button::new(text).sense(egui::Sense::click_and_drag());
+    let response = ui.add(button);
+    let id = response.id;
+
+    let mut triggered = false;
+
+    let (primary_down, pointer_pos) =
+        ui.input(|i| (i.pointer.primary_down(), i.pointer.hover_pos()));
+
+    // Slight margin expansion so micro mouse movements don't cancel holding
+    let pointer_over_button = if let Some(pos) = pointer_pos {
+        response.rect.expand(2.0).contains(pos)
+    } else {
+        false
+    };
+
+    let state = ui.ctx().data_mut(|d| d.get_temp::<RepeatingButtonState>(id));
+
+    if primary_down {
+        match state {
+            None => {
+                // Initial press must originate on this button
+                if response.is_pointer_button_down_on() {
+                    ui.ctx().request_repaint();
+                    let now = ui.input(|i| i.time);
+                    triggered = true;
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(
+                            id,
+                            RepeatingButtonState {
+                                start_time: now,
+                                last_trigger_time: now,
+                            },
+                        );
+                    });
+                }
+            }
+            Some(mut st) => {
+                if pointer_over_button {
+                    ui.ctx().request_repaint();
+                    let now = ui.input(|i| i.time);
+
+                    const INITIAL_DELAY: f64 = 0.35;
+                    const REPEAT_INTERVAL: f64 = 0.05;
+
+                    if now - st.start_time >= INITIAL_DELAY
+                        && now - st.last_trigger_time >= REPEAT_INTERVAL
+                    {
+                        triggered = true;
+                        st.last_trigger_time = now;
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(id, st);
+                        });
+                    }
+                } else {
+                    ui.ctx().data_mut(|d| {
+                        d.remove_temp::<RepeatingButtonState>(id);
+                    });
+                }
+            }
+        }
+    } else if state.is_some() {
+        ui.ctx().data_mut(|d| {
+            d.remove_temp::<RepeatingButtonState>(id);
+        });
+    }
+
+    triggered
 }

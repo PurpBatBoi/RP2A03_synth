@@ -23,4 +23,8 @@ pub use state::{
     SEQUENCE_TYPE_COUNT,
 };
 
-pub use widgets::draw_envelope_bar_graph;
+pub use widgets::{
+    draw_envelope_bar_graph,
+    group_box,
+    repeating_button,
+};
