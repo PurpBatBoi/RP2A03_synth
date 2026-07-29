@@ -297,136 +297,124 @@ fn draw_sequence_editor_panel(
     data: &mut SharedSequences,
     playheads: &SequencePlayheads,
 ) {
-    ui.vertical(|ui| {
-        let tab = data.selected_tab;
+    let tab = data.selected_tab;
 
-        let title = match tab {
-            0 => "Volume",
-            1 => "Arpeggio",
-            2 => "Pitch",
-            3 => "Hi-pitch",
-            _ => "Duty / Noise",
-        };
+    let title = match tab {
+        0 => "Volume",
+        1 => "Arpeggio",
+        2 => "Pitch",
+        3 => "Hi-pitch",
+        _ => "Duty / Noise",
+    };
 
-        ui.add_space(16.0);
-        group_box(ui, &format!("Sequence editor - {}", title), |ui| {
-            let (text, sequence) = data.selected_sequence_mut(tab);
+    ui.add_space(16.0);
 
-            let (min_val, max_val) = sequence_range(tab);
+    group_box(ui, &format!("Sequence editor - {}", title), |ui| {
+        // Controls below graph: add_space(6) + Size row (~22) + add_space(6) + TextEdit (~20) = ~54px.
+        const CONTROLS_HEIGHT: f32 = 54.0;
+        let graph_height = (ui.available_height() - CONTROLS_HEIGHT).max(150.0);
 
-            let is_arpeggio = tab == 1;
-            if draw_envelope_bar_graph(
-                ui,
-                sequence,
-                min_val,
-                max_val,
-                is_arpeggio,
-                playheads.step(tab),
-            ) {
+        let (text, sequence) = data.selected_sequence_mut(tab);
+
+        let (min_val, max_val) = sequence_range(tab);
+
+        let is_arpeggio = tab == 1;
+        if draw_envelope_bar_graph(
+            ui,
+            sequence,
+            min_val,
+            max_val,
+            is_arpeggio,
+            playheads.step(tab),
+            graph_height,
+        ) {
+            *text = sequence_to_text(sequence);
+        }
+
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Size:");
+
+            let cur_len = sequence.len();
+
+            if repeating_button(ui, "-") && cur_len > 0 {
+                sequence.values.pop();
+
+                let new_len = sequence.len();
+
+                if sequence.loop_point.is_some_and(|p| p >= new_len) {
+                    sequence.loop_point = None;
+                }
+
+                if sequence.release_point.is_some_and(|p| p >= new_len) {
+                    sequence.release_point = None;
+                }
+
                 *text = sequence_to_text(sequence);
             }
 
-            ui.add_space(6.0);
-
-            ui.horizontal(|ui| {
-                ui.label("Size:");
-
-                let cur_len = sequence.len();
-
-                if repeating_button(ui, "-") && cur_len > 0 {
-                    sequence.values.pop();
-
-                    let new_len = sequence.len();
-
-                    if sequence.loop_point.is_some_and(|p| p >= new_len) {
-                        sequence.loop_point = None;
-                    }
-
-                    if sequence.release_point.is_some_and(|p| p >= new_len) {
-                        sequence.release_point = None;
-                    }
-
-                    *text = sequence_to_text(sequence);
-                }
-
-                ui.add_sized(
-                    [28.0, 18.0],
-                    egui::Label::new(egui::RichText::new(cur_len.to_string()).strong()),
-                );
-
-                if repeating_button(ui, "+") {
-                    sequence.values.push(0);
-                    *text = sequence_to_text(sequence);
-                }
-
-                ui.add_space(15.0);
-
-                ui.label(format!("{} ms", (cur_len * 1000) / 60));
-
-                if tab == 1 {
-                    // Arpeggio mode ComboBox (Absolute / Relative)
-                    // placed right-to-left, mirroring the Pitch mode radio buttons.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mode_label = match sequence.arp_mode {
-                            ArpMode::Absolute => "Absolute",
-                            ArpMode::Relative => "Relative",
-                        };
-                        egui::ComboBox::from_id_salt("arp_mode_combo")
-                            .selected_text(mode_label)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut sequence.arp_mode,
-                                    ArpMode::Absolute,
-                                    "Absolute",
-                                );
-                                ui.selectable_value(
-                                    &mut sequence.arp_mode,
-                                    ArpMode::Relative,
-                                    "Relative",
-                                );
-                            });
-                        ui.label(egui::RichText::new("Mode:").weak());
-                    });
-                }
-
-                if tab == 2 {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
-
-                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
-
-                        ui.label(egui::RichText::new("Mode:").weak());
-                    });
-                }
-            });
-
-            ui.add_space(6.0);
-
-            let edit = ui.add(
-                egui::TextEdit::singleline(text)
-                    .desired_width(ui.available_width())
-                    .font(egui::TextStyle::Monospace),
+            ui.add_sized(
+                [28.0, 18.0],
+                egui::Label::new(egui::RichText::new(cur_len.to_string()).strong()),
             );
 
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-            if edit.changed() {
-                let sanitized = sanitize_sequence_text(text);
-                let prev_mode = sequence.pitch_mode;
-
-                *sequence = if sanitized.trim().is_empty() {
-                    Sequence::default()
-                } else {
-                    Sequence::parse_clamped(&sanitized, min_val, max_val).0
-                };
-
-                sequence.pitch_mode = prev_mode;
-            }
-
-            if enter_pressed || edit.lost_focus() {
+            if repeating_button(ui, "+") {
+                sequence.values.push(0);
                 *text = sequence_to_text(sequence);
             }
+
+            ui.add_space(15.0);
+
+            ui.label(format!("{} ms", (cur_len * 1000) / 60));
+
+            if tab == 1 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.radio_value(&mut sequence.arp_mode, ArpMode::Absolute, "Absolute");
+
+                    ui.radio_value(&mut sequence.arp_mode, ArpMode::Relative, "Relative");
+
+                    ui.label(egui::RichText::new("Mode:").weak());
+                });
+            }
+
+            if tab == 2 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
+
+                    ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
+
+                    ui.label(egui::RichText::new("Mode:").weak());
+                });
+            }
         });
+
+        ui.add_space(6.0);
+
+        let edit = ui.add(
+            egui::TextEdit::singleline(text)
+                .desired_width(ui.available_width())
+                .font(egui::TextStyle::Monospace),
+        );
+
+        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+        if edit.changed() {
+            let sanitized = sanitize_sequence_text(text);
+            let prev_mode = sequence.pitch_mode;
+
+            *sequence = if sanitized.trim().is_empty() {
+                Sequence::default()
+            } else {
+                Sequence::parse_clamped(&sanitized, min_val, max_val).0
+            };
+
+            sequence.pitch_mode = prev_mode;
+        }
+
+        if enter_pressed || edit.lost_focus() {
+            *text = sequence_to_text(sequence);
+        }
     });
 }
 
@@ -437,16 +425,38 @@ fn draw_main_content(
     changed_sequence_index: &mut Option<usize>,
     playheads: &SequencePlayheads,
 ) {
+    let available_w = ui.available_width();
+    let available_h = ui.available_height();
+
+    let left_w = 180.0;
+    let gap = 10.0;
+    let right_w = (available_w - left_w - gap).max(0.0);
+
     ui.horizontal(|ui| {
-        draw_instrument_settings_panel(ui, data, shared_sequence_index, changed_sequence_index);
+        ui.set_min_height(available_h);
 
-        ui.add_space(10.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(left_w, available_h),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                draw_instrument_settings_panel(
+                    ui,
+                    data,
+                    shared_sequence_index,
+                    changed_sequence_index,
+                );
+            },
+        );
 
-        ui.vertical(|ui| {
-            ui.set_min_width(ui.available_width());
+        ui.add_space(gap);
 
-            draw_sequence_editor_panel(ui, data, playheads);
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(right_w, available_h),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                draw_sequence_editor_panel(ui, data, playheads);
+            },
+        );
     });
 }
 
@@ -482,20 +492,39 @@ pub fn render_editor_ui(
 
     draw_header(ui);
     draw_chip_tabs(ui, data);
-    draw_main_content(
-        ui,
-        data,
-        shared_sequence_index,
-        &mut changed_sequence_index,
-        playheads,
+
+    // Reserve footer space at the bottom of the window with spacing gap
+    const FOOTER_HEIGHT: f32 = 26.0;
+    const FOOTER_GAP: f32 = 10.0;
+    let available = ui.available_rect_before_wrap();
+
+    // Allocate full available space in parent UI so outer frames don't shrink
+    ui.allocate_rect(available, egui::Sense::hover());
+
+    let footer_rect = egui::Rect::from_min_max(
+        egui::pos2(available.min.x, available.max.y - FOOTER_HEIGHT),
+        available.max,
+    );
+    let main_rect = egui::Rect::from_min_max(
+        available.min,
+        egui::pos2(available.max.x, footer_rect.min.y - FOOTER_GAP),
     );
 
-    // Calculate remaining vertical space and push footer to the bottom edge
-    const FOOTER_HEIGHT: f32 = 30.0;
-    let space_to_bottom = (ui.available_height() - FOOTER_HEIGHT).max(0.0);
-    ui.add_space(space_to_bottom);
+    // Main content fills everything above the footer
+    ui.scope_builder(egui::UiBuilder::new().max_rect(main_rect), |ui| {
+        draw_main_content(
+            ui,
+            data,
+            shared_sequence_index,
+            &mut changed_sequence_index,
+            playheads,
+        );
+    });
 
-    draw_footer(ui);
+    // Footer is always at the very bottom
+    ui.scope_builder(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
+        draw_footer(ui);
+    });
 
     changed_sequence_index
 }

@@ -28,8 +28,9 @@ pub fn draw_envelope_bar_graph(
     max_val: i16,
     is_arpeggio: bool,
     playhead_step: Option<usize>,
+    graph_height: f32,
 ) -> bool {
-    let desired_size = Vec2::new(ui.available_width(), 220.0f32);
+    let desired_size = Vec2::new(ui.available_width(), graph_height);
     let (rect, _response) = ui.allocate_at_least(desired_size, Sense::hover());
 
     let painter = ui.painter_at(rect);
@@ -45,18 +46,16 @@ pub fn draw_envelope_bar_graph(
 
     let num_steps = seq.len();
 
-    // Arpeggio scroll state handling
-    let visible_span = 10i16; // +/- 10 semitones visible (21 rows)
+    // Arpeggio scroll state handling: +/- 10 semitones visible (-10 to +10, 21 rows)
+    let visible_span = 10i16;
     let min_center = (min_val + visible_span).min(0);
     let max_center = (max_val - visible_span).max(0);
 
     let scroll_id = ui.make_persistent_id("arpeggio_scroll_center");
-    // Default to the midpoint of the range (0).
-    let default_center = (min_val + max_val) / 2;
     let mut scroll_center: i16 = ui
         .ctx()
         .data_mut(|d| d.get_temp(scroll_id))
-        .unwrap_or(default_center);
+        .unwrap_or(0i16);
     if is_arpeggio {
         scroll_center = scroll_center.clamp(min_center, max_center);
     }
@@ -150,7 +149,9 @@ pub fn draw_envelope_bar_graph(
         if scrollbar_response.dragged() || scrollbar_response.clicked() {
             if let Some(pos) = scrollbar_response.interact_pointer_pos() {
                 if !top_btn_rect.contains(pos) && !bot_btn_rect.contains(pos) {
-                    let thumb_h = (track_rect.height() * (21.0f32 / 193.0f32))
+                    let visible_rows = (2 * visible_span + 1) as f32;
+                    let total_rows = (max_val - min_val + 1) as f32;
+                    let thumb_h = (track_rect.height() * (visible_rows / total_rows))
                         .clamp(16.0f32, track_rect.height());
                     let travel_h = track_rect.height() - thumb_h;
                     if travel_h > 0.0f32 {
@@ -391,8 +392,10 @@ pub fn draw_envelope_bar_graph(
 
         let center_range = (max_center - min_center).max(1) as f32;
         let norm_center = (max_center - scroll_center) as f32 / center_range;
+        let visible_rows = (2 * visible_span + 1) as f32;
+        let total_rows = (max_val - min_val + 1) as f32;
         let thumb_h =
-            (track_rect.height() * (21.0f32 / 193.0f32)).clamp(16.0f32, track_rect.height());
+            (track_rect.height() * (visible_rows / total_rows)).clamp(16.0f32, track_rect.height());
         let thumb_travel = track_rect.height() - thumb_h;
         let thumb_top = track_rect.min.y + norm_center * thumb_travel;
 
