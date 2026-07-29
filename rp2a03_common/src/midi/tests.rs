@@ -349,7 +349,58 @@ fn envelope_ticks_land_on_sample_boundaries_inside_large_host_buffers() {
 }
 
 #[test]
-fn note_off_release_does_not_process_the_release_step_early() {
+fn note_on_restarts_frame_phase_for_a_full_attack_step() {
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let seqs = ActiveSequences {
+        vol_seq: Sequence::parse("15 10 5"),
+        vol_enabled: true,
+        ..default_seqs()
+    };
+
+    handler.note_on(60, 127, &mut pulse, &seqs);
+    handler.advance_frame_samples(&seqs, 44_100.0, 300);
+    assert_eq!(handler.samples_until_next_frame(44_100.0), 435);
+
+    handler.note_on(62, 127, &mut pulse, &seqs);
+    assert_eq!(handler.vol_seq_player.value(), 15);
+    assert_eq!(handler.samples_until_next_frame(44_100.0), 735);
+
+    handler.advance_frame_samples(&seqs, 44_100.0, 734);
+    assert_eq!(handler.vol_seq_player.value(), 15);
+    handler.advance_frame_samples(&seqs, 44_100.0, 1);
+    assert_eq!(handler.vol_seq_player.value(), 10);
+}
+
+#[test]
+fn note_off_release_processes_release_step_on_the_release_tick() {
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let seqs = ActiveSequences {
+        vol_seq: Sequence::parse("15 14 / 9 0"),
+        vol_enabled: true,
+        ..default_seqs()
+    };
+
+    handler.note_on(60, 127, &mut pulse, &seqs);
+    handler.advance_frame_samples(&seqs, 44_100.0, 300);
+
+    handler.note_off(60, &mut pulse, &seqs);
+    assert_eq!(
+        handler.vol_seq_player.value(),
+        9,
+        "release step must be applied in the same engine tick as the release"
+    );
+    assert_eq!(handler.samples_until_next_frame(44_100.0), 735);
+
+    handler.advance_frame_samples(&seqs, 44_100.0, 734);
+    assert_eq!(handler.vol_seq_player.value(), 9);
+    handler.advance_frame_samples(&seqs, 44_100.0, 1);
+    assert_eq!(handler.vol_seq_player.value(), 0);
+}
+
+#[test]
+fn note_off_release_processes_pitch_release_step_on_the_release_tick() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
 
@@ -368,10 +419,10 @@ fn note_off_release_does_not_process_the_release_step_early() {
     assert_eq!(handler.macro_period, base + 1);
 
     handler.note_off(60, &mut pulse, &seqs);
-    // 1:1 with dn ReleaseInstrument: the pointer jumps now but the release step's
-    // value is only applied on the next 60 Hz engine tick
-    assert_eq!(handler.macro_period, base + 1);
-    assert_eq!(handler.pitch_seq_player.state, SeqState::Running);
+    // 1:1 with dn ReleaseInstrument: the pointer jumps before UpdateInstrument,
+    // so the release step is consumed in the same engine tick.
+    assert_eq!(handler.macro_period, base + 1 + 5);
+    assert_eq!(handler.pitch_seq_player.state, SeqState::End);
 
     handler.update_modulation(&mut pulse, &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 1 + 5);

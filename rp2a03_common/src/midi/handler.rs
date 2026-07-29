@@ -196,7 +196,7 @@ impl MidiHandler {
     ///   `SetPeriod(TriggerNote(GetNote()) + Value)`).
     /// - Hi-pitch *adds* its step shifted left by 4 and is always accumulating,
     ///   regardless of the pitch mode setting (dn: `SetPeriod(GetPeriod() + (Value << 4))`).
-    fn clock_sequences_one_frame(&mut self, seqs: &ActiveSequences) {
+    pub(super) fn clock_sequences_one_frame(&mut self, seqs: &ActiveSequences) {
         if seqs.vol_enabled
             && !seqs.vol_seq.values.is_empty()
             && self.vol_seq_player.state == SeqState::Running

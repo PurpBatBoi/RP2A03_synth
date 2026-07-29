@@ -81,6 +81,7 @@ impl MidiHandler {
             self.macro_period += (self.hipitch_seq_player.value() as i32) << 4;
         }
         self.macro_period = self.macro_period.clamp(0, 0x7FF);
+        self.frame_sample_counter = 0.0;
     }
 
     /// Handle NoteOff event.
@@ -118,6 +119,12 @@ impl MidiHandler {
                 if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
                     self.hipitch_seq_player.release(&seqs.hipitch_seq);
                 }
+
+                // dn release notes run before CSeqInstHandler::UpdateInstrument in
+                // the same engine pass, so the release-point value reaches the APU
+                // immediately and then gets a full frame before the next step.
+                self.clock_sequences_one_frame(seqs);
+                self.frame_sample_counter = 0.0;
             }
         } else {
             self.apply_top_note(pulse);
