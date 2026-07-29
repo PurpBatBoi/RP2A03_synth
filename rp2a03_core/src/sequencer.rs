@@ -19,6 +19,25 @@ pub enum PitchMode {
     Absolute = 1,
 }
 
+/// Arpeggio sequence mode — mirrors `seq_setting_t` in Dn-FamiTracker `Sequence.h`.
+/// (Scheme mode is intentionally omitted.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum ArpMode {
+    /// `SETTING_ARP_ABSOLUTE` (0): each step is a signed semitone offset from the
+    /// channel base note.  `SetPeriod(TriggerNote(BaseNote + Value))`.
+    #[default]
+    Absolute = 0,
+    /// `SETTING_ARP_FIXED` (1): each step is an absolute dn-FamiTracker note index
+    /// (0 = C-0 .. 95 = B-7), completely ignoring the base note.
+    /// `SetPeriod(TriggerNote(Value))`.  On sequence end the base-note period is
+    /// restored once (dn: `SEQ_STATE_END` restore before `SEQ_STATE_HALT`).
+    Fixed = 1,
+    /// `SETTING_ARP_RELATIVE` (2): each step permanently shifts the channel's base
+    /// note accumulating.  `SetNote(BaseNote + Value); SetPeriod(TriggerNote(BaseNote))`.
+    Relative = 2,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
@@ -32,6 +51,9 @@ pub struct Sequence {
     pub release_point: Option<usize>,
     /// Pitch mode for pitch sequences (Relative vs Absolute).
     pub pitch_mode: PitchMode,
+    /// Arpeggio mode — only meaningful when this sequence is used as an arpeggio
+    /// envelope.  Ignored for all other sequence types.
+    pub arp_mode: ArpMode,
 }
 
 impl Default for Sequence {
@@ -41,6 +63,7 @@ impl Default for Sequence {
             loop_point: None,
             release_point: None,
             pitch_mode: PitchMode::default(),
+            arp_mode: ArpMode::default(),
         }
     }
 }
@@ -53,6 +76,7 @@ impl Sequence {
             loop_point: None,
             release_point: None,
             pitch_mode: PitchMode::default(),
+            arp_mode: ArpMode::default(),
         }
     }
 
@@ -106,6 +130,7 @@ impl Sequence {
             loop_point,
             release_point,
             pitch_mode: PitchMode::default(),
+            arp_mode: ArpMode::default(),
         };
 
         (sequence, normalized_text)

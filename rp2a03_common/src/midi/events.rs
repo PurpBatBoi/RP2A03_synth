@@ -4,7 +4,7 @@
 
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::Pulse;
-use rp2a03_core::sequencer::PitchMode;
+use rp2a03_core::sequencer::{ArpMode, PitchMode};
 use rp2a03_core::software_lfo::DEFAULT_LFO_SPEED;
 
 use super::handler::MidiHandler;
@@ -68,7 +68,27 @@ impl MidiHandler {
         // sequence order (arpeggio → pitch → hi-pitch).
         self.macro_period = self.note_period(0);
         if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
-            self.macro_period = self.note_period(self.arp_seq_player.value());
+            match seqs.arp_seq.arp_mode {
+                ArpMode::Absolute => {
+                    // dn: initial period = TriggerNote(BaseNote + step0)
+                    self.macro_period = self.note_period(self.arp_seq_player.value());
+                }
+                ArpMode::Fixed => {
+                    // dn: initial period = TriggerNote(step0)  — absolute dn note
+                    let step0 = self.arp_seq_player.value().clamp(0, 95);
+                    self.macro_period = self.note_period_fixed(step0);
+                    self.arp_fixed_restored = false;
+                }
+                ArpMode::Relative => {
+                    // dn: SetNote(BaseNote + step0) then SetPeriod(TriggerNote(BaseNote))
+                    // active_note was just set to the new MIDI note in apply_top_note;
+                    // shift it by step0 to match the first UpdateInstrument pass.
+                    let step0 = self.arp_seq_player.value();
+                    self.active_note =
+                        (self.active_note as i16 + step0).clamp(0, 127) as u8;
+                    self.macro_period = self.note_period(0);
+                }
+            }
         }
         if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
             let pitch_step = self.pitch_seq_player.value() as i32;

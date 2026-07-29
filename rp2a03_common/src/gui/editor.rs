@@ -3,7 +3,7 @@
 
 use super::state::{SequencePlayheads, SharedSequences, MAX_SEQUENCES};
 use super::widgets::{draw_envelope_bar_graph, group_box, repeating_button};
-use rp2a03_core::sequencer::{PitchMode, Sequence};
+use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence};
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
 pub fn sequence_to_text(seq: &Sequence) -> String {
@@ -40,31 +40,40 @@ pub fn sanitize_sequence_text(text: &str) -> String {
 /// dnFamiTracker keeps all sequence items as `signed char`; the editor clamps each
 /// envelope type to its documented range. Pitch and hi-pitch share one graph editor
 /// (`CPitchGraphEditor`) clamped to [-128, 127] (GraphEditor.cpp: DrawRange(127, -128)).
-fn sequence_range(tab: usize) -> (i16, i16) {
+/// For arpeggio, `arp_mode` changes the range: Fixed uses 0..=95, others use -96..=96.
+fn sequence_range(tab: usize, arp_mode: ArpMode) -> (i16, i16) {
     match tab {
         0 => (0, 15),
-        1 => (-96, 96),
-        2 => (-128, 127),
-        3 => (-128, 127),
+        1 => match arp_mode {
+            ArpMode::Fixed => (0, 95),
+            _ => (-96, 96),
+        },
+        2 | 3 => (-128, 127),
         _ => (0, 3),
     }
 }
 
 /// Sanitizes the selected numbered sequence for an envelope type.
 pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
-    let (min_val, max_val) = sequence_range(tab);
-    let (sanitized, prev_mode) = {
+    let (sanitized, prev_pitch_mode, prev_arp_mode) = {
         let (text, sequence) = data.selected_sequence_mut(tab);
-        (sanitize_sequence_text(text), sequence.pitch_mode)
+        (
+            sanitize_sequence_text(text),
+            sequence.pitch_mode,
+            sequence.arp_mode,
+        )
     };
+    let (min_val, max_val) = sequence_range(tab, prev_arp_mode);
     let (text, sequence) = data.selected_sequence_mut(tab);
     if sanitized.trim().is_empty() {
         *sequence = Sequence::default();
-        sequence.pitch_mode = prev_mode;
+        sequence.pitch_mode = prev_pitch_mode;
+        sequence.arp_mode = prev_arp_mode;
         text.clear();
     } else {
         let (mut parsed, normalized) = Sequence::parse_clamped(&sanitized, min_val, max_val);
-        parsed.pitch_mode = prev_mode;
+        parsed.pitch_mode = prev_pitch_mode;
+        parsed.arp_mode = prev_arp_mode;
         let len = parsed.len();
         if parsed.loop_point.is_some_and(|point| point >= len) {
             parsed.loop_point = None;
@@ -294,17 +303,19 @@ fn draw_sequence_editor_panel(
     ui.vertical(|ui| {
         let tab = data.selected_tab;
 
-        let (title, min_val, max_val) = match tab {
-            0 => ("Volume", 0, 15),
-            1 => ("Arpeggio", -96, 96),
-            2 => ("Pitch", -128, 127),
-            3 => ("Hi-pitch", -128, 127),
-            _ => ("Duty / Noise", 0, 3),
+        let title = match tab {
+            0 => "Volume",
+            1 => "Arpeggio",
+            2 => "Pitch",
+            3 => "Hi-pitch",
+            _ => "Duty / Noise",
         };
 
         ui.add_space(16.0);
         group_box(ui, &format!("Sequence editor - {}", title), |ui| {
             let (text, sequence) = data.selected_sequence_mut(tab);
+
+            let (min_val, max_val) = sequence_range(tab, sequence.arp_mode);
 
             let is_arpeggio = tab == 1;
             if draw_envelope_bar_graph(
@@ -354,6 +365,48 @@ fn draw_sequence_editor_panel(
                 ui.add_space(15.0);
 
                 ui.label(format!("{} ms", (cur_len * 1000) / 60));
+
+                if tab == 1 {
+                    // Arpeggio mode ComboBox (Absolute / Relative / Fixed)
+                    // placed right-to-left, mirroring the Pitch mode radio buttons.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let prev_arp_mode = sequence.arp_mode;
+                        let mode_label = match sequence.arp_mode {
+                            ArpMode::Absolute => "Absolute",
+                            ArpMode::Relative => "Relative",
+                            ArpMode::Fixed    => "Fixed",
+                        };
+                        egui::ComboBox::from_id_salt("arp_mode_combo")
+                            .selected_text(mode_label)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut sequence.arp_mode,
+                                    ArpMode::Absolute,
+                                    "Absolute",
+                                );
+                                ui.selectable_value(
+                                    &mut sequence.arp_mode,
+                                    ArpMode::Relative,
+                                    "Relative",
+                                );
+                                ui.selectable_value(
+                                    &mut sequence.arp_mode,
+                                    ArpMode::Fixed,
+                                    "Fixed",
+                                );
+                            });
+                        if sequence.arp_mode != prev_arp_mode {
+                            // Re-clamp all step values to the new mode's valid range
+                            // (e.g. Fixed 0..=95 vs Absolute/Relative -96..=96).
+                            let (new_min, new_max) = sequence_range(1, sequence.arp_mode);
+                            for v in &mut sequence.values {
+                                *v = (*v).clamp(new_min, new_max);
+                            }
+                            *text = sequence_to_text(sequence);
+                        }
+                        ui.label(egui::RichText::new("Mode:").weak());
+                    });
+                }
 
                 if tab == 2 {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -504,8 +557,8 @@ mod tests {
     fn hi_pitch_and_pitch_accept_the_full_dn_signed_char_range() {
         // dnFamiTracker's CPitchGraphEditor serves both tabs with a 127..-128 axis, and
         // both the graph and the text box must agree on it.
-        assert_eq!(sequence_range(2), (-128, 127));
-        assert_eq!(sequence_range(3), (-128, 127));
+        assert_eq!(sequence_range(2, ArpMode::Absolute), (-128, 127));
+        assert_eq!(sequence_range(3, ArpMode::Absolute), (-128, 127));
 
         let mut data = SharedSequences::default();
         data.selected_sequence_mut(3)

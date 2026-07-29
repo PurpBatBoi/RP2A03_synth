@@ -4,7 +4,7 @@
 use super::*;
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
-use rp2a03_core::sequencer::{PitchMode, SeqState, Sequence};
+use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, Sequence};
 use rp2a03_core::NTSC_CPU_CLOCK;
 
 fn default_seqs() -> ActiveSequences {
@@ -231,6 +231,61 @@ fn arpeggio_replaces_working_period_each_tick_wiping_relative_pitch_accumulation
     handler.update_modulation(&mut pulse, &seqs, 60.0, 1);
     let period_arp7 = freq_to_period(midi_note_to_freq(79)) as i32;
     assert_eq!(handler.macro_period, period_arp7 + 3); // NOT accumulating across ticks
+}
+
+#[test]
+fn arpeggio_fixed_mode_plays_absolute_notes_and_restores_base_note_on_end() {
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+
+    let mut arp_seq = Sequence::parse("48 60"); // C-4 then C-5 (dn notes 48 and 60)
+    arp_seq.arp_mode = ArpMode::Fixed;
+
+    let seqs = ActiveSequences {
+        arp_seq,
+        arp_enabled: true,
+        ..default_seqs()
+    };
+
+    // Base note is MIDI 60 (C-4, which with octave transpose +12 = MIDI 72).
+    // But Fixed arp ignores base note: step 48 = dn C-4 = MIDI note 60.
+    handler.note_on(60, 127, &mut pulse, &seqs);
+    let fixed_c4_period = handler.note_period_fixed(48);
+    assert_eq!(handler.macro_period, fixed_c4_period);
+
+    // Frame 1 tick: advances to step 60 (dn C-5 = MIDI note 72)
+    handler.update_modulation(&mut pulse, &seqs, 60.0, 1);
+    let fixed_c5_period = handler.note_period_fixed(60);
+    assert_eq!(handler.macro_period, fixed_c5_period);
+
+    // Frame 2 tick: arp sequence passes end (state == SeqState::End)
+    // 1:1 with dn: engine restores base note period on SEQ_STATE_END for Fixed mode!
+    handler.update_modulation(&mut pulse, &seqs, 60.0, 1);
+    let base_note_period = handler.note_period(0);
+    assert_eq!(handler.macro_period, base_note_period);
+}
+
+#[test]
+fn arpeggio_relative_mode_mutates_active_note_accumulating() {
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+
+    let mut arp_seq = Sequence::parse("2 3"); // +2 semitones, then +3 semitones
+    arp_seq.arp_mode = ArpMode::Relative;
+
+    let seqs = ActiveSequences {
+        arp_seq,
+        arp_enabled: true,
+        ..default_seqs()
+    };
+
+    // NoteOn: MIDI note 60 (active_note = 60). Step 0 is +2 -> active_note becomes 62.
+    handler.note_on(60, 127, &mut pulse, &seqs);
+    assert_eq!(handler.active_note, 62);
+
+    // Tick 1: step 1 is +3 -> active_note becomes 65.
+    handler.update_modulation(&mut pulse, &seqs, 60.0, 1);
+    assert_eq!(handler.active_note, 65);
 }
 
 #[test]

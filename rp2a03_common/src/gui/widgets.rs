@@ -46,12 +46,20 @@ pub fn draw_envelope_bar_graph(
     let num_steps = seq.len();
 
     // Arpeggio scroll state handling
-    let scroll_id = ui.make_persistent_id("arpeggio_scroll_center");
-    let mut scroll_center: i16 = ui.ctx().data_mut(|d| d.get_temp(scroll_id)).unwrap_or(0i16);
-
-    let visible_span = 10i16; // +/- 10 semitones (21 visible rows)
+    let visible_span = 10i16; // +/- 10 semitones visible (21 rows)
     let min_center = (min_val + visible_span).min(0);
     let max_center = (max_val - visible_span).max(0);
+
+    let scroll_id = ui.make_persistent_id("arpeggio_scroll_center");
+    // Default to the midpoint of the range: Absolute/Relative open at 0, Fixed at 47 (near C-4).
+    let default_center = (min_val + max_val) / 2;
+    let mut scroll_center: i16 = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(scroll_id))
+        .unwrap_or(default_center);
+    if is_arpeggio {
+        scroll_center = scroll_center.clamp(min_center, max_center);
+    }
 
     let scrollbar_width = if is_arpeggio { 14.0f32 } else { 0.0f32 };
     let header_height = 20.0f32;
@@ -60,6 +68,7 @@ pub fn draw_envelope_bar_graph(
         rect.min,
         Pos2::new(rect.max.x - scrollbar_width, rect.max.y - header_height),
     );
+
     let scrollbar_rect = Rect::from_min_max(
         Pos2::new(rect.max.x - scrollbar_width, rect.min.y),
         Pos2::new(rect.max.x, rect.max.y - header_height),
