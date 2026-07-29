@@ -89,9 +89,9 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
 fn draw_header(ui: &mut egui::Ui) {
     let mut waveform = 0;
     let mut polyphony = false;
-    let mut legato = false;
-    let mut portamento = false;
-    let mut portamento_amount = 24u8;
+    let mut _legato = false;
+    let mut _portamento = false;
+    let mut _portamento_amount = 24u8;
 
     const HEADER_H: f32 = 92.0;
     const LOGO_W: f32 = 312.0;
@@ -182,7 +182,7 @@ fn draw_header(ui: &mut egui::Ui) {
             },
         );
 
-        let check_row_w = check_row.inner.rect.width();
+        let _check_row_w = check_row.inner.rect.width();
 
         //------------------------------------------------------
         // Portamento knob
