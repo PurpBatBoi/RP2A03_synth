@@ -51,7 +51,7 @@ pub fn draw_envelope_bar_graph(
     let max_center = (max_val - visible_span).max(0);
 
     let scroll_id = ui.make_persistent_id("arpeggio_scroll_center");
-    // Default to the midpoint of the range: Absolute/Relative open at 0, Fixed at 47 (near C-4).
+    // Default to the midpoint of the range (0).
     let default_center = (min_val + max_val) / 2;
     let mut scroll_center: i16 = ui
         .ctx()

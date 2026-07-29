@@ -28,11 +28,6 @@ pub enum ArpMode {
     /// channel base note.  `SetPeriod(TriggerNote(BaseNote + Value))`.
     #[default]
     Absolute = 0,
-    /// `SETTING_ARP_FIXED` (1): each step is an absolute dn-FamiTracker note index
-    /// (0 = C-0 .. 95 = B-7), completely ignoring the base note.
-    /// `SetPeriod(TriggerNote(Value))`.  On sequence end the base-note period is
-    /// restored once (dn: `SEQ_STATE_END` restore before `SEQ_STATE_HALT`).
-    Fixed = 1,
     /// `SETTING_ARP_RELATIVE` (2): each step permanently shifts the channel's base
     /// note accumulating.  `SetNote(BaseNote + Value); SetPeriod(TriggerNote(BaseNote))`.
     Relative = 2,

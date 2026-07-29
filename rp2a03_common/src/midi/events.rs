@@ -73,12 +73,6 @@ impl MidiHandler {
                     // dn: initial period = TriggerNote(BaseNote + step0)
                     self.macro_period = self.note_period(self.arp_seq_player.value());
                 }
-                ArpMode::Fixed => {
-                    // dn: initial period = TriggerNote(step0)  — absolute dn note
-                    let step0 = self.arp_seq_player.value().clamp(0, 95);
-                    self.macro_period = self.note_period_fixed(step0);
-                    self.arp_fixed_restored = false;
-                }
                 ArpMode::Relative => {
                     // dn: SetNote(BaseNote + step0) then SetPeriod(TriggerNote(BaseNote))
                     // active_note was just set to the new MIDI note in apply_top_note;

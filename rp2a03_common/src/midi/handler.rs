@@ -47,10 +47,6 @@ pub struct MidiHandler {
     pub hipitch_seq_player: SequencePlayer,
     pub duty_seq_player: SequencePlayer,
 
-    /// Set to `true` after a Fixed-mode arpeggio sequence transitions to `SeqState::End`
-    /// and the base-note period has been restored once (dn: `SEQ_STATE_END` → `SEQ_STATE_HALT`).
-    /// Reset to `false` on every NoteOn / arp trigger.
-    pub arp_fixed_restored: bool,
 
     /// The working macro period in raw 11-bit APU period units — the plugin's
     /// equivalent of dnFamiTracker's `CChannelHandler::m_iPeriod`.
@@ -95,7 +91,6 @@ impl Default for MidiHandler {
             pitch_seq_player: SequencePlayer::new(),
             hipitch_seq_player: SequencePlayer::new(),
             duty_seq_player: SequencePlayer::new(),
-            arp_fixed_restored: false,
             macro_period: 0,
             prev_ctrl: 0xFF,
             prev_timer_lo: 0xFF,
@@ -129,7 +124,6 @@ impl MidiHandler {
         self.pitch_seq_player.reset();
         self.hipitch_seq_player.reset();
         self.duty_seq_player.reset();
-        self.arp_fixed_restored = false;
         self.macro_period = 0;
 
         self.prev_ctrl = 0xFF;
@@ -220,24 +214,6 @@ impl MidiHandler {
                         self.macro_period = self.note_period(arp_step);
                     }
                 }
-                ArpMode::Fixed => {
-                    // dn: SetPeriod(TriggerNote(Value))  — step is absolute dn note 0..95
-                    if self.arp_seq_player.state == SeqState::Running {
-                        let arp_step = self
-                            .arp_seq_player
-                            .clock_tick(&seqs.arp_seq)
-                            .clamp(0, 95);
-                        self.macro_period = self.note_period_fixed(arp_step);
-                        self.arp_fixed_restored = false;
-                    } else if self.arp_seq_player.state == SeqState::End
-                        && !self.arp_fixed_restored
-                    {
-                        // dn SEQ_STATE_END for Fixed: restore the channel base-note
-                        // period exactly once before going silent (SEQ_STATE_HALT).
-                        self.macro_period = self.note_period(0);
-                        self.arp_fixed_restored = true;
-                    }
-                }
                 ArpMode::Relative => {
                     // dn: SetNote(GetNote() + Value); SetPeriod(TriggerNote(GetNote()))
                     // Each step permanently shifts the active base note (accumulating).
@@ -290,16 +266,6 @@ impl MidiHandler {
         freq_to_period(midi_note_to_freq(note)) as i32
     }
 
-    /// Dn-FamiTracker `TriggerNote(Value)` for Fixed arpeggio mode.
-    ///
-    /// The step value is an absolute dn-FamiTracker note index (0 = C-0, 95 = B-7),
-    /// completely independent of `active_note` and `octave_offset`.
-    /// Dn note 0 = C-0 = MIDI note 12 (standard MIDI: C-(-1) = 0, C-0 = 12).
-    /// `pub(super)` because it is also called from `note_on` in `events.rs`.
-    pub(super) fn note_period_fixed(&self, dn_note: i16) -> i32 {
-        let note = (dn_note + 12).clamp(0, 127) as u8;
-        freq_to_period(midi_note_to_freq(note)) as i32
-    }
 
     /// Number of samples that can be rendered before the next 60 Hz envelope tick.
     pub fn samples_until_next_frame(&self, sample_rate: f32) -> usize {
