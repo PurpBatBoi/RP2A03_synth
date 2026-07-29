@@ -142,18 +142,12 @@ fn draw_header(ui: &mut egui::Ui) {
                     .selected_text(match waveform {
                         0 => "2A03 | Pulse",
                         1 => "2A03 | Triangle",
-                        2 => "2A03 | Noise",
-                        3 => "VRC6 | Pulse",
-                        4 => "VRC6 | Saw",
-                        _ => "S5B | PSG",
+                        _ => "2A03 | Noise",
                     })
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut waveform, 0, "2A03 | Pulse");
                         ui.selectable_value(&mut waveform, 1, "2A03 | Triangle");
                         ui.selectable_value(&mut waveform, 2, "2A03 | Noise");
-                        ui.selectable_value(&mut waveform, 3, "VRC6 | Pulse");
-                        ui.selectable_value(&mut waveform, 4, "VRC6 | Saw");
-                        ui.selectable_value(&mut waveform, 5, "S5B | PSG");
                     });
             },
         );
@@ -172,8 +166,8 @@ fn draw_header(ui: &mut egui::Ui) {
             |ui| {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut polyphony, "Polyphony");
-                    ui.checkbox(&mut legato, "Legato");
-                    ui.checkbox(&mut portamento, "Portamento");
+                    // ui.checkbox(&mut legato, "Legato");
+                    // ui.checkbox(&mut portamento, "Portamento");
                 })
                 .response
             },
@@ -185,29 +179,29 @@ fn draw_header(ui: &mut egui::Ui) {
         // Portamento knob
         //------------------------------------------------------
 
-        const CONTROL_W: f32 = 100.0;
-        const CONTROL_H: f32 = 50.0;
-        const CONTROL_GAP_FROM_ROW: f32 = 20.0;
+        // const CONTROL_W: f32 = 100.0;
+        // const CONTROL_H: f32 = 50.0;
+        // const CONTROL_GAP_FROM_ROW: f32 = 20.0;
 
-        let control_x = controls_x + check_row_w + CONTROL_GAP_FROM_ROW;
-        let control_top = CENTER_Y - CONTROL_H / 2.0;
+        // let control_x = controls_x + check_row_w + CONTROL_GAP_FROM_ROW;
+        // let control_top = CENTER_Y - CONTROL_H / 2.0;
 
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                egui::pos2(origin.x + control_x, origin.y + control_top),
-                egui::vec2(CONTROL_W, CONTROL_H),
-            )),
-            |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label("Portamento Amount");
-                    ui.add(
-                        egui::DragValue::new(&mut portamento_amount)
-                            .range(0..=127)
-                            .speed(1.0),
-                    );
-                });
-            },
-        );
+        // ui.scope_builder(
+        //     egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+        //         egui::pos2(origin.x + control_x, origin.y + control_top),
+        //         egui::vec2(CONTROL_W, CONTROL_H),
+        //     )),
+        //     |ui| {
+        //         ui.vertical_centered(|ui| {
+        //             ui.label("Portamento Amount");
+        //             ui.add(
+        //                 egui::DragValue::new(&mut portamento_amount)
+        //                     .range(0..=127)
+        //                     .speed(1.0),
+        //             );
+        //         });
+        //     },
+        // );
     });
 
     ui.add_space(12.0);
@@ -428,9 +422,9 @@ fn draw_footer(ui: &mut egui::Ui) {
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("0.0.05").weak());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.button("Settings")
-        });
+        // ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        //     ui.button("Settings")
+        // });
     });
 }
 
