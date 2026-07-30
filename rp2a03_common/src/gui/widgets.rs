@@ -850,22 +850,15 @@ fn pos_y_to_val(
         0.0
     };
 
-    if is_arpeggio {
-        let num_slots = (vis_max - vis_min + 1) as f32;
-        let slot_idx = (norm_y * num_slots).floor() as i16;
-        (vis_max - slot_idx).clamp(vis_min, vis_max)
+    let (range_min, range_max) = if is_arpeggio {
+        (vis_min, vis_max)
     } else {
-        let raw_val = max_val as f32 - norm_y * (max_val as f32 - min_val as f32);
-        let mut new_val = raw_val.round() as i16;
+        (min_val, max_val)
+    };
 
-        if min_val < 0 {
-            let snap_threshold = (max_val as f32 - min_val as f32) * 0.03f32;
-            if raw_val.abs() <= snap_threshold {
-                new_val = 0;
-            }
-        }
-        new_val.clamp(min_val, max_val)
-    }
+    let num_slots = (range_max - range_min + 1) as f32;
+    let slot_idx = (norm_y * num_slots).floor() as i16;
+    (range_max - slot_idx).clamp(range_min, range_max)
 }
 
 #[cfg(test)]
@@ -878,14 +871,19 @@ mod tests {
         let rect = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
         assert_eq!(pos_y_to_val(0.0, rect, false, 0, 15, 0, 15), 15);
         assert_eq!(pos_y_to_val(100.0, rect, false, 0, 15, 0, 15), 0);
-        assert_eq!(pos_y_to_val(50.0, rect, false, 0, 15, 0, 15), 8);
+        assert_eq!(pos_y_to_val(50.0, rect, false, 0, 15, 0, 15), 7);
     }
 
     #[test]
-    fn test_pos_y_to_val_bipolar_snaps_zero() {
+    fn test_pos_y_to_val_bipolar_reaches_bounds_without_zero_snap() {
         let rect = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
         assert_eq!(pos_y_to_val(0.0, rect, false, -128, 127, -128, 127), 127);
         assert_eq!(pos_y_to_val(100.0, rect, false, -128, 127, -128, 127), -128);
+        assert_eq!(pos_y_to_val(0.1, rect, false, -128, 127, -128, 127), 127);
+        assert_eq!(pos_y_to_val(99.9, rect, false, -128, 127, -128, 127), -128);
+        // Near center line: norm_y = 49.8 / 100 = 0.498 -> slot_idx = (0.498 * 256).floor() = 127 -> 127 - 127 = 0
         assert_eq!(pos_y_to_val(49.8, rect, false, -128, 127, -128, 127), 0);
+        // Slightly above center: norm_y = 49.5 / 100 = 0.495 -> slot_idx = (0.495 * 256).floor() = 126 -> 127 - 126 = 1 (no zero snapping!)
+        assert_eq!(pos_y_to_val(49.5, rect, false, -128, 127, -128, 127), 1);
     }
 }

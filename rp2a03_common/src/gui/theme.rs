@@ -16,10 +16,10 @@ pub const ACCENT: Color32 = Color32::from_rgb(53, 94, 183);
 pub const LOOP: Color32 = Color32::from_rgb(100, 200, 220);
 pub const RELEASE: Color32 = Color32::from_rgb(200, 120, 220);
 pub const LOOP_RELEASE: Color32 = Color32::from_rgb(230, 190, 40);
-pub const PLAYHEAD_TOP: Color32 = Color32::from_rgb(160, 240, 160);
-pub const PLAYHEAD_BOTTOM: Color32 = Color32::from_rgb(134, 220, 134);
-pub const PLAYHEAD_EDGE_TOP: Color32 = Color32::from_rgb(198, 242, 198);
-pub const PLAYHEAD_EDGE_BOTTOM: Color32 = Color32::from_rgb(106, 223, 106);
+pub const PLAYHEAD_TOP: Color32 = Color32::from_rgba_premultiplied(63, 94, 63, 100);
+pub const PLAYHEAD_BOTTOM: Color32 = Color32::from_rgba_premultiplied(53, 86, 53, 100);
+pub const PLAYHEAD_EDGE_TOP: Color32 = Color32::from_rgba_premultiplied(116, 142, 116, 150);
+pub const PLAYHEAD_EDGE_BOTTOM: Color32 = Color32::from_rgba_premultiplied(62, 131, 62, 150);
 
 pub fn style() -> Arc<Style> {
     let mut style = Style::default();
