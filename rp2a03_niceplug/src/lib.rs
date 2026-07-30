@@ -54,6 +54,8 @@ struct Rp2a03Params {
     pub hardware_volume: IntParam,
     #[id = "fine_pitch"]
     pub fine_pitch: IntParam,
+    #[id = "step_time"]
+    pub step_time: IntParam,
 }
 
 impl Default for Rp2a03Plugin {
@@ -98,6 +100,7 @@ impl Default for Rp2a03Params {
             tremolo_speed: IntParam::new("Tremolo Speed", 4, IntRange::Linear { min: 0, max: 63 }),
             hardware_volume: IntParam::new("HW Volume", 15, IntRange::Linear { min: 0, max: 15 }),
             fine_pitch: IntParam::new("Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
+            step_time: IntParam::new("Step Time", 60, IntRange::Linear { min: 1, max: 600 }),
         }
     }
 }
@@ -172,6 +175,7 @@ impl Rp2a03Plugin {
             tremolo_speed: self.params.tremolo_speed.value() as u8,
             hardware_volume: self.params.hardware_volume.value() as u8,
             fine_pitch: self.params.fine_pitch.value() as i8,
+            step_time_hz: self.params.step_time.value() as u16,
         }
     }
 
@@ -296,21 +300,29 @@ impl Plugin for Rp2a03Plugin {
                 let mut data = shared.lock();
                 let sequence_index = data.selected_sequence_index(0);
                 let playheads = load_sequence_playheads(&playheads);
+                let step_time_hz = params.step_time.value() as u32;
 
                 ui.ctx().request_repaint_after(Duration::from_millis(30));
 
                 egui::Frame::NONE
                     .inner_margin(egui::Margin::same(12))
                     .show(ui, |ui| {
-                        if let Some(new_index) =
-                            render_editor_ui(ui, &mut data, sequence_index, &playheads)
-                        {
+                        let result =
+                            render_editor_ui(ui, &mut data, sequence_index, &playheads, step_time_hz);
+
+                        if let Some(new_index) = result.new_sequence_index {
                             data.set_all_selected_sequence_indices(new_index);
 
                             let new_index = new_index as i32;
                             setter.begin_set_parameter(&params.sequence_number);
                             setter.set_parameter(&params.sequence_number, new_index);
                             setter.end_set_parameter(&params.sequence_number);
+                        }
+
+                        if let Some(new_hz) = result.new_step_time_hz {
+                            setter.begin_set_parameter(&params.step_time);
+                            setter.set_parameter(&params.step_time, new_hz);
+                            setter.end_set_parameter(&params.step_time);
                         }
                     });
             },

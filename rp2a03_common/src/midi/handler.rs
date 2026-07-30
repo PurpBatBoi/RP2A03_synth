@@ -34,11 +34,14 @@ pub struct MidiHandler {
     pub active_note: u8,
     /// Software LFO engine from `rp2a03_core`
     pub lfo: SoftwareLfo,
-    /// Sample accumulator for 60 Hz frame tick timing.
+    /// Sample accumulator for frame tick timing.
     ///
     /// This is intentionally fractional so envelope frames land sample-accurately
-    /// across host buffer sizes whose length is not an exact multiple of 1/60 s.
+    /// across host buffer sizes whose length is not an exact multiple of one step period.
     pub frame_sample_counter: f64,
+
+    /// Sequence step tick rate in Hz (default 60 = NTSC frame rate).
+    pub step_time_hz: u16,
 
     /// 5 FamiTracker sequence players
     pub vol_seq_player: SequencePlayer,
@@ -86,6 +89,7 @@ impl Default for MidiHandler {
             active_note: 60,
             lfo: SoftwareLfo::new(),
             frame_sample_counter: 0.0,
+            step_time_hz: 60,
             vol_seq_player: SequencePlayer::new(),
             arp_seq_player: SequencePlayer::new(),
             pitch_seq_player: SequencePlayer::new(),
@@ -118,6 +122,7 @@ impl MidiHandler {
         self.active_note = 60;
         self.lfo.reset();
         self.frame_sample_counter = 0.0;
+        self.step_time_hz = 60;
 
         self.vol_seq_player.reset();
         self.arp_seq_player.reset();
@@ -177,6 +182,10 @@ impl MidiHandler {
         }
         if self.last_host_controls.is_none() || controls.fine_pitch != previous.fine_pitch {
             self.fine_pitch = controls.fine_pitch.clamp(-64, 63);
+        }
+
+        if self.last_host_controls.is_none() || controls.step_time_hz != previous.step_time_hz {
+            self.step_time_hz = controls.step_time_hz.clamp(1, 600);
         }
 
         self.last_host_controls = Some(controls);
@@ -267,9 +276,9 @@ impl MidiHandler {
     }
 
 
-    /// Number of samples that can be rendered before the next 60 Hz envelope tick.
+    /// Number of samples that can be rendered before the next envelope tick.
     pub fn samples_until_next_frame(&self, sample_rate: f32) -> usize {
-        let samples_per_tick = sample_rate as f64 / 60.0;
+        let samples_per_tick = sample_rate as f64 / self.step_time_hz as f64;
         (samples_per_tick - self.frame_sample_counter)
             .ceil()
             .max(1.0) as usize
@@ -287,7 +296,7 @@ impl MidiHandler {
             return;
         }
 
-        let samples_per_tick = sample_rate as f64 / 60.0;
+        let samples_per_tick = sample_rate as f64 / self.step_time_hz as f64;
         self.frame_sample_counter += num_samples as f64;
         while self.frame_sample_counter >= samples_per_tick {
             self.clock_sequences_one_frame(seqs);

@@ -5,6 +5,16 @@ use super::state::{SequencePlayheads, SharedSequences, MAX_SEQUENCES};
 use super::widgets::{draw_envelope_bar_graph, group_box, repeating_button};
 use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence};
 
+/// Result returned by [`render_editor_ui`] to communicate parameter changes back
+/// to the host plugin wrapper.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EditorResult {
+    /// If the user changed the shared sequence index via the GUI.
+    pub new_sequence_index: Option<usize>,
+    /// If the user changed the step time Hz value via the GUI.
+    pub new_step_time_hz: Option<i32>,
+}
+
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
 pub fn sequence_to_text(seq: &Sequence) -> String {
     if seq.values.is_empty() {
@@ -228,6 +238,8 @@ fn draw_instrument_settings_panel(
     data: &mut SharedSequences,
     shared_sequence_index: usize,
     changed_sequence_index: &mut Option<usize>,
+    step_time_hz: u32,
+    changed_step_time_hz: &mut Option<i32>,
 ) {
     const SEQ_TYPES: [(&str, usize); 5] = [
         ("Volume", 0),
@@ -335,10 +347,23 @@ fn draw_instrument_settings_panel(
                 ui.set_min_height(ui.available_height());
 
                 // -------------------------------------------------
-                // Time controls go here
+                // Time controls
                 // -------------------------------------------------
+                ui.horizontal(|ui| {
+                    ui.label("Step Time:");
 
-
+                    let mut hz = step_time_hz as i32;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut hz)
+                                .range(1..=600)
+                                .suffix(" Hz"),
+                        )
+                        .changed()
+                    {
+                        *changed_step_time_hz = Some(hz);
+                    }
+                });
             });
         },
     );
@@ -348,6 +373,7 @@ fn draw_sequence_editor_panel(
     ui: &mut egui::Ui,
     data: &mut SharedSequences,
     playheads: &SequencePlayheads,
+    step_time_hz: u32,
 ) {
     let tab = data.selected_tab;
 
@@ -416,7 +442,7 @@ fn draw_sequence_editor_panel(
 
             ui.add_space(15.0);
 
-            ui.label(format!("{} ms", (cur_len * 1000) / 60));
+            ui.label(format!("{} ms", (cur_len as u64 * 1000) / (step_time_hz as u64).max(1)));
 
             if tab == 1 {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -474,6 +500,8 @@ fn draw_main_content(
     shared_sequence_index: usize,
     changed_sequence_index: &mut Option<usize>,
     playheads: &SequencePlayheads,
+    step_time_hz: u32,
+    changed_step_time_hz: &mut Option<i32>,
 ) {
     const LEFT_W: f32 = 180.0;
     const GAP: f32 = 8.0;
@@ -508,6 +536,8 @@ fn draw_main_content(
                 data,
                 shared_sequence_index,
                 changed_sequence_index,
+                step_time_hz,
+                changed_step_time_hz,
             );
         },
     );
@@ -515,7 +545,7 @@ fn draw_main_content(
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(right_rect),
         |ui| {
-            draw_sequence_editor_panel(ui, data, playheads);
+            draw_sequence_editor_panel(ui, data, playheads, step_time_hz);
         },
     );
 }
@@ -537,7 +567,8 @@ pub fn render_editor_ui(
     data: &mut SharedSequences,
     shared_sequence_index: usize,
     playheads: &SequencePlayheads,
-) -> Option<usize> {
+    step_time_hz: u32,
+) -> EditorResult {
     // Apply non-selectable labels to the global Context style so all child scopes,
     // grids, and group boxes inherit it
     ui.ctx().global_style_mut(|style| {
@@ -549,6 +580,7 @@ pub fn render_editor_ui(
     data.set_all_selected_sequence_indices(shared_sequence_index);
 
     let mut changed_sequence_index = None;
+    let mut changed_step_time_hz = None;
 
     draw_header(ui);
     draw_chip_tabs(ui, data);
@@ -578,6 +610,8 @@ pub fn render_editor_ui(
             shared_sequence_index,
             &mut changed_sequence_index,
             playheads,
+            step_time_hz,
+            &mut changed_step_time_hz,
         );
     });
 
@@ -586,7 +620,10 @@ pub fn render_editor_ui(
         draw_footer(ui);
     });
 
-    changed_sequence_index
+    EditorResult {
+        new_sequence_index: changed_sequence_index,
+        new_step_time_hz: changed_step_time_hz,
+    }
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ mod widgets;
 pub use theme::style;
 
 pub use editor::{
-    cleanup_tab_sequence, render_editor_ui, sanitize_sequence_text, sequence_to_text,
+    cleanup_tab_sequence, render_editor_ui, sanitize_sequence_text, sequence_to_text, EditorResult,
 };
 
 pub use state::{

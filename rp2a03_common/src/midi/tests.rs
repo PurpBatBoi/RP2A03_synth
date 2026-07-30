@@ -38,6 +38,7 @@ fn host_automation_controls_update_the_matching_synth_controls() {
         tremolo_speed: 30,
         hardware_volume: 11,
         fine_pitch: -24,
+        step_time_hz: 120,
     });
 
     assert_eq!(handler.lfo.vibrato_depth, 7);
@@ -46,6 +47,7 @@ fn host_automation_controls_update_the_matching_synth_controls() {
     assert_eq!(handler.lfo.tremolo_speed, 30);
     assert_eq!(handler.hardware_volume, 11);
     assert_eq!(handler.fine_pitch, -24);
+    assert_eq!(handler.step_time_hz, 120);
 }
 
 #[test]

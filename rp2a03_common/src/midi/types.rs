@@ -50,6 +50,7 @@ pub struct HostAutomationControls {
     pub tremolo_speed: u8,
     pub hardware_volume: u8,
     pub fine_pitch: i8,
+    pub step_time_hz: u16,
 }
 
 impl Default for HostAutomationControls {
@@ -61,6 +62,7 @@ impl Default for HostAutomationControls {
             tremolo_speed: DEFAULT_LFO_SPEED,
             hardware_volume: 15,
             fine_pitch: 0,
+            step_time_hz: 60,
         }
     }
 }
