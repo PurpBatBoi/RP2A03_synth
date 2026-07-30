@@ -237,59 +237,111 @@ fn draw_instrument_settings_panel(
         ("Duty / Noise", 4),
     ];
 
-    ui.vertical(|ui| {
-        ui.set_width(180.0);
-        ui.add_space(16.0);
-        group_box(ui, "Instrument settings", |ui| {
-            // Grid with checkboxes and effect names
-            egui::Grid::new("seq_type_grid")
-                .num_columns(2)
-                .spacing([6.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("");
-                    ui.label(
-                        egui::RichText::new("Effect name")
-                            .color(egui::Color32::from_rgb(130, 130, 130)), // Darker text color
-                    );
-                    ui.end_row();
+    const PANEL_WIDTH: f32 = 180.0;
+    const GROUP_GAP: f32 = 12.0;
 
-                    // Separator line under header row
-                    ui.separator();
-                    ui.separator();
-                    ui.end_row();
+    ui.set_width(PANEL_WIDTH);
 
-                    for (name, tab) in SEQ_TYPES {
-                        ui.checkbox(data.sequence_enabled_mut(tab), "");
-                        if ui
-                            .selectable_label(data.selected_tab == tab, name)
-                            .clicked()
-                        {
-                            if data.selected_tab != tab {
-                                cleanup_tab_sequence(data, data.selected_tab);
-                                data.selected_tab = tab;
-                                cleanup_tab_sequence(data, tab);
-                            }
+    // ---------------------------------------------------------
+    // Instrument settings
+    // ---------------------------------------------------------
+
+    group_box(ui, "Instrument settings", |ui| {
+        // Make the group box fill the width of the left panel.
+        ui.set_min_width(ui.available_width());
+
+        // Grid with checkboxes and effect names
+        egui::Grid::new("seq_type_grid")
+            .num_columns(2)
+            .spacing([6.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("");
+                ui.label(
+                    egui::RichText::new("Effect name")
+                        .color(egui::Color32::from_rgb(130, 130, 130)),
+                );
+                ui.end_row();
+
+                // Separator line under header row
+                ui.separator();
+                ui.separator();
+                ui.end_row();
+
+                for (name, tab) in SEQ_TYPES {
+                    ui.checkbox(data.sequence_enabled_mut(tab), "");
+
+                    if ui
+                        .selectable_label(data.selected_tab == tab, name)
+                        .clicked()
+                    {
+                        if data.selected_tab != tab {
+                            cleanup_tab_sequence(data, data.selected_tab);
+                            data.selected_tab = tab;
+                            cleanup_tab_sequence(data, tab);
                         }
-                        ui.end_row();
                     }
-                });
 
-            // Sequence Index control inside the frame, below the grid
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label("Sequence Index:");
-                let mut index = shared_sequence_index;
-                if ui
-                    .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
-                    .changed()
-                {
-                    *changed_sequence_index = Some(index);
+                    ui.end_row();
                 }
             });
+
+        // Sequence Index control inside the frame, below the grid
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Sequence Index:");
+
+            let mut index = shared_sequence_index;
+
+            if ui
+                .add(
+                    egui::DragValue::new(&mut index)
+                        .range(0..=MAX_SEQUENCES - 1),
+                )
+                .changed()
+            {
+                *changed_sequence_index = Some(index);
+            }
         });
     });
+
+    // ---------------------------------------------------------
+    // Time settings
+    // ---------------------------------------------------------
+
+    // The current cursor is now immediately below Instrument settings.
+    // Move down slightly to create a gap between the group boxes.
+    ui.add_space(GROUP_GAP);
+
+    // Everything remaining in the left panel belongs to Time settings.
+    let remaining = ui.available_rect_before_wrap();
+
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(remaining),
+        |ui| {
+            group_box(ui, "Step settings", |ui| {
+                // Fill the same width as Instrument settings.
+                ui.set_min_width(ui.available_width());
+
+                // group_box() adds:
+                //
+                // top    = PADDING + TITLE_HEIGHT = 20px
+                // bottom = PADDING                = 10px
+                //
+                // Therefore its contents need to be 30px shorter
+                // than the outer available rectangle.
+                ui.set_min_height(ui.available_height());
+
+                // -------------------------------------------------
+                // Time controls go here
+                // -------------------------------------------------
+
+
+            });
+        },
+    );
 }
 
 fn draw_sequence_editor_panel(
@@ -306,8 +358,6 @@ fn draw_sequence_editor_panel(
         3 => "Hi-pitch",
         _ => "Duty / Noise",
     };
-
-    ui.add_space(16.0);
 
     group_box(ui, &format!("Sequence editor - {}", title), |ui| {
         // Controls below graph: add_space(6) + Size row (~22) + add_space(6) + TextEdit (~20) = ~54px.
@@ -425,39 +475,49 @@ fn draw_main_content(
     changed_sequence_index: &mut Option<usize>,
     playheads: &SequencePlayheads,
 ) {
-    let available_w = ui.available_width();
-    let available_h = ui.available_height();
+    const LEFT_W: f32 = 180.0;
+    const GAP: f32 = 8.0;
+    const TOP_GAP: f32 = 10.0;
 
-    let left_w = 180.0;
-    let gap = 10.0;
-    let right_w = (available_w - left_w - gap).max(0.0);
+    let available = ui.available_rect_before_wrap();
 
-    ui.horizontal(|ui| {
-        ui.set_min_height(available_h);
+    // Move the start of BOTH columns down.
+    let content_top = available.min.y + TOP_GAP;
 
-        ui.allocate_ui_with_layout(
-            egui::vec2(left_w, available_h),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                draw_instrument_settings_panel(
-                    ui,
-                    data,
-                    shared_sequence_index,
-                    changed_sequence_index,
-                );
-            },
-        );
+    let left_rect = egui::Rect::from_min_max(
+        egui::pos2(available.min.x, content_top),
+        egui::pos2(
+            available.min.x + LEFT_W,
+            available.max.y,
+        ),
+    );
 
-        ui.add_space(gap);
+    let right_rect = egui::Rect::from_min_max(
+        egui::pos2(
+            left_rect.max.x + GAP,
+            content_top,
+        ),
+        available.max,
+    );
 
-        ui.allocate_ui_with_layout(
-            egui::vec2(right_w, available_h),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                draw_sequence_editor_panel(ui, data, playheads);
-            },
-        );
-    });
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(left_rect),
+        |ui| {
+            draw_instrument_settings_panel(
+                ui,
+                data,
+                shared_sequence_index,
+                changed_sequence_index,
+            );
+        },
+    );
+
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(right_rect),
+        |ui| {
+            draw_sequence_editor_panel(ui, data, playheads);
+        },
+    );
 }
 
 fn draw_footer(ui: &mut egui::Ui) {
