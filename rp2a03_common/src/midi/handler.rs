@@ -72,6 +72,8 @@ pub struct MidiHandler {
     pub cc_expression: u8,
     /// MIDI CC 14 (Pitch offset, -64..+63 semitone cents offset)
     pub fine_pitch: i8,
+    /// MIDI CC 15 (Hi-pitch offset, -64..+63 coarse high-period offset)
+    pub hi_pitch: i8,
     /// Host-controlled 4-bit APU volume, applied before MIDI CC 7 and velocity.
     pub hardware_volume: u8,
     /// Last host parameter values applied to this handler.
@@ -151,6 +153,7 @@ impl Default for MidiHandler {
             cc_volume: 127,
             cc_expression: 127,
             fine_pitch: 0,
+            hi_pitch: 0,
             hardware_volume: 15,
             last_host_controls: None,
             active_note: 60,
@@ -186,6 +189,7 @@ impl MidiHandler {
         self.cc_volume = 127;
         self.cc_expression = 127;
         self.fine_pitch = 0;
+        self.hi_pitch = 0;
         self.hardware_volume = 15;
         self.last_host_controls = None;
         self.active_note = 60;
@@ -255,6 +259,9 @@ impl MidiHandler {
         }
         if self.last_host_controls.is_none() || controls.fine_pitch != previous.fine_pitch {
             self.fine_pitch = controls.fine_pitch.clamp(-64, 63);
+        }
+        if self.last_host_controls.is_none() || controls.hi_pitch != previous.hi_pitch {
+            self.hi_pitch = controls.hi_pitch.clamp(-64, 63);
         }
         if self.last_host_controls.is_none() || controls.step_time_hz != previous.step_time_hz {
             self.step_time_hz = controls.step_time_hz.clamp(1, 600);
@@ -532,10 +539,11 @@ impl MidiHandler {
     ///   triangle switch needs that linear-counter reload to sound at all.
     fn apply_pitch_registers(&mut self, channel: &mut AnyChannel) {
         let fine_pitch_offset = self.fine_pitch as i32;
+        let hi_pitch_offset = (self.hi_pitch as i32) << 4;
         let vibrato_delta = self.lfo.vibrato_pitch_delta() as i32;
 
         let final_period =
-            (self.macro_period - fine_pitch_offset - vibrato_delta).clamp(0, 0x7FF);
+            (self.macro_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta).clamp(0, 0x7FF);
 
         // Triangle octave parity — see fn docs. Halving the composed period keeps
         // `macro_period` in the pulse domain while the triangle plays the

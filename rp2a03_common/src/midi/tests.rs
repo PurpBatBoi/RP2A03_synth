@@ -41,6 +41,7 @@ fn host_automation_controls_update_the_matching_synth_controls() {
         tremolo_speed: 30,
         hardware_volume: 11,
         fine_pitch: -24,
+        hi_pitch: 5,
         step_time_hz: 120,
     });
 
@@ -50,6 +51,7 @@ fn host_automation_controls_update_the_matching_synth_controls() {
     assert_eq!(handler.lfo.tremolo_speed, 30);
     assert_eq!(handler.hardware_volume, 11);
     assert_eq!(handler.fine_pitch, -24);
+    assert_eq!(handler.hi_pitch, 5);
     assert_eq!(handler.step_time_hz, 120);
 }
 
@@ -785,4 +787,29 @@ fn note_on_duplicate_note_retrigger_does_not_corrupt_stack() {
 
     handler.note_off(60, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     assert!(!handler.gate, "gate should be off after releasing the only note");
+}
+
+#[test]
+fn hi_pitch_cc15_and_host_automation_offsets_period() {
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    let seqs = default_seqs();
+
+    // Default hi_pitch is 0
+    assert_eq!(handler.hi_pitch, 0);
+
+    // CC 15 sets hi_pitch (value 66 -> +2)
+    handler.handle_control_change(15, 66);
+    assert_eq!(handler.hi_pitch, 2);
+
+    // Trigger note and update modulation
+    handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    let base_period = handler.macro_period;
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+
+    // Final timer written should be base_period - (2 << 4) = base_period - 32
+    let expected_period = (base_period - 32) as u16;
+    let written_period = ((handler.prev_timer_hi as u16) << 8) | (handler.prev_timer_lo as u16);
+    assert_eq!(written_period, expected_period);
 }

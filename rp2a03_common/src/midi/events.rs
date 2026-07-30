@@ -216,6 +216,9 @@ impl MidiHandler {
             14 => {
                 self.fine_pitch = value as i8 - 64;
             }
+            15 => {
+                self.hi_pitch = value as i8 - 64;
+            }
             _ => {}
         }
     }
