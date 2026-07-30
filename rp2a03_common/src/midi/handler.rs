@@ -86,24 +86,22 @@ pub struct MidiHandler {
     /// This is intentionally fractional so envelope frames land sample-accurately
     /// across host buffer sizes whose length is not an exact multiple of one step period.
     pub frame_sample_counter: f64,
-
     /// Sequence step tick rate in Hz (default 60 = NTSC frame rate).
     pub step_time_hz: u16,
-
     /// 5 FamiTracker sequence players
     pub vol_seq_player: SequencePlayer,
     pub arp_seq_player: SequencePlayer,
     pub pitch_seq_player: SequencePlayer,
     pub hipitch_seq_player: SequencePlayer,
     pub duty_seq_player: SequencePlayer,
-
-    /// The working macro period in raw 11-bit APU period units — the plugin's
+    /// The working macro period in raw 11-bit APU period units (pulse domain —
+    /// the triangle halves it at register-write time). This is the plugin's
     /// equivalent of dnFamiTracker's `CChannelHandler::m_iPeriod`.
     ///
     /// Reset to the triggered note's period on each NoteOn (dn: `RunNote`), then
     /// mutated once per 60 Hz tick by the sequence players in dn's
     /// `CSeqInstHandler::UpdateInstrument` order (arpeggio → pitch → hi-pitch):
-    /// arpeggio *replaces* it (`SetPeriod(TriggerNote(...))`), relative pitch and
+    /// arpeggio *replaces* it `SetPeriod(TriggerNote(...))`), relative pitch and
     /// hi-pitch *add* to it, absolute pitch *replaces* it with note period + value.
     /// Every mutation is clamped to 0..=0x7FF exactly where dn's `SetPeriod` calls
     /// `LimitPeriod`, so per-tick overshoot past the rails is discarded like in dn —
@@ -111,14 +109,35 @@ pub struct MidiHandler {
     /// Fine pitch and vibrato are *not* folded in here; they are composed onto
     /// `macro_period` at register-write time (dn: `CalculatePeriod`).
     pub macro_period: i32,
-
-    /// Cache of last written control register byte to avoid redundant register writes
+    /// Cache of last written control register byte to avoid redundant register writes.
+    ///
+    /// Only ever compared against bytes written to the Pulse struct — the triangle
+    /// path drives its volume through `set_volume` instead — so it needs no
+    /// waveform-switch invalidation (unlike `prev_timer_lo` / `prev_timer_hi`,
+    /// which are guarded by `reg_channel`).
     pub prev_ctrl: u8,
-    /// Cache of last written timer low byte to avoid redundant register writes
+    /// Cache of last written timer low byte to avoid redundant register writes.
+    ///
+    /// Handler-level cache over *per-channel* register state: only valid for the
+    /// channel recorded in `reg_channel` — after a `ChannelMode` switch the first
+    /// write is forced through regardless of this value.
     pub prev_timer_lo: u8,
-    /// Cache of last written timer high 3 bits to avoid resetting duty sequencer phase needlessly
+    /// Cache of last written timer high 3 bits to avoid resetting duty sequencer
+    /// phase needlessly. See `prev_timer_lo` / `reg_channel` for cache validity.
     pub prev_timer_hi: u8,
-
+    /// Channel whose registers the `prev_timer_lo` / `prev_timer_hi` caches
+    /// currently describe.
+    ///
+    /// Pulse and Triangle keep independent register state, so after a
+    /// `ChannelMode` switch the caches are stale for the new channel and its first
+    /// period write must be forced through — otherwise the new channel keeps a
+    /// stale timer-low byte (wrong pitch) until a note with a different low byte
+    /// re-triggers the write (symptom: play C4 on pulse → switch to triangle →
+    /// play C4 sounds wrong; playing D4 then "fixes" it).
+    ///
+    /// `None` = nothing written yet (first gated write always forced, which also
+    /// covers `reset()`, since the APU channel structs are reset alongside).
+    reg_channel: Option<ChannelMode>,
     /// Active channel mode (Pulse / Triangle / Noise).
     pub channel_mode: ChannelMode,
 }
@@ -148,6 +167,7 @@ impl Default for MidiHandler {
             prev_ctrl: 0xFF,
             prev_timer_lo: 0xFF,
             prev_timer_hi: 0xFF,
+            reg_channel: None,
             channel_mode: ChannelMode::Pulse,
         }
     }
@@ -173,17 +193,17 @@ impl MidiHandler {
         self.lfo.reset();
         self.frame_sample_counter = 0.0;
         self.step_time_hz = 60;
-
         self.vol_seq_player.reset();
         self.arp_seq_player.reset();
         self.pitch_seq_player.reset();
         self.hipitch_seq_player.reset();
         self.duty_seq_player.reset();
         self.macro_period = 0;
-
         self.prev_ctrl = 0xFF;
         self.prev_timer_lo = 0xFF;
         self.prev_timer_hi = 0xFF;
+        self.reg_channel = None;
+
         // channel_mode is intentionally NOT reset — it's a persistent host parameter.
     }
 
@@ -195,14 +215,11 @@ impl MidiHandler {
             self.active_note = note;
             self.current_velocity = velocity;
             self.gate = true;
-
             channel.set_enabled(true);
-
             match channel {
                 AnyChannel::Pulse(p) => p.write_sweep(0x08),
                 AnyChannel::Triangle(t) => t.write_linear_counter(0xFF),
             }
-
             // Reset the sentinel so the next update_modulation frame is guaranteed to call
             // write_timer_hi (full phase reset) regardless of whether the new note shares
             // the same high-period bits as the previous note. 0xFF is never a valid 3-bit
@@ -238,7 +255,6 @@ impl MidiHandler {
         if self.last_host_controls.is_none() || controls.fine_pitch != previous.fine_pitch {
             self.fine_pitch = controls.fine_pitch.clamp(-64, 63);
         }
-
         if self.last_host_controls.is_none() || controls.step_time_hz != previous.step_time_hz {
             self.step_time_hz = controls.step_time_hz.clamp(1, 600);
         }
@@ -323,13 +339,15 @@ impl MidiHandler {
     /// transposition and an optional arpeggio semitone offset. `midi_note_to_freq` +
     /// `freq_to_period` are this plugin's note lookup table over notes 0..=127.
     ///
+    /// Returns a period in the *pulse domain*; the triangle halves it at
+    /// register-write time for octave parity (see `apply_pitch_registers`).
+    ///
     /// `pub(super)` because it's also called from `note_on` in `events.rs`.
     pub(super) fn note_period(&self, arp_semitones: i16) -> i32 {
         let note = (self.active_note as i16 + self.octave_offset as i16 + arp_semitones)
             .clamp(0, 127) as u8;
         freq_to_period(midi_note_to_freq(note)) as i32
     }
-
 
     /// Number of samples that can be rendered before the next envelope tick.
     pub fn samples_until_next_frame(&self, sample_rate: f32) -> usize {
@@ -430,7 +448,6 @@ impl MidiHandler {
             0
         };
         let ctrl_byte = (duty_val << 6) | 0x30 | apu_vol;
-
         if ctrl_byte != self.prev_ctrl {
             pulse.write_ctrl(ctrl_byte);
             self.prev_ctrl = ctrl_byte;
@@ -486,31 +503,72 @@ impl MidiHandler {
     /// Fine pitch and vibrato compose onto `macro_period` at write time,
     /// like dn's `CalculatePeriod`. Uses `set_period_hi_soft` on sustain
     /// to avoid the click at period-byte boundaries during LFO modulation.
+    ///
+    /// Two channel adjustments happen here, at the register boundary:
+    ///
+    /// - Triangle octave parity: the triangle sequencer advances once per CPU cycle
+    ///   while the pulse's duty sequencer advances every other cycle
+    ///   (f = CPU/32(p+1) vs f = CPU/16(p+1)), so an uncompensated triangle sounds
+    ///   one octave lower for the same timer value. The composed period is halved
+    ///   for the triangle (`p_tri = (p_pulse - 1) / 2`) so both waveforms sound the
+    ///   same pitch for the same note and sequence modulation. `macro_period` stays
+    ///   in the pulse (dn-parity) domain for all sequence math; the halving
+    ///   preserves frequency ratios, so relative modulation (vibrato, pitch
+    ///   sequences, fine pitch) keeps its perceived depth on the triangle.
+    ///
+    /// - Waveform-switch cache invalidation: `prev_timer_lo` / `prev_timer_hi` are
+    ///   handler-level caches, but each APU channel keeps its own register state,
+    ///   so after a `ChannelMode` switch the first write must go through even if
+    ///   the bytes happen to match the cache (which still describes the *other*
+    ///   channel's registers). Otherwise the new channel keeps a stale period
+    ///   until a note with a different low byte forces a write. A switch forces the
+    ///   full attack write (`write_timer_hi`, not the soft path) so the new channel
+    ///   also gets its sequencer/envelope/linear-counter reset — a mid-note
+    ///   triangle switch needs that linear-counter reload to sound at all.
     fn apply_pitch_registers(&mut self, channel: &mut AnyChannel) {
         let fine_pitch_offset = self.fine_pitch as i32;
         let vibrato_delta = self.lfo.vibrato_pitch_delta() as i32;
-
         let final_period =
-            (self.macro_period - fine_pitch_offset - vibrato_delta).clamp(0, 0x7FF) as u16;
+            (self.macro_period - fine_pitch_offset - vibrato_delta).clamp(0, 0x7FF);
+
+        // Triangle octave parity — see fn docs. Halving the composed period keeps
+        // `macro_period` in the pulse domain while the triangle plays the
+        // matching frequency: CPU/32((p-1)/2 + 1) == CPU/16(p+1).
+        let final_period = if self.channel_mode == ChannelMode::Triangle {
+            (final_period - 1).max(0) / 2
+        } else {
+            final_period
+        };
+
+        let final_period = final_period as u16;
+
+        // Force the first write after a waveform switch (or reset) through the
+        // caches — see fn docs.
+        let channel_switched = self.reg_channel != Some(self.channel_mode);
+        if channel_switched {
+            self.reg_channel = Some(self.channel_mode);
+        }
 
         let timer_lo = (final_period & 0xFF) as u8;
         let timer_hi_bits = ((final_period >> 8) & 0x07) as u8;
 
-        if timer_lo != self.prev_timer_lo {
+        if channel_switched || timer_lo != self.prev_timer_lo {
             channel.write_timer_lo(timer_lo);
             self.prev_timer_lo = timer_lo;
         }
 
-        if timer_hi_bits != self.prev_timer_hi {
-            if self.prev_timer_hi == 0xFF {
-                // Note attack (sentinel set by apply_top_note): use write_timer_hi so the
-                // sequencer and linear counter reset cleanly for the new note's attack.
+        if channel_switched || timer_hi_bits != self.prev_timer_hi {
+            if channel_switched || self.prev_timer_hi == 0xFF {
+                // Fresh channel / note attack (sentinel set by apply_top_note):
+                // use write_timer_hi so the sequencer and linear counter reset
+                // cleanly for the new note's attack.
                 channel.write_timer_hi(0xF8 | timer_hi_bits);
             } else {
                 // Sustain: soft high-period update — skips duty.reset_step() and
                 // envelope.restart()/linear.reload, eliminating the click at period
-                // byte boundaries (e.g. 0x00FF ↔ 0x0100) during vibrato / LFO modulation.
-                // Mirrors Blaarg's smooth vibrato technique used in FamiStudio.
+                // byte boundaries (e.g. 0x00FF ↔ 0x0100) during vibrato / LFO
+                // modulation. Mirrors Blaarg's smooth vibrato technique used in
+                // FamiStudio.
                 channel.set_period_hi_soft(timer_hi_bits);
             }
             self.prev_timer_hi = timer_hi_bits;

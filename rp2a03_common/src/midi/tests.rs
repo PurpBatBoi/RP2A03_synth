@@ -495,3 +495,55 @@ fn note_off_release_processes_pitch_release_step_on_the_release_tick() {
     handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 6);
 }
+
+#[test]
+fn triangle_timer_is_halved_for_octave_parity_with_pulse() {
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::Triangle;
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    let seqs = default_seqs();
+
+    handler.note_on(60, 127, &mut AnyChannel::Triangle(&mut triangle), &seqs);
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+
+    // Pulse-domain period for note 72 (C4 + the default +12 octave offset) is 213.
+    // The triangle sequencer runs at twice the pulse's clock ratio, so matching
+    // pitch needs (213 - 1) / 2 = 106: CPU/32(106+1) == CPU/16(213.5) ≈ 522.6 Hz.
+    assert_eq!(handler.prev_timer_lo, ((test_base_period() - 1) / 2) as u8);
+    assert_eq!(handler.prev_timer_hi, 0);
+}
+
+#[test]
+fn waveform_switch_rewrites_registers_even_when_timer_bytes_match_the_cache() {
+    // Regression for the "first note after switching sounds wrong, next note
+    // corrects it" bug: register caches are handler-level, but each channel keeps
+    // its own registers, so a matching byte must not suppress the write after a
+    // waveform switch.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    handler.channel_mode = ChannelMode::Triangle;
+    let seqs = default_seqs();
+
+    // MIDI 48 on the triangle → note 60 → pulse-domain period 427, compensated to
+    // (427 - 1) / 2 = 213 → low byte 0xD5 now sits in the cache against TRIANGLE state.
+    handler.note_on(48, 127, &mut AnyChannel::Triangle(&mut triangle), &seqs);
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    assert_eq!(handler.prev_timer_lo, 213);
+
+    // Switch to pulse and play MIDI 60 → also period 213, low byte 0xD5 — equal to
+    // the cache. If the timer-low write were skipped (the old behavior), the Pulse
+    // struct's period would stay 0 and the channel would read as muted.
+    handler.note_off(48, &mut AnyChannel::Triangle(&mut triangle), &seqs);
+    handler.channel_mode = ChannelMode::Pulse;
+    handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+
+    assert!(
+        !pulse.is_muted(),
+        "pulse period must actually be written after a waveform switch"
+    );
+    pulse.clock(); // applies the length-counter reload from write_timer_hi
+    assert_eq!(pulse.volume(), 15);
+}
