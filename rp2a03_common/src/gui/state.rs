@@ -2,6 +2,7 @@
 //! State structures for sequence banks and instrument settings.
 
 use rp2a03_core::sequencer::Sequence;
+use crate::ChannelMode;
 
 /// The FamiTracker-compatible sequence-number range (`0..=127`).
 pub const MAX_SEQUENCES: usize = 128;
@@ -76,6 +77,9 @@ impl SequenceBank {
 pub struct SharedSequences {
     /// The envelope type currently shown by the editor.
     pub selected_tab: usize,
+    /// Active channel mode (Pulse / Triangle / Noise). Persisted across editor
+    /// frames and drives tab visibility (e.g. Duty tab hidden for Triangle).
+    pub channel_mode: ChannelMode,
     sequence_indices: [usize; SEQUENCE_TYPE_COUNT],
     sequence_banks: [SequenceBank; SEQUENCE_TYPE_COUNT],
     enabled: [bool; SEQUENCE_TYPE_COUNT],
@@ -85,6 +89,7 @@ impl Default for SharedSequences {
     fn default() -> Self {
         Self {
             selected_tab: 0,
+            channel_mode: ChannelMode::Pulse,
             sequence_indices: [0; SEQUENCE_TYPE_COUNT],
             sequence_banks: std::array::from_fn(|_| SequenceBank::default()),
             enabled: [false; SEQUENCE_TYPE_COUNT],

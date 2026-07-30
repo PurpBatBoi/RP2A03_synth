@@ -5,6 +5,7 @@ pub const NTSC_CPU_CLOCK: f64 = 1_789_773.0;
 
 pub mod apu;
 pub mod apu_pulse;
+pub mod apu_triangle;
 pub mod blip_buf;
 pub mod software_lfo;
 pub mod sequencer;

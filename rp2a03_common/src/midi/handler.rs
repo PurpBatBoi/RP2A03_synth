@@ -4,10 +4,57 @@
 //! NoteOff, CC dispatch) lives in `events.rs`.
 
 use rp2a03_core::apu_pulse::Pulse;
+use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, SequencePlayer};
 use rp2a03_core::software_lfo::SoftwareLfo;
 
-use super::types::{freq_to_period, midi_note_to_freq, ActiveSequences, HostAutomationControls};
+use super::types::{freq_to_period, midi_note_to_freq, ActiveSequences, ChannelMode, HostAutomationControls};
+
+// ─────────────────────────────────────────────
+// AnyChannel — zero-cost dispatch shim
+// ─────────────────────────────────────────────
+
+/// A thin wrapper that gives uniform access to either a `Pulse` or a `Triangle`
+/// channel, used inside `MidiHandler` methods so they don't need to be
+/// duplicated for each channel type.
+pub enum AnyChannel<'a> {
+    Pulse(&'a mut Pulse),
+    Triangle(&'a mut Triangle),
+}
+
+impl<'a> AnyChannel<'a> {
+    pub fn set_enabled(&mut self, enabled: bool) {
+        match self {
+            AnyChannel::Pulse(p) => p.set_enabled(enabled),
+            AnyChannel::Triangle(t) => t.set_enabled(enabled),
+        }
+    }
+
+    pub fn write_timer_lo(&mut self, val: u8) {
+        match self {
+            AnyChannel::Pulse(p) => p.write_timer_lo(val),
+            AnyChannel::Triangle(t) => t.write_timer_lo(val),
+        }
+    }
+
+    pub fn write_timer_hi(&mut self, val: u8) {
+        match self {
+            AnyChannel::Pulse(p) => p.write_timer_hi(val),
+            AnyChannel::Triangle(t) => t.write_timer_hi(val),
+        }
+    }
+
+    pub fn set_period_hi_soft(&mut self, hi_bits: u8) {
+        match self {
+            AnyChannel::Pulse(p) => p.set_period_hi_soft(hi_bits),
+            AnyChannel::Triangle(t) => t.set_period_hi_soft(hi_bits),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────
+// MidiHandler
+// ─────────────────────────────────────────────
 
 /// Manages incoming MIDI events, note stack, velocity, CCs, and modulation.
 #[derive(Debug, Clone)]
@@ -50,7 +97,6 @@ pub struct MidiHandler {
     pub hipitch_seq_player: SequencePlayer,
     pub duty_seq_player: SequencePlayer,
 
-
     /// The working macro period in raw 11-bit APU period units — the plugin's
     /// equivalent of dnFamiTracker's `CChannelHandler::m_iPeriod`.
     ///
@@ -72,6 +118,9 @@ pub struct MidiHandler {
     pub prev_timer_lo: u8,
     /// Cache of last written timer high 3 bits to avoid resetting duty sequencer phase needlessly
     pub prev_timer_hi: u8,
+
+    /// Active channel mode (Pulse / Triangle / Noise).
+    pub channel_mode: ChannelMode,
 }
 
 impl Default for MidiHandler {
@@ -99,6 +148,7 @@ impl Default for MidiHandler {
             prev_ctrl: 0xFF,
             prev_timer_lo: 0xFF,
             prev_timer_hi: 0xFF,
+            channel_mode: ChannelMode::Pulse,
         }
     }
 }
@@ -134,19 +184,24 @@ impl MidiHandler {
         self.prev_ctrl = 0xFF;
         self.prev_timer_lo = 0xFF;
         self.prev_timer_hi = 0xFF;
+        // channel_mode is intentionally NOT reset — it's a persistent host parameter.
     }
 
     /// Apply top note from monophonic note stack.
     ///
     /// `pub(super)` because it's also called from `note_on`/`note_off` in `events.rs`.
-    pub(super) fn apply_top_note(&mut self, pulse: &mut Pulse) {
+    pub(super) fn apply_top_note(&mut self, channel: &mut AnyChannel) {
         if let Some(&(note, velocity)) = self.note_stack.last() {
             self.active_note = note;
             self.current_velocity = velocity;
             self.gate = true;
 
-            pulse.set_enabled(true);
-            pulse.write_sweep(0x08);
+            channel.set_enabled(true);
+
+            match channel {
+                AnyChannel::Pulse(p) => p.write_sweep(0x08),
+                AnyChannel::Triangle(t) => t.write_linear_counter(0xFF),
+            }
 
             // Reset the sentinel so the next update_modulation frame is guaranteed to call
             // write_timer_hi (full phase reset) regardless of whether the new note shares
@@ -198,8 +253,8 @@ impl MidiHandler {
     ///
     /// - A sequence only advances while `SeqState::Running` (dn: END/HALT process
     ///   nothing more, so the working period simply persists).
-    /// - Arpeggio (absolute setting) *replaces* the working period with the arp note's
-    ///   period every tick — wiping any accumulated pitch offsets (yes, really; dn
+    /// - Arpeggio computes the period from TriggerNote (semitone lookup) so it
+    ///   never accumulates pitch offsets (yes, really; dn
     ///   does this via `SetPeriod(TriggerNote(GetNote() + Value))`).
     /// - Relative pitch *adds* its step; absolute pitch *replaces* with the base note
     ///   period + step (dn: `SetPeriod(GetPeriod() + Value)` vs
@@ -305,11 +360,36 @@ impl MidiHandler {
         }
     }
 
-    /// Write the current sequence/LFO state to the APU pulse channel.
+    /// Write the current sequence/LFO state to the active APU channel.
     /// Returns master gain multiplier (CC11 Expression).
-    pub fn apply_current_modulation(&mut self, pulse: &mut Pulse, seqs: &ActiveSequences) -> f32 {
+    pub fn apply_current_modulation(
+        &mut self,
+        pulse: &mut Pulse,
+        triangle: &mut Triangle,
+        seqs: &ActiveSequences,
+    ) -> f32 {
         let master_gain = self.cc_expression as f32 / 127.0;
 
+        match self.channel_mode {
+            ChannelMode::Pulse => {
+                self.apply_pulse_modulation(pulse, seqs, master_gain)
+            }
+            ChannelMode::Triangle => {
+                self.apply_triangle_modulation(triangle, seqs, master_gain)
+            }
+            ChannelMode::Noise => {
+                // Noise not yet implemented — fall through to Pulse behavior as silent.
+                master_gain
+            }
+        }
+    }
+
+    fn apply_pulse_modulation(
+        &mut self,
+        pulse: &mut Pulse,
+        seqs: &ActiveSequences,
+        master_gain: f32,
+    ) -> f32 {
         if !self.gate {
             let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
                 self.duty_seq_player.value().clamp(0, 3) as u8
@@ -356,11 +436,57 @@ impl MidiHandler {
             self.prev_ctrl = ctrl_byte;
         }
 
-        // 3. Pitch application. The macro period already carries the arpeggio /
-        // pitch / hi-pitch sequences (folded per engine tick above). Fine pitch and
-        // vibrato compose onto it at write time, like dn's CalculatePeriod; both are
-        // "up = positive" offsets, so they subtract in period space (higher period
-        // = lower pitch on the 2A03).
+        // 3. Pitch application.
+        self.apply_pitch_registers(&mut AnyChannel::Pulse(pulse));
+
+        master_gain
+    }
+
+    fn apply_triangle_modulation(
+        &mut self,
+        triangle: &mut Triangle,
+        seqs: &ActiveSequences,
+        master_gain: f32,
+    ) -> f32 {
+        if !self.gate {
+            triangle.set_volume(0);
+            return master_gain;
+        }
+
+        // 1. Software Volume — same 4-bit pipeline as Pulse, but written via
+        //    `triangle.set_volume()` instead of embedding in a ctrl byte.
+        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
+            self.vol_seq_player.value().clamp(0, 15) as u8
+        } else {
+            15
+        };
+        let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15) as u32;
+        let cc7_scaled = (hardware_scaled * self.cc_volume as u32 / 127) as u32;
+        let vel_scaled_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
+        let tremolo_sub = self.lfo.tremolo_volume_delta();
+        let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
+
+        // Turn off gate when release tail completes and volume reaches 0
+        if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
+            if self.vol_seq_player.state == SeqState::End && apu_vol == 0 {
+                self.gate = false;
+            }
+        }
+
+        triangle.set_volume(apu_vol);
+
+        // 2. Pitch application (same logic, AnyChannel dispatch).
+        self.apply_pitch_registers(&mut AnyChannel::Triangle(triangle));
+
+        master_gain
+    }
+
+    /// Shared pitch register write path for both Pulse and Triangle.
+    ///
+    /// Fine pitch and vibrato compose onto `macro_period` at write time,
+    /// like dn's `CalculatePeriod`. Uses `set_period_hi_soft` on sustain
+    /// to avoid the click at period-byte boundaries during LFO modulation.
+    fn apply_pitch_registers(&mut self, channel: &mut AnyChannel) {
         let fine_pitch_offset = self.fine_pitch as i32;
         let vibrato_delta = self.lfo.vibrato_pitch_delta() as i32;
 
@@ -371,40 +497,39 @@ impl MidiHandler {
         let timer_hi_bits = ((final_period >> 8) & 0x07) as u8;
 
         if timer_lo != self.prev_timer_lo {
-            pulse.write_timer_lo(timer_lo);
+            channel.write_timer_lo(timer_lo);
             self.prev_timer_lo = timer_lo;
         }
 
         if timer_hi_bits != self.prev_timer_hi {
             if self.prev_timer_hi == 0xFF {
                 // Note attack (sentinel set by apply_top_note): use write_timer_hi so the
-                // duty sequencer and envelope reset cleanly for the new note's attack.
-                pulse.write_timer_hi(0xF8 | timer_hi_bits);
+                // sequencer and linear counter reset cleanly for the new note's attack.
+                channel.write_timer_hi(0xF8 | timer_hi_bits);
             } else {
                 // Sustain: soft high-period update — skips duty.reset_step() and
-                // envelope.restart(), eliminating the click at period byte boundaries
-                // (e.g. 0x00FF ↔ 0x0100) during vibrato / LFO modulation.
+                // envelope.restart()/linear.reload, eliminating the click at period
+                // byte boundaries (e.g. 0x00FF ↔ 0x0100) during vibrato / LFO modulation.
                 // Mirrors Blaarg's smooth vibrato technique used in FamiStudio.
-                pulse.set_period_hi_soft(timer_hi_bits);
+                channel.set_period_hi_soft(timer_hi_bits);
             }
             self.prev_timer_hi = timer_hi_bits;
         }
-
-        master_gain
     }
 
-    /// Update sequence playback, LFO modulation, and write updated parameters to APU pulse channel.
+    /// Update sequence playback, LFO modulation, and write updated parameters to APU channels.
     /// Returns master gain multiplier (CC11 Expression).
     #[cfg(test)]
     pub fn update_modulation(
         &mut self,
         pulse: &mut Pulse,
+        triangle: &mut Triangle,
         seqs: &ActiveSequences,
         sample_rate: f32,
         num_samples: usize,
     ) -> f32 {
         self.advance_frame_samples(seqs, sample_rate, num_samples);
-        self.apply_current_modulation(pulse, seqs)
+        self.apply_current_modulation(pulse, triangle, seqs)
     }
 
     /// Check if gate is currently active.

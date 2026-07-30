@@ -9,4 +9,4 @@ mod types;
 mod tests;
 
 pub use handler::MidiHandler;
-pub use types::{freq_to_period, midi_note_to_freq, ActiveSequences, HostAutomationControls};
+pub use types::{freq_to_period, midi_note_to_freq, ActiveSequences, ChannelMode, HostAutomationControls};

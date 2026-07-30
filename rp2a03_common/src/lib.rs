@@ -10,5 +10,6 @@ pub use gui::{
     SharedSequences, MAX_SEQUENCES, NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT,
 };
 pub use midi::{
-    freq_to_period, midi_note_to_freq, ActiveSequences, HostAutomationControls, MidiHandler,
+    freq_to_period, midi_note_to_freq, ActiveSequences, ChannelMode, HostAutomationControls,
+    MidiHandler,
 };

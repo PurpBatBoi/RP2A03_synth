@@ -1,6 +1,28 @@
 //! rp2a03_common\src\midi\types.rs
 //! Core value types and note/frequency conversions used by the MIDI handler.
 
+/// Which APU channel waveform is active for this plugin instance.
+///
+/// `Noise` is defined for future use but is not yet functional.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum ChannelMode {
+    #[default]
+    Pulse = 0,
+    Triangle = 1,
+    Noise = 2,
+}
+
+impl ChannelMode {
+    pub fn from_i32(val: i32) -> Self {
+        match val {
+            1 => ChannelMode::Triangle,
+            2 => ChannelMode::Noise,
+            _ => ChannelMode::Pulse,
+        }
+    }
+}
+
 use rp2a03_core::sequencer::Sequence;
 use rp2a03_core::software_lfo::DEFAULT_LFO_SPEED;
 use rp2a03_core::NTSC_CPU_CLOCK;

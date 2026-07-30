@@ -4,11 +4,12 @@
 
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::Pulse;
+use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode};
 use rp2a03_core::software_lfo::DEFAULT_LFO_SPEED;
 
-use super::handler::MidiHandler;
-use super::types::ActiveSequences;
+use super::handler::{AnyChannel, MidiHandler};
+use super::types::{ActiveSequences, ChannelMode};
 
 impl MidiHandler {
     /// Process an incoming MIDI / Note event.
@@ -16,15 +17,21 @@ impl MidiHandler {
         &mut self,
         event: &NoteEvent<S>,
         pulse: &mut Pulse,
+        triangle: &mut Triangle,
         seqs: &ActiveSequences,
     ) -> Option<usize> {
+        let mut channel = match self.channel_mode {
+            ChannelMode::Pulse | ChannelMode::Noise => AnyChannel::Pulse(pulse),
+            ChannelMode::Triangle => AnyChannel::Triangle(triangle),
+        };
+
         match event {
             NoteEvent::NoteOn { note, velocity, .. } => {
                 let vel_u8 = (velocity * 127.0).clamp(0.0, 127.0) as u8;
-                self.note_on(*note, vel_u8, pulse, seqs);
+                self.note_on(*note, vel_u8, &mut channel, seqs);
             }
             NoteEvent::NoteOff { note, .. } => {
-                self.note_off(*note, pulse, seqs);
+                self.note_off(*note, &mut channel, seqs);
             }
             NoteEvent::MidiCC { cc, value, .. } => {
                 let value_u8 = (value * 127.0).clamp(0.0, 127.0) as u8;
@@ -40,7 +47,13 @@ impl MidiHandler {
     }
 
     /// Handle NoteOn event with monophonic last-note priority.
-    pub fn note_on(&mut self, note: u8, velocity: u8, pulse: &mut Pulse, seqs: &ActiveSequences) {
+    pub fn note_on(
+        &mut self,
+        note: u8,
+        velocity: u8,
+        channel: &mut AnyChannel,
+        seqs: &ActiveSequences,
+    ) {
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 
@@ -60,7 +73,7 @@ impl MidiHandler {
             self.duty_seq_player.trigger(&seqs.duty_seq);
         }
 
-        self.apply_top_note(pulse);
+        self.apply_top_note(channel);
 
         // dn RunNote: m_iPeriod = TriggerNote(...). Sequence step 0 was already read
         // into the players by trigger() above (dn processes step 0 in the same engine
@@ -99,7 +112,7 @@ impl MidiHandler {
     }
 
     /// Handle NoteOff event.
-    pub fn note_off(&mut self, note: u8, pulse: &mut Pulse, seqs: &ActiveSequences) {
+    pub fn note_off(&mut self, note: u8, channel: &mut AnyChannel, seqs: &ActiveSequences) {
         self.note_stack.retain(|(n, _)| *n != note);
 
         if self.note_stack.is_empty() {
@@ -141,7 +154,7 @@ impl MidiHandler {
                 self.frame_sample_counter = 0.0;
             }
         } else {
-            self.apply_top_note(pulse);
+            self.apply_top_note(channel);
         }
     }
 

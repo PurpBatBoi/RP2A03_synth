@@ -5,10 +5,11 @@ use nice_plug::prelude::*;
 use nice_plug_egui::{create_egui_editor, EguiSettings, EguiState};
 use parking_lot::Mutex;
 use rp2a03_common::{
-    render_editor_ui, style, ActiveSequences, HostAutomationControls, MidiHandler,
+    render_editor_ui, style, ActiveSequences, ChannelMode, HostAutomationControls, MidiHandler,
     SequencePlayheads, SharedSequences, MAX_SEQUENCES, NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT,
 };
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
+use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::sequencer::{SeqState, Sequence, SequencePlayer};
 use rp2a03_core::NTSC_CPU_CLOCK;
@@ -22,6 +23,7 @@ const AMPLITUDE_SCALE: i32 = 1500;
 pub struct Rp2a03Plugin {
     params: Arc<Rp2a03Params>,
     pulse: Pulse,
+    triangle: Triangle,
     blip: BlipBuf,
     sample_rate: f32,
     last_output: i16,
@@ -56,18 +58,23 @@ struct Rp2a03Params {
     pub fine_pitch: IntParam,
     #[id = "step_time"]
     pub step_time: IntParam,
+    #[id = "waveform"]
+    pub waveform: IntParam,
 }
 
 impl Default for Rp2a03Plugin {
     fn default() -> Self {
         let mut pulse = Pulse::new(PulseChannel::One);
         pulse.set_enabled(true);
+        let mut triangle = Triangle::new();
+        triangle.set_enabled(true);
         let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE);
         blip.set_rates(NTSC_CPU_CLOCK, 44100.0);
 
         Self {
             params: Arc::new(Rp2a03Params::default()),
             pulse,
+            triangle,
             blip,
             sample_rate: 44100.0,
             last_output: 0,
@@ -101,6 +108,7 @@ impl Default for Rp2a03Params {
             hardware_volume: IntParam::new("HW Volume", 15, IntRange::Linear { min: 0, max: 15 }),
             fine_pitch: IntParam::new("Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
             step_time: IntParam::new("Step Time", 60, IntRange::Linear { min: 1, max: 600 }),
+            waveform: IntParam::new("Waveform", 0, IntRange::Linear { min: 0, max: 1 }),
         }
     }
 }
@@ -115,12 +123,25 @@ impl Rp2a03Plugin {
         let clocks_needed = self.blip.clocks_needed(sample_count);
 
         for clock in 0..clocks_needed {
-            self.pulse.clock();
-
-            let current_output = if self.midi_handler.gate() && !self.pulse.is_muted() {
-                self.pulse.output() as i16
-            } else {
-                0
+            let current_output = match self.midi_handler.channel_mode {
+                ChannelMode::Pulse | ChannelMode::Noise => {
+                    self.pulse.clock();
+                    if self.midi_handler.gate() && !self.pulse.is_muted() {
+                        self.pulse.output() as i16
+                    } else {
+                        0
+                    }
+                }
+                ChannelMode::Triangle => {
+                    self.triangle.clock();
+                    if self.midi_handler.gate() && !self.triangle.is_muted() {
+                        // Triangle output is already in 0..15 range, scaled by software volume.
+                        // We scale it the same way as Pulse to match blip_buf amplitude.
+                        self.triangle.output() as i16
+                    } else {
+                        0
+                    }
+                }
             };
 
             let delta = current_output as i32 - self.last_output as i32;
@@ -146,7 +167,7 @@ impl Rp2a03Plugin {
         while rendered < output.len() {
             let master_gain = self
                 .midi_handler
-                .apply_current_modulation(&mut self.pulse, seqs);
+                .apply_current_modulation(&mut self.pulse, &mut self.triangle, seqs);
 
             let segment_len = if self.midi_handler.gate() {
                 self.midi_handler
@@ -324,6 +345,13 @@ impl Plugin for Rp2a03Plugin {
                             setter.set_parameter(&params.step_time, new_hz);
                             setter.end_set_parameter(&params.step_time);
                         }
+
+                        if let Some(new_mode) = result.new_channel_mode {
+                            let mode_i32 = new_mode as i32;
+                            setter.begin_set_parameter(&params.waveform);
+                            setter.set_parameter(&params.waveform, mode_i32);
+                            setter.end_set_parameter(&params.waveform);
+                        }
                     });
             },
         )
@@ -342,8 +370,11 @@ impl Plugin for Rp2a03Plugin {
         self.pulse.reset();
         self.pulse.set_enabled(true);
         self.pulse.write_sweep(0x08);
+        self.triangle.reset();
+        self.triangle.set_enabled(true);
         self.last_output = 0;
         self.midi_handler.reset();
+        self.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
         self.midi_program_index = None;
         self.last_sequence_parameter = self.params.sequence_number.value();
         self.clear_sequence_playheads();
@@ -354,9 +385,12 @@ impl Plugin for Rp2a03Plugin {
         self.pulse.reset();
         self.pulse.set_enabled(true);
         self.pulse.write_sweep(0x08);
+        self.triangle.reset();
+        self.triangle.set_enabled(true);
         self.blip.clear();
         self.last_output = 0;
         self.midi_handler.reset();
+        self.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
         self.midi_program_index = None;
         self.last_sequence_parameter = self.params.sequence_number.value();
         self.clear_sequence_playheads();
@@ -370,6 +404,11 @@ impl Plugin for Rp2a03Plugin {
     ) -> ProcessStatus {
         self.midi_handler
             .apply_host_automation(self.host_automation_controls());
+        // Sync channel mode from host parameter (handles DAW automation / state recall).
+        self.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
+        // Sync channel mode into shared GUI state so the combobox reflects the current value.
+        self.shared_sequences.lock().channel_mode =
+            ChannelMode::from_i32(self.params.waveform.value());
         let num_samples = buffer.samples();
         let mut next_event = context.next_event();
         let mut sample_pos: usize = 0;
@@ -409,7 +448,7 @@ impl Plugin for Rp2a03Plugin {
                 }
                 if let Some(program_index) =
                     self.midi_handler
-                        .handle_event(&event, &mut self.pulse, &active_seqs)
+                        .handle_event(&event, &mut self.pulse, &mut self.triangle, &active_seqs)
                 {
                     sequence_index = program_index.min(MAX_SEQUENCES - 1);
                     self.midi_program_index = Some(sequence_index);

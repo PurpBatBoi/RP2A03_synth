@@ -3,6 +3,7 @@
 
 use super::state::{SequencePlayheads, SharedSequences, MAX_SEQUENCES};
 use super::widgets::{draw_envelope_bar_graph, group_box, repeating_button};
+use crate::ChannelMode;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence};
 
 /// Result returned by [`render_editor_ui`] to communicate parameter changes back
@@ -13,6 +14,8 @@ pub struct EditorResult {
     pub new_sequence_index: Option<usize>,
     /// If the user changed the step time Hz value via the GUI.
     pub new_step_time_hz: Option<i32>,
+    /// If the user changed the channel mode via the waveform combobox.
+    pub new_channel_mode: Option<ChannelMode>,
 }
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
@@ -93,8 +96,7 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
     }
 }
 
-fn draw_header(ui: &mut egui::Ui) {
-    let mut waveform = 0;
+fn draw_header(ui: &mut egui::Ui, data: &mut SharedSequences, changed_channel_mode: &mut Option<ChannelMode>) {
     let mut polyphony = false;
     let mut _legato = false;
     let mut _portamento = false;
@@ -153,17 +155,34 @@ fn draw_header(ui: &mut egui::Ui) {
                 egui::vec2(190.0, COMBO_H),
             )),
             |ui| {
+                let mut waveform_id = data.channel_mode as i32;
                 egui::ComboBox::from_id_salt("waveform")
                     .width(180.0)
-                    .selected_text(match waveform {
-                        0 => "2A03 | Pulse",
-                        1 => "2A03 | Triangle",
-                        _ => "2A03 | Noise",
+                    .selected_text(match data.channel_mode {
+                        ChannelMode::Pulse => "2A03 | Pulse",
+                        ChannelMode::Triangle => "2A03 | Triangle",
+                        ChannelMode::Noise => "2A03 | Noise",
                     })
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut waveform, 0, "2A03 | Pulse");
-                        ui.selectable_value(&mut waveform, 1, "2A03 | Triangle");
-                        ui.selectable_value(&mut waveform, 2, "2A03 | Noise");
+                        if ui.selectable_value(&mut waveform_id, 0, "2A03 | Pulse").clicked() {
+                            let new_mode = ChannelMode::Pulse;
+                            data.channel_mode = new_mode;
+                            *changed_channel_mode = Some(new_mode);
+                        }
+                        if ui.selectable_value(&mut waveform_id, 1, "2A03 | Triangle").clicked() {
+                            let new_mode = ChannelMode::Triangle;
+                            // If Duty tab was active, revert to Volume
+                            if data.selected_tab == 4 {
+                                cleanup_tab_sequence(data, 4);
+                                data.selected_tab = 0;
+                            }
+                            data.channel_mode = new_mode;
+                            *changed_channel_mode = Some(new_mode);
+                        }
+                        // Noise: visible but disabled
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.selectable_value(&mut waveform_id, 2, "2A03 | Noise");
+                        });
                     });
             },
         );
@@ -241,13 +260,25 @@ fn draw_instrument_settings_panel(
     step_time_hz: u32,
     changed_step_time_hz: &mut Option<i32>,
 ) {
-    const SEQ_TYPES: [(&str, usize); 5] = [
+    // Show "Duty / Noise" tab only for Pulse mode.
+    let seq_types_pulse: [(&str, usize); 5] = [
         ("Volume", 0),
         ("Arpeggio", 1),
         ("Pitch", 2),
         ("Hi-Pitch", 3),
         ("Duty / Noise", 4),
     ];
+    let seq_types_triangle: [(&str, usize); 4] = [
+        ("Volume", 0),
+        ("Arpeggio", 1),
+        ("Pitch", 2),
+        ("Hi-Pitch", 3),
+    ];
+    let seq_types: &[(&str, usize)] = if data.channel_mode == ChannelMode::Triangle {
+        &seq_types_triangle
+    } else {
+        &seq_types_pulse
+    };
 
     const PANEL_WIDTH: f32 = 180.0;
     const GROUP_GAP: f32 = 12.0;
@@ -279,7 +310,7 @@ fn draw_instrument_settings_panel(
                 ui.separator();
                 ui.end_row();
 
-                for (name, tab) in SEQ_TYPES {
+                for &(name, tab) in seq_types {
                     ui.checkbox(data.sequence_enabled_mut(tab), "");
 
                     if ui
@@ -502,6 +533,7 @@ fn draw_main_content(
     playheads: &SequencePlayheads,
     step_time_hz: u32,
     changed_step_time_hz: &mut Option<i32>,
+    _changed_channel_mode: &mut Option<ChannelMode>,
 ) {
     const LEFT_W: f32 = 180.0;
     const GAP: f32 = 8.0;
@@ -581,8 +613,9 @@ pub fn render_editor_ui(
 
     let mut changed_sequence_index = None;
     let mut changed_step_time_hz = None;
+    let mut changed_channel_mode = None;
 
-    draw_header(ui);
+    draw_header(ui, data, &mut changed_channel_mode);
     draw_chip_tabs(ui, data);
 
     // Reserve footer space at the bottom of the window with spacing gap
@@ -612,6 +645,7 @@ pub fn render_editor_ui(
             playheads,
             step_time_hz,
             &mut changed_step_time_hz,
+            &mut changed_channel_mode,
         );
     });
 
@@ -623,6 +657,7 @@ pub fn render_editor_ui(
     EditorResult {
         new_sequence_index: changed_sequence_index,
         new_step_time_hz: changed_step_time_hz,
+        new_channel_mode: changed_channel_mode,
     }
 }
 
