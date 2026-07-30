@@ -7,7 +7,6 @@ use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, Sequence};
 use rp2a03_core::NTSC_CPU_CLOCK;
-
 use super::handler::AnyChannel;
 
 fn default_seqs() -> ActiveSequences {
@@ -34,6 +33,7 @@ fn test_base_period() -> i32 {
 #[test]
 fn host_automation_controls_update_the_matching_synth_controls() {
     let mut handler = MidiHandler::new();
+
     handler.apply_host_automation(HostAutomationControls {
         vibrato_depth: 7,
         vibrato_speed: 20,
@@ -104,6 +104,7 @@ fn test_relative_and_absolute_pitch_modes() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
     let mut triangle = Triangle::new();
+
     let base = test_base_period();
 
     let mut pitch_seq = Sequence::parse("1 2 3");
@@ -122,13 +123,16 @@ fn test_relative_and_absolute_pitch_modes() {
     // dn SETTING_PITCH_RELATIVE: SetPeriod(GetPeriod() + Value) per tick
     handler.update_modulation(&mut pulse, &mut triangle, &seqs_rel, 60.0, 1);
     assert_eq!(handler.macro_period, base + 3); // +2
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs_rel, 60.0, 1);
     assert_eq!(handler.macro_period, base + 6); // +3
-                                                // Sequence ended: dn END/HALT states process nothing, so it must hold
+
+    // Sequence ended: dn END/HALT states process nothing, so it must hold
     handler.update_modulation(&mut pulse, &mut triangle, &seqs_rel, 60.0, 1);
     assert_eq!(handler.macro_period, base + 6);
 
     pitch_seq.pitch_mode = PitchMode::Absolute;
+
     let seqs_abs = ActiveSequences {
         pitch_seq,
         ..seqs_rel
@@ -137,10 +141,13 @@ fn test_relative_and_absolute_pitch_modes() {
     // dn SETTING_PITCH_ABSOLUTE: SetPeriod(TriggerNote(GetNote()) + Value) per tick
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs_abs);
     assert_eq!(handler.macro_period, base + 1);
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs_abs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 2);
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs_abs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 3);
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs_abs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 3); // ended: sticky
 }
@@ -150,6 +157,7 @@ fn hipitch_always_accumulates_regardless_of_pitch_mode() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
     let mut triangle = Triangle::new();
+
     let base = test_base_period();
 
     // Only a hi-pitch sequence; dn: SetPeriod(GetPeriod() + (Value << 4)) — always
@@ -162,10 +170,13 @@ fn hipitch_always_accumulates_regardless_of_pitch_mode() {
 
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     assert_eq!(handler.macro_period, base + 16); // step 0: 1 << 4
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 16 + 32); // step 1: 2 << 4
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 48 + 48); // step 2: 3 << 4
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 96); // ended: sticky
 }
@@ -175,6 +186,7 @@ fn absolute_pitch_replaces_arp_and_prior_accumulation_each_tick() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
     let mut triangle = Triangle::new();
+
     let base = test_base_period();
 
     // dn order quirk (UpdateInstrument: pitch runs after arpeggio): an absolute
@@ -182,6 +194,7 @@ fn absolute_pitch_replaces_arp_and_prior_accumulation_each_tick() {
     // period the arpeggio sequence set earlier in the same tick.
     let mut pitch_seq = Sequence::parse("0 0 0 0");
     pitch_seq.pitch_mode = PitchMode::Absolute;
+
     let seqs = ActiveSequences {
         arp_seq: Sequence::parse("4 4 4 4"),
         arp_enabled: true,
@@ -193,6 +206,7 @@ fn absolute_pitch_replaces_arp_and_prior_accumulation_each_tick() {
     };
 
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+
     // Trigger folds step 0 of each in order: arp period(76), then absolute pitch
     // replaces with base + 0, then hi-pitch adds 16.
     assert_eq!(handler.macro_period, base + 16);
@@ -213,6 +227,7 @@ fn macro_period_clamps_to_0x7ff_on_every_tick_like_dn_setperiod() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
     let mut triangle = Triangle::new();
+
     let base = test_base_period();
     assert!(
         base + 2 * (127 << 4) > 0x7FF,
@@ -229,12 +244,16 @@ fn macro_period_clamps_to_0x7ff_on_every_tick_like_dn_setperiod() {
     // rail is discarded instead of being soaked up by an unbounded accumulator.
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs); // base + 2032 -> clamped
     assert_eq!(handler.macro_period, 0x7FF);
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1); // +2032 again -> clamped
     assert_eq!(handler.macro_period, 0x7FF);
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1); // -2032
     assert_eq!(handler.macro_period, 0x7FF - 2032);
+
     handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1); // -2032 again -> clamped at 0
     assert_eq!(handler.macro_period, 0);
+
     // Ended: holds the clamped value rather than unwinding back toward `base`
     handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, 0);
@@ -250,6 +269,7 @@ fn arpeggio_replaces_working_period_each_tick_wiping_relative_pitch_accumulation
     // per-tick SetPeriod discards the relative pitch accumulation every frame.
     let mut pitch_seq = Sequence::parse("1 2 3");
     pitch_seq.pitch_mode = PitchMode::Relative;
+
     let seqs = ActiveSequences {
         arp_seq: Sequence::parse("0 4 7"),
         arp_enabled: true,
@@ -269,7 +289,6 @@ fn arpeggio_replaces_working_period_each_tick_wiping_relative_pitch_accumulation
     let period_arp7 = freq_to_period(midi_note_to_freq(79)) as i32;
     assert_eq!(handler.macro_period, period_arp7 + 3); // NOT accumulating across ticks
 }
-
 
 #[test]
 fn arpeggio_relative_mode_mutates_active_note_accumulating() {
@@ -347,21 +366,25 @@ fn test_all_envelope_editor_timings_1to1_famitracker() {
 
     // On NoteOn attack (Frame 0): Step 0 is evaluated immediately across all envelope types
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &active_seqs);
+
     assert_eq!(handler.vol_seq_player.value(), 15);
     assert_eq!(handler.arp_seq_player.value(), 0);
     assert_eq!(handler.duty_seq_player.value(), 0);
     assert_eq!(handler.pitch_seq_player.value(), 1);
     assert_eq!(handler.hipitch_seq_player.value(), 0);
+
     // arp step 0 (= 0) replaces, relative pitch +1, hi-pitch step 0 (= 0)
     assert_eq!(handler.macro_period, test_base_period() + 1);
 
     // Frame 1 tick (16.6ms): Step 1 evaluated
     handler.update_modulation(&mut pulse, &mut triangle, &active_seqs, 60.0, 1);
+
     assert_eq!(handler.vol_seq_player.value(), 10);
     assert_eq!(handler.arp_seq_player.value(), 4);
     assert_eq!(handler.duty_seq_player.value(), 1);
     assert_eq!(handler.pitch_seq_player.value(), 2);
     assert_eq!(handler.hipitch_seq_player.value(), 1);
+
     // arp step 4 replaces the working period (dn quirk: accumulated relative
     // pitch is discarded by the arp SetPeriod), then pitch +2, hi-pitch +16
     let period_arp4 = freq_to_period(midi_note_to_freq(76)) as i32;
@@ -369,11 +392,13 @@ fn test_all_envelope_editor_timings_1to1_famitracker() {
 
     // Frame 2 tick (33.3ms): Step 2 evaluated
     handler.update_modulation(&mut pulse, &mut triangle, &active_seqs, 60.0, 1);
+
     assert_eq!(handler.vol_seq_player.value(), 5);
     assert_eq!(handler.arp_seq_player.value(), 7);
     assert_eq!(handler.duty_seq_player.value(), 2);
     assert_eq!(handler.pitch_seq_player.value(), 3);
     assert_eq!(handler.hipitch_seq_player.value(), 2);
+
     let period_arp7 = freq_to_period(midi_note_to_freq(79)) as i32;
     assert_eq!(handler.macro_period, period_arp7 + 3 + 32);
 
@@ -386,6 +411,7 @@ fn test_all_envelope_editor_timings_1to1_famitracker() {
 fn envelope_ticks_land_on_sample_boundaries_inside_large_host_buffers() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
+
     let seqs = ActiveSequences {
         vol_seq: Sequence::parse("15 10 5"),
         vol_enabled: true,
@@ -394,6 +420,7 @@ fn envelope_ticks_land_on_sample_boundaries_inside_large_host_buffers() {
 
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     assert_eq!(handler.vol_seq_player.value(), 15);
+
     assert_eq!(handler.samples_until_next_frame(44_100.0), 735);
 
     handler.advance_frame_samples(&seqs, 44_100.0, 734);
@@ -405,6 +432,7 @@ fn envelope_ticks_land_on_sample_boundaries_inside_large_host_buffers() {
 
     handler.advance_frame_samples(&seqs, 44_100.0, 1);
     assert_eq!(handler.vol_seq_player.value(), 10);
+
     assert_eq!(handler.samples_until_next_frame(44_100.0), 735);
 
     handler.advance_frame_samples(&seqs, 44_100.0, 735);
@@ -415,6 +443,7 @@ fn envelope_ticks_land_on_sample_boundaries_inside_large_host_buffers() {
 fn note_on_restarts_frame_phase_for_a_full_attack_step() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
+
     let seqs = ActiveSequences {
         vol_seq: Sequence::parse("15 10 5"),
         vol_enabled: true,
@@ -422,6 +451,7 @@ fn note_on_restarts_frame_phase_for_a_full_attack_step() {
     };
 
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+
     handler.advance_frame_samples(&seqs, 44_100.0, 300);
     assert_eq!(handler.samples_until_next_frame(44_100.0), 435);
 
@@ -431,6 +461,7 @@ fn note_on_restarts_frame_phase_for_a_full_attack_step() {
 
     handler.advance_frame_samples(&seqs, 44_100.0, 734);
     assert_eq!(handler.vol_seq_player.value(), 15);
+
     handler.advance_frame_samples(&seqs, 44_100.0, 1);
     assert_eq!(handler.vol_seq_player.value(), 10);
 }
@@ -439,6 +470,7 @@ fn note_on_restarts_frame_phase_for_a_full_attack_step() {
 fn note_off_release_processes_release_step_on_the_release_tick() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
+
     let seqs = ActiveSequences {
         vol_seq: Sequence::parse("15 14 / 9 0"),
         vol_enabled: true,
@@ -446,9 +478,11 @@ fn note_off_release_processes_release_step_on_the_release_tick() {
     };
 
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+
     handler.advance_frame_samples(&seqs, 44_100.0, 300);
 
     handler.note_off(60, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+
     assert_eq!(
         handler.vol_seq_player.value(),
         9,
@@ -458,6 +492,7 @@ fn note_off_release_processes_release_step_on_the_release_tick() {
 
     handler.advance_frame_samples(&seqs, 44_100.0, 734);
     assert_eq!(handler.vol_seq_player.value(), 9);
+
     handler.advance_frame_samples(&seqs, 44_100.0, 1);
     assert_eq!(handler.vol_seq_player.value(), 0);
 }
@@ -470,6 +505,7 @@ fn note_off_release_processes_pitch_release_step_on_the_release_tick() {
 
     let mut pitch_seq = Sequence::parse("1 / 5");
     pitch_seq.pitch_mode = PitchMode::Relative;
+
     let seqs = ActiveSequences {
         pitch_seq,
         pitch_enabled: true,
@@ -479,6 +515,7 @@ fn note_off_release_processes_pitch_release_step_on_the_release_tick() {
     };
 
     let base = test_base_period();
+
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     assert_eq!(handler.macro_period, base + 1);
 
@@ -520,9 +557,11 @@ fn waveform_switch_rewrites_registers_even_when_timer_bytes_match_the_cache() {
     // corrects it" bug: register caches are handler-level, but each channel keeps
     // its own registers, so a matching byte must not suppress the write after a
     // waveform switch.
+
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
     let mut triangle = Triangle::new();
+
     handler.channel_mode = ChannelMode::Triangle;
     let seqs = default_seqs();
 
@@ -537,13 +576,213 @@ fn waveform_switch_rewrites_registers_even_when_timer_bytes_match_the_cache() {
     // struct's period would stay 0 and the channel would read as muted.
     handler.note_off(48, &mut AnyChannel::Triangle(&mut triangle), &seqs);
     handler.channel_mode = ChannelMode::Pulse;
+
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
-
     assert!(
         !pulse.is_muted(),
         "pulse period must actually be written after a waveform switch"
     );
     pulse.clock(); // applies the length-counter reload from write_timer_hi
     assert_eq!(pulse.volume(), 15);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests for the note-stack voice-stealing / note-return fix
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn releasing_top_note_returns_to_previously_held_note() {
+    // The core scenario: hold C5, press D5, release D5 → should return to C5.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+
+    let vol_seq = Sequence::parse("15 12 9 6");
+    let seqs = ActiveSequences {
+        vol_seq,
+        vol_enabled: true,
+        ..default_seqs()
+    };
+
+    // Press C5 (MIDI 72)
+    handler.note_on(72, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(handler.active_note, 72);
+    assert_eq!(handler.vol_seq_player.value(), 15);
+
+    // Advance a tick to move sequences forward
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    assert_eq!(handler.vol_seq_player.value(), 12);
+
+    // Press D5 (MIDI 74) while still holding C5
+    handler.note_on(74, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(handler.active_note, 74);
+    assert_eq!(handler.vol_seq_player.value(), 15, "sequences should restart on new note");
+
+    // Release D5 while C5 is still held
+    handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+
+    // Should switch back to C5 and retrigger sequences
+    assert_eq!(handler.active_note, 72, "active note should return to C5 (72) after releasing D5");
+    assert_eq!(handler.vol_seq_player.value(), 15, "volume sequence should retrigger for the restored note");
+    assert!(handler.gate, "gate should remain on while C5 is still held");
+}
+
+#[test]
+fn releasing_top_note_recalculates_macro_period_for_held_note() {
+    // Verify that macro_period is recalculated when switching back to a held note.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+
+    let seqs = default_seqs();
+
+    let period_c5 = freq_to_period(midi_note_to_freq(72 + 12)) as i32; // C5 + octave offset
+    let period_d5 = freq_to_period(midi_note_to_freq(74 + 12)) as i32; // D5 + octave offset
+
+    // Press C5
+    handler.note_on(72, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(handler.macro_period, period_c5);
+
+    // Press D5 while holding C5
+    handler.note_on(74, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(handler.macro_period, period_d5);
+
+    // Release D5 → should return macro_period to C5
+    handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(
+        handler.macro_period, period_c5,
+        "macro_period should return to C5's period after releasing D5"
+    );
+}
+
+#[test]
+fn releasing_top_note_restarts_frame_counter() {
+    // The frame_sample_counter should be reset so the restored note gets a full
+    // attack step duration before the first envelope tick.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+
+    let seqs = ActiveSequences {
+        vol_seq: Sequence::parse("15 10 5"),
+        vol_enabled: true,
+        ..default_seqs()
+    };
+
+    // Press C5
+    handler.note_on(72, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+
+    // Advance partway through a frame
+    handler.advance_frame_samples(&seqs, 44_100.0, 300);
+    assert_eq!(handler.samples_until_next_frame(44_100.0), 435);
+
+    // Press D5 while holding C5
+    handler.note_on(74, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+
+    // Advance partway again
+    handler.advance_frame_samples(&seqs, 44_100.0, 200);
+
+    // Release D5 → frame counter should reset for a full attack step
+    handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(
+        handler.samples_until_next_frame(44_100.0),
+        735,
+        "frame_sample_counter should reset so the restored note gets a full attack step"
+    );
+    assert_eq!(handler.vol_seq_player.value(), 15, "volume should be at step 0");
+}
+
+#[test]
+fn releasing_top_note_restarts_pitch_sequences_for_held_note() {
+    // Verify that pitch/arp/hipitch sequences also retrigger when returning
+    // to a held note.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+
+    let mut pitch_seq = Sequence::parse("1 2 3");
+    pitch_seq.pitch_mode = PitchMode::Relative;
+
+    let seqs = ActiveSequences {
+        pitch_seq,
+        pitch_enabled: true,
+        ..default_seqs()
+    };
+
+    let base_c5 = freq_to_period(midi_note_to_freq(72 + 12)) as i32;
+    let base_d5 = freq_to_period(midi_note_to_freq(74 + 12)) as i32;
+
+    // Press C5
+    handler.note_on(72, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(handler.macro_period, base_c5 + 1); // pitch step 0 = 1
+
+    // Press D5 while holding C5
+    handler.note_on(74, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(handler.macro_period, base_d5 + 1); // pitch step 0 = 1
+
+    // Release D5 → should retrigger for C5
+    handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(
+        handler.macro_period,
+        base_c5 + 1,
+        "macro_period should be C5's base period + pitch step 0"
+    );
+    assert_eq!(
+        handler.pitch_seq_player.value(),
+        1,
+        "pitch sequence should be at step 0"
+    );
+}
+
+#[test]
+fn three_note_stack_returns_to_second_note_on_release() {
+    // Press C5, press D5, press E5, release E5 → should return to D5.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let seqs = default_seqs();
+
+    handler.note_on(72, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs); // C5
+    handler.note_on(74, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs); // D5
+    handler.note_on(76, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs); // E5
+
+    assert_eq!(handler.active_note, 76);
+
+    handler.note_off(76, &mut AnyChannel::Pulse(&mut pulse), &seqs); // release E5
+    assert_eq!(handler.active_note, 74, "should return to D5 after releasing E5");
+
+    handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs); // release D5
+    assert_eq!(handler.active_note, 72, "should return to C5 after releasing D5");
+}
+
+#[test]
+fn releasing_all_notes_gates_off() {
+    // When the last note is released with no release sequences, gate turns off.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let seqs = default_seqs();
+
+    handler.note_on(72, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    handler.note_on(74, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+
+    handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert!(handler.gate, "gate should be on while C5 is still held");
+
+    handler.note_off(72, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert!(!handler.gate, "gate should be off when all notes released");
+}
+
+#[test]
+fn note_on_duplicate_note_retrigger_does_not_corrupt_stack() {
+    // Pressing the same note twice should not duplicate it in the stack.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let seqs = default_seqs();
+
+    handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    handler.note_on(60, 80, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(handler.note_stack.len(), 1, "duplicate note should not be duplicated");
+    assert_eq!(handler.current_velocity, 80, "velocity should update to latest");
+
+    handler.note_off(60, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert!(!handler.gate, "gate should be off after releasing the only note");
 }

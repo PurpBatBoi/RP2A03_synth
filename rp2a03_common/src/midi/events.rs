@@ -7,7 +7,6 @@ use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode};
 use rp2a03_core::software_lfo::DEFAULT_LFO_SPEED;
-
 use super::handler::{AnyChannel, MidiHandler};
 use super::types::{ActiveSequences, ChannelMode};
 
@@ -42,7 +41,6 @@ impl MidiHandler {
             }
             _ => {}
         }
-
         None
     }
 
@@ -57,57 +55,10 @@ impl MidiHandler {
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 
-        if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
-            self.vol_seq_player.trigger(&seqs.vol_seq);
-        }
-        if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
-            self.arp_seq_player.trigger(&seqs.arp_seq);
-        }
-        if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
-            self.pitch_seq_player.trigger(&seqs.pitch_seq);
-        }
-        if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
-            self.hipitch_seq_player.trigger(&seqs.hipitch_seq);
-        }
-        if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
-            self.duty_seq_player.trigger(&seqs.duty_seq);
-        }
-
+        self.trigger_sequences(seqs);
         self.apply_top_note(channel);
+        self.recalculate_macro_period(seqs);
 
-        // dn RunNote: m_iPeriod = TriggerNote(...). Sequence step 0 was already read
-        // into the players by trigger() above (dn processes step 0 in the same engine
-        // frame via UpdateInstrument), so fold it into the working period now, in dn's
-        // sequence order (arpeggio → pitch → hi-pitch).
-        self.macro_period = self.note_period(0);
-        if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
-            match seqs.arp_seq.arp_mode {
-                ArpMode::Absolute => {
-                    // dn: initial period = TriggerNote(BaseNote + step0)
-                    self.macro_period = self.note_period(self.arp_seq_player.value());
-                }
-                ArpMode::Relative => {
-                    // dn: SetNote(BaseNote + step0) then SetPeriod(TriggerNote(BaseNote))
-                    // active_note was just set to the new MIDI note in apply_top_note;
-                    // shift it by step0 to match the first UpdateInstrument pass.
-                    let step0 = self.arp_seq_player.value();
-                    self.active_note =
-                        (self.active_note as i16 + step0).clamp(0, 127) as u8;
-                    self.macro_period = self.note_period(0);
-                }
-            }
-        }
-        if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
-            let pitch_step = self.pitch_seq_player.value() as i32;
-            match seqs.pitch_seq.pitch_mode {
-                PitchMode::Relative => self.macro_period += pitch_step,
-                PitchMode::Absolute => self.macro_period = self.note_period(0) + pitch_step,
-            }
-        }
-        if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
-            self.macro_period += (self.hipitch_seq_player.value() as i32) << 4;
-        }
-        self.macro_period = self.macro_period.clamp(0, 0x7FF);
         self.frame_sample_counter = 0.0;
     }
 
@@ -119,6 +70,7 @@ impl MidiHandler {
             let has_vol_rel = seqs.vol_enabled
                 && !seqs.vol_seq.values.is_empty()
                 && seqs.vol_seq.release_point.is_some();
+
             let has_duty_rel = seqs.duty_enabled
                 && !seqs.duty_seq.values.is_empty()
                 && seqs.duty_seq.release_point.is_some();
@@ -146,7 +98,6 @@ impl MidiHandler {
                 if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
                     self.hipitch_seq_player.release(&seqs.hipitch_seq);
                 }
-
                 // dn release notes run before CSeqInstHandler::UpdateInstrument in
                 // the same engine pass, so the release-point value reaches the APU
                 // immediately and then gets a full frame before the next step.
@@ -154,8 +105,77 @@ impl MidiHandler {
                 self.frame_sample_counter = 0.0;
             }
         } else {
+            // Still notes in the stack — switch back to the previous note.
+            // Retrigger sequences and recalculate macro_period so the sound
+            // returns to the held note, just like dnFamiTracker's RunNote does
+            // when the top note is released and a lower note is still held.
+            self.trigger_sequences(seqs);
             self.apply_top_note(channel);
+            self.recalculate_macro_period(seqs);
+            self.frame_sample_counter = 0.0;
         }
+    }
+
+    /// Trigger all enabled sequence players (restart from step 0).
+    ///
+    /// Called on NoteOn and when restoring a held note after the top note is released.
+    fn trigger_sequences(&mut self, seqs: &ActiveSequences) {
+        if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
+            self.vol_seq_player.trigger(&seqs.vol_seq);
+        }
+        if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
+            self.arp_seq_player.trigger(&seqs.arp_seq);
+        }
+        if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
+            self.pitch_seq_player.trigger(&seqs.pitch_seq);
+        }
+        if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
+            self.hipitch_seq_player.trigger(&seqs.hipitch_seq);
+        }
+        if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
+            self.duty_seq_player.trigger(&seqs.duty_seq);
+        }
+    }
+
+    /// Recalculate `macro_period` from the current `active_note` and step 0 of all
+    /// enabled sequences, following dnFamiTracker's `RunNote` → `UpdateInstrument`
+    /// order (arpeggio → pitch → hi-pitch).
+    ///
+    /// Called on NoteOn and when restoring a held note after the top note is released.
+    fn recalculate_macro_period(&mut self, seqs: &ActiveSequences) {
+        // dn RunNote: m_iPeriod = TriggerNote(...). Sequence step 0 was already read
+        // into the players by trigger() above, so fold it into the working period now.
+        self.macro_period = self.note_period(0);
+
+        if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
+            match seqs.arp_seq.arp_mode {
+                ArpMode::Absolute => {
+                    // dn: initial period = TriggerNote(BaseNote + step0)
+                    self.macro_period = self.note_period(self.arp_seq_player.value());
+                }
+                ArpMode::Relative => {
+                    // dn: SetNote(BaseNote + step0) then SetPeriod(TriggerNote(BaseNote))
+                    let step0 = self.arp_seq_player.value();
+                    self.active_note =
+                        (self.active_note as i16 + step0).clamp(0, 127) as u8;
+                    self.macro_period = self.note_period(0);
+                }
+            }
+        }
+
+        if seqs.pitch_enabled && !seqs.pitch_seq.values.is_empty() {
+            let pitch_step = self.pitch_seq_player.value() as i32;
+            match seqs.pitch_seq.pitch_mode {
+                PitchMode::Relative => self.macro_period += pitch_step,
+                PitchMode::Absolute => self.macro_period = self.note_period(0) + pitch_step,
+            }
+        }
+
+        if seqs.hipitch_enabled && !seqs.hipitch_seq.values.is_empty() {
+            self.macro_period += (self.hipitch_seq_player.value() as i32) << 4;
+        }
+
+        self.macro_period = self.macro_period.clamp(0, 0x7FF);
     }
 
     /// Handle MIDI Control Change messages.

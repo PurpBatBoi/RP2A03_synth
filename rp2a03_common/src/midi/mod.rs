@@ -4,7 +4,6 @@
 mod events;
 mod handler;
 mod types;
-
 #[cfg(test)]
 mod tests;
 

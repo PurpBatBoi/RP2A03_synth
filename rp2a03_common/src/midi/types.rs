@@ -46,16 +46,12 @@ pub fn freq_to_period(freq: f32) -> u16 {
 pub struct ActiveSequences {
     pub vol_seq: Sequence,
     pub vol_enabled: bool,
-
     pub arp_seq: Sequence,
     pub arp_enabled: bool,
-
     pub pitch_seq: Sequence,
     pub pitch_enabled: bool,
-
     pub hipitch_seq: Sequence,
     pub hipitch_enabled: bool,
-
     pub duty_seq: Sequence,
     pub duty_enabled: bool,
 }
