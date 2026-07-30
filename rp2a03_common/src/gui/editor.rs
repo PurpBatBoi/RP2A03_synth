@@ -217,7 +217,7 @@ fn draw_header(ui: &mut egui::Ui) {
 
 fn draw_chip_tabs(ui: &mut egui::Ui, _data: &mut SharedSequences) {
     ui.horizontal(|ui| {
-        let _ = ui.selectable_label(true, "Envelopes");
+        let _ = ui.selectable_label(true, "Envelope Editors");
     });
 
     ui.separator();
