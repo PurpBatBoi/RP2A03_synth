@@ -306,39 +306,63 @@ pub fn draw_envelope_bar_graph(
     // Graph canvas interaction (Sequence drawing)
     if num_steps > 0 {
         let step_width = graph_rect.width() / num_steps as f32;
+        let draw_drag_id = ui.make_persistent_id("envelope_draw_last_pos");
 
         if graph_response.dragged_by(egui::PointerButton::Primary)
             || graph_response.clicked_by(egui::PointerButton::Primary)
         {
             if let Some(pointer_pos) = graph_response.interact_pointer_pos() {
-                let step_idx = (((pointer_pos.x - graph_rect.min.x) / step_width).floor() as i32)
-                    .clamp(0, num_steps as i32 - 1) as usize;
+                let last_pos: Option<Pos2> = ui.ctx().data_mut(|d| d.get_temp(draw_drag_id));
 
-                let rel_y = (pointer_pos.y - graph_rect.min.y).clamp(0.0f32, graph_rect.height());
-                let norm_y = rel_y / graph_rect.height();
+                let p0 = last_pos.unwrap_or(pointer_pos);
+                let p1 = pointer_pos;
 
-                let clamped_val = if is_arpeggio {
-                    let num_slots = (vis_max - vis_min + 1) as f32;
-                    let slot_idx = (norm_y * num_slots).floor() as i16;
-                    (vis_max - slot_idx).clamp(vis_min, vis_max)
-                } else {
-                    let raw_val = max_val as f32 - norm_y * (max_val as f32 - min_val as f32);
-                    let mut new_val = raw_val.round() as i16;
-
-                    if min_val < 0 {
-                        let snap_threshold = (max_val as f32 - min_val as f32) * 0.03f32;
-                        if raw_val.abs() <= snap_threshold {
-                            new_val = 0;
-                        }
-                    }
-                    new_val.clamp(min_val, max_val)
+                let step_of = |x: f32| -> usize {
+                    let rel_x = (x - graph_rect.min.x).clamp(0.0, (graph_rect.width() - 0.001).max(0.0));
+                    (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize
                 };
 
-                if seq.values[step_idx] != clamped_val {
-                    seq.values[step_idx] = clamped_val;
-                    text_needs_sync = true;
+                let step0 = step_of(p0.x);
+                let step1 = step_of(p1.x);
+                let min_step = step0.min(step1);
+                let max_step = step0.max(step1);
+
+                let dx = p1.x - p0.x;
+
+                for s in min_step..=max_step {
+                    let target_y = if dx.abs() < 1e-4 {
+                        p1.y
+                    } else {
+                        let s_x = graph_rect.min.x + (s as f32 + 0.5) * step_width;
+                        let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
+                        p0.y + t * (p1.y - p0.y)
+                    };
+
+                    let clamped_val = pos_y_to_val(
+                        target_y,
+                        graph_rect,
+                        is_arpeggio,
+                        vis_min,
+                        vis_max,
+                        min_val,
+                        max_val,
+                    );
+
+                    if seq.values[s] != clamped_val {
+                        seq.values[s] = clamped_val;
+                        text_needs_sync = true;
+                    }
                 }
+
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(draw_drag_id, pointer_pos));
             }
+        }
+
+        if graph_response.drag_stopped_by(egui::PointerButton::Primary)
+            || !ui.input(|i| i.pointer.primary_down())
+        {
+            ui.ctx().data_mut(|d| d.remove_temp::<Pos2>(draw_drag_id));
         }
 
         if graph_response.drag_stopped_by(egui::PointerButton::Primary)
@@ -808,4 +832,60 @@ fn draw_playhead_rect(painter: &egui::Painter, rect: Rect) {
         [rect.left_bottom(), rect.right_bottom()],
         Stroke::new(1.0f32, theme::PLAYHEAD_EDGE_BOTTOM),
     );
+}
+
+fn pos_y_to_val(
+    y: f32,
+    graph_rect: Rect,
+    is_arpeggio: bool,
+    vis_min: i16,
+    vis_max: i16,
+    min_val: i16,
+    max_val: i16,
+) -> i16 {
+    let rel_y = (y - graph_rect.min.y).clamp(0.0f32, graph_rect.height());
+    let norm_y = if graph_rect.height() > 0.0 {
+        rel_y / graph_rect.height()
+    } else {
+        0.0
+    };
+
+    if is_arpeggio {
+        let num_slots = (vis_max - vis_min + 1) as f32;
+        let slot_idx = (norm_y * num_slots).floor() as i16;
+        (vis_max - slot_idx).clamp(vis_min, vis_max)
+    } else {
+        let raw_val = max_val as f32 - norm_y * (max_val as f32 - min_val as f32);
+        let mut new_val = raw_val.round() as i16;
+
+        if min_val < 0 {
+            let snap_threshold = (max_val as f32 - min_val as f32) * 0.03f32;
+            if raw_val.abs() <= snap_threshold {
+                new_val = 0;
+            }
+        }
+        new_val.clamp(min_val, max_val)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Pos2, Rect};
+
+    #[test]
+    fn test_pos_y_to_val_volume_unipolar() {
+        let rect = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
+        assert_eq!(pos_y_to_val(0.0, rect, false, 0, 15, 0, 15), 15);
+        assert_eq!(pos_y_to_val(100.0, rect, false, 0, 15, 0, 15), 0);
+        assert_eq!(pos_y_to_val(50.0, rect, false, 0, 15, 0, 15), 8);
+    }
+
+    #[test]
+    fn test_pos_y_to_val_bipolar_snaps_zero() {
+        let rect = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
+        assert_eq!(pos_y_to_val(0.0, rect, false, -128, 127, -128, 127), 127);
+        assert_eq!(pos_y_to_val(100.0, rect, false, -128, 127, -128, 127), -128);
+        assert_eq!(pos_y_to_val(49.8, rect, false, -128, 127, -128, 127), 0);
+    }
 }
