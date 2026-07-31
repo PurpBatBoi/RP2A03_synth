@@ -77,7 +77,7 @@ pub struct Triangle {
     pub length: LengthCounter,
     pub linear: LinearCounter,
     pub force_silent: bool,
-    pub volume: u8,
+    pub volume: f32,
 }
 
 impl Default for Triangle {
@@ -100,7 +100,7 @@ impl Triangle {
             length: LengthCounter::new(),
             linear: LinearCounter::new(),
             force_silent: false,
-            volume: 15,
+            volume: 15.0,
         }
     }
 
@@ -117,15 +117,15 @@ impl Triangle {
         self.force_silent = silent;
     }
 
-    pub fn set_volume(&mut self, volume: u8) {
-        self.volume = volume.min(15);
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume.clamp(0.0, 15.0);
     }
 
-    pub fn volume(&self) -> u8 {
+    pub fn volume(&self) -> f32 {
         if self.length.counter() > 0 && self.linear.counter() > 0 {
             self.volume
         } else {
-            0
+            0.0
         }
     }
 
@@ -196,7 +196,7 @@ impl Triangle {
             0.0
         } else {
             let raw_step = f32::from(Self::SEQUENCE[self.sequence as usize]);
-            (raw_step * f32::from(self.volume())) / 15.0
+            (raw_step * self.volume()) / 15.0
         }
     }
 
@@ -208,7 +208,7 @@ impl Triangle {
         self.length.reset();
         self.linear.reset();
         self.force_silent = false;
-        self.volume = 15;
+        self.volume = 15.0;
     }
 }
 
@@ -263,15 +263,45 @@ mod tests {
         tri.length.reload();
 
         tri.sequence = 0; // step 0 -> raw value 15
-        tri.set_volume(15);
+        tri.set_volume(15.0);
         assert_eq!(tri.output(), 15.0);
 
-        tri.set_volume(0);
+        tri.set_volume(0.0);
         assert_eq!(tri.output(), 0.0);
 
-        tri.set_volume(5);
+        tri.set_volume(5.0);
         // (15 * 5) / 15 = 5.0
         assert_eq!(tri.output(), 5.0);
+    }
+
+    #[test]
+    fn test_triangle_volume_no_aliasing_on_intermediate_steps() {
+        let mut tri = Triangle::new();
+        tri.set_enabled(true);
+        tri.write_linear_counter(0xFF);
+        tri.linear.reload = true;
+        tri.linear.clock();
+        tri.write_timer_lo(0x80);
+        tri.write_timer_hi(0x02);
+        tri.length.reload();
+
+        // Check intermediate volume step 7.0 (a 0-14 step)
+        tri.set_volume(7.0);
+
+        // Sequence steps 0 through 15: 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0
+        let mut outputs = Vec::new();
+        for seq in 0..16 {
+            tri.sequence = seq;
+            outputs.push(tri.output());
+        }
+
+        // Verify that step deltas between consecutive sequence positions are constant
+        // (7.0 / 15.0) rather than staircased/aliased integer steps.
+        let expected_step_delta = 7.0 / 15.0;
+        for i in 0..15 {
+            let delta = outputs[i] - outputs[i + 1];
+            assert!((delta - expected_step_delta).abs() < 1e-6, "Step delta should be smooth linear delta {}, got {}", expected_step_delta, delta);
+        }
     }
 
     #[test]

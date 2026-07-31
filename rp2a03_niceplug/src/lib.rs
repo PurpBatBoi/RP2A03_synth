@@ -26,7 +26,7 @@ pub struct Rp2a03Plugin {
     triangle: Triangle,
     blip: BlipBuf,
     sample_rate: f32,
-    last_output: i16,
+    last_output: i32,
     midi_handler: MidiHandler,
     /// Program Change selection remains active until the host changes the Index parameter.
     midi_program_index: Option<usize>,
@@ -130,7 +130,7 @@ impl Rp2a03Plugin {
                 ChannelMode::Pulse | ChannelMode::Noise => {
                     self.pulse.clock();
                     if self.midi_handler.gate() && !self.pulse.is_muted() {
-                        self.pulse.output() as i16
+                        self.pulse.output() as i32 * AMPLITUDE_SCALE
                     } else {
                         0
                     }
@@ -138,18 +138,17 @@ impl Rp2a03Plugin {
                 ChannelMode::Triangle => {
                     self.triangle.clock();
                     if self.midi_handler.gate() && !self.triangle.is_muted() {
-                        // Triangle output is already in 0..15 range, scaled by software volume.
-                        // We scale it the same way as Pulse to match blip_buf amplitude.
-                        self.triangle.output() as i16
+                        // High-resolution output for Triangle to avoid 4-bit integer quantization aliasing on 0-14 steps
+                        (self.triangle.output() * AMPLITUDE_SCALE as f32) as i32
                     } else {
                         0
                     }
                 }
             };
 
-            let delta = current_output as i32 - self.last_output as i32;
+            let delta = current_output - self.last_output;
             if delta != 0 {
-                self.blip.add_delta(clock, delta * AMPLITUDE_SCALE);
+                self.blip.add_delta(clock, delta);
                 self.last_output = current_output;
             }
         }

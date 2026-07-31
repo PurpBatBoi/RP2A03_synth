@@ -635,7 +635,6 @@ fn releasing_top_note_recalculates_macro_period_for_held_note() {
     // Verify that macro_period is recalculated when switching back to a held note.
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let seqs = default_seqs();
 
@@ -700,7 +699,6 @@ fn releasing_top_note_restarts_pitch_sequences_for_held_note() {
     // to a held note.
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let mut pitch_seq = Sequence::parse("1 2 3");
     pitch_seq.pitch_mode = PitchMode::Relative;

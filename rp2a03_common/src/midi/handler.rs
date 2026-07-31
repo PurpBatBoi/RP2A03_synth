@@ -477,27 +477,27 @@ impl MidiHandler {
         master_gain: f32,
     ) -> f32 {
         if !self.gate {
-            triangle.set_volume(0);
+            triangle.set_volume(0.0);
             return master_gain;
         }
 
-        // 1. Software Volume — same 4-bit pipeline as Pulse, but written via
-        //    `triangle.set_volume()` instead of embedding in a ctrl byte.
+        // 1. Software Volume — continuous floating-point pipeline for Triangle
+        //    to avoid integer step quantization aliasing.
         let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
-            self.vol_seq_player.value().clamp(0, 15) as u8
+            self.vol_seq_player.value().clamp(0, 15) as f32
         } else {
-            15
+            15.0
         };
 
-        let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15) as u32;
-        let cc7_scaled = (hardware_scaled * self.cc_volume as u32 / 127) as u32;
-        let vel_scaled_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
-        let tremolo_sub = self.lfo.tremolo_volume_delta();
-        let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
+        let hardware_scaled = vol_val * (self.hardware_volume as f32 / 15.0);
+        let cc7_scaled = hardware_scaled * (self.cc_volume as f32 / 127.0);
+        let vel_scaled_vol = cc7_scaled * (self.current_velocity as f32 / 127.0);
+        let tremolo_sub = self.lfo.tremolo_volume_delta() as f32;
+        let apu_vol = (vel_scaled_vol - tremolo_sub).clamp(0.0, 15.0);
 
         // Turn off gate when release tail completes and volume reaches 0
         if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
-            if self.vol_seq_player.state == SeqState::End && apu_vol == 0 {
+            if self.vol_seq_player.state == SeqState::End && apu_vol <= 0.0 {
                 self.gate = false;
             }
         }
