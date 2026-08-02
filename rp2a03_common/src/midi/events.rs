@@ -55,7 +55,10 @@ impl MidiHandler {
         // A note arriving while another note is sounding is a legato change:
         // preserve the pulse duty phase and let the normal soft timer path
         // update pitch if needed.
-        let reset_phase = !self.gate;
+        let reset_phase = match channel {
+            AnyChannel::Pulse(_) => !self.pulse_phase_initialized,
+            AnyChannel::Triangle(_) => !self.gate,
+        };
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 

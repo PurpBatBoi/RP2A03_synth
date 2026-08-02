@@ -139,6 +139,10 @@ pub struct MidiHandler {
     /// `None` = nothing written yet (first gated write always forced, which also
     /// covers `reset()`, since the APU channel structs are reset alongside).
     reg_channel: Option<ChannelMode>,
+    /// Whether the pulse duty sequencer has received its initial attack setup.
+    /// This remains true through NoteOff so an adjacent NoteOn does not reset
+    /// phase merely because MIDI delivered NoteOff first.
+    pub(super) pulse_phase_initialized: bool,
     /// Active channel mode (Pulse / Triangle / Noise).
     pub channel_mode: ChannelMode,
 }
@@ -170,6 +174,7 @@ impl Default for MidiHandler {
             prev_timer_lo: 0xFF,
             prev_timer_hi: 0xFF,
             reg_channel: None,
+            pulse_phase_initialized: false,
             channel_mode: ChannelMode::Pulse,
         }
     }
@@ -206,6 +211,7 @@ impl MidiHandler {
         self.prev_timer_lo = 0xFF;
         self.prev_timer_hi = 0xFF;
         self.reg_channel = None;
+        self.pulse_phase_initialized = false;
         // channel_mode is intentionally NOT reset — it's a persistent host parameter.
     }
 
@@ -225,7 +231,8 @@ impl MidiHandler {
             match channel {
                 AnyChannel::Pulse(p) => {
                     if reset_phase {
-                        p.write_sweep(0x08)
+                        p.write_sweep(0x08);
+                        self.pulse_phase_initialized = true;
                     }
                 }
                 AnyChannel::Triangle(t) => t.write_linear_counter(0xFF),
