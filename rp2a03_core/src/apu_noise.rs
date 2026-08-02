@@ -126,6 +126,14 @@ impl Noise {
         self.envelope.restart();
     }
 
+    /// Restart the deterministic noise attack without changing the selected
+    /// period or LFSR mode. This is useful for the synth's retrigger behavior;
+    /// normal register writes do not reset the LFSR.
+    pub fn retrigger(&mut self) {
+        self.shift = Self::INITIAL_SHIFT;
+        self.timer.counter = 0;
+    }
+
     /// Enable or disable length counter from $4015.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.length.set_enabled(enabled);
@@ -236,6 +244,21 @@ mod tests {
         noise.write_length(0x08);
 
         assert_eq!(noise.shift, 0x2345);
+    }
+
+    #[test]
+    fn explicit_retrigger_reseeds_without_changing_mode_or_period() {
+        let mut noise = Noise::new();
+        noise.write_timer(0x87);
+        noise.shift = 0x2345;
+        noise.timer.counter = 3;
+
+        noise.retrigger();
+
+        assert_eq!(noise.shift, Noise::INITIAL_SHIFT);
+        assert_eq!(noise.timer.counter, 0);
+        assert_eq!(noise.period_index, 7);
+        assert_eq!(noise.shift_mode, ShiftMode::One);
     }
 
     #[test]

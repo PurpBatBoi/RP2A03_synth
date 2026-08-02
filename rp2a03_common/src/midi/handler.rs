@@ -278,7 +278,12 @@ impl MidiHandler {
                     }
                 }
                 AnyChannel::Triangle(t) => t.write_linear_counter(0xFF),
-                AnyChannel::Noise(n) => n.write_length(0xF8),
+                AnyChannel::Noise(n) => {
+                    if reset_phase {
+                        n.retrigger();
+                    }
+                    n.write_length(0xF8);
+                }
             }
 
             if reset_phase {
