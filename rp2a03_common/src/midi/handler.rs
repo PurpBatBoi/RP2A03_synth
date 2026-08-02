@@ -98,6 +98,10 @@ pub struct MidiHandler {
     pub fine_pitch: i8,
     /// MIDI CC 15 (Hi-pitch offset, -64..+63 coarse high-period offset)
     pub hi_pitch: i8,
+    /// Host-automated MIDI-style pitch bend (-8192..=8191).
+    pub pitch_slide: i16,
+    /// Host-automated pitch-bend range in semitones (0..=24).
+    pub pitch_slide_range: u8,
     /// Host-controlled 4-bit APU volume, applied before MIDI CC 7 and velocity.
     pub hardware_volume: u8,
     /// Last host parameter values applied to this handler.
@@ -187,6 +191,8 @@ impl Default for MidiHandler {
             current_velocity: 127,
             fine_pitch: 0,
             hi_pitch: 0,
+            pitch_slide: 0,
+            pitch_slide_range: 2,
             hardware_volume: 15,
             last_host_controls: None,
             active_note: 60,
@@ -326,6 +332,14 @@ impl MidiHandler {
         }
         if self.last_host_controls.is_none() || controls.hi_pitch != previous.hi_pitch {
             self.hi_pitch = controls.hi_pitch.clamp(-64, 63);
+        }
+        if self.last_host_controls.is_none() || controls.pitch_slide != previous.pitch_slide {
+            self.pitch_slide = controls.pitch_slide.clamp(-8192, 8191);
+        }
+        if self.last_host_controls.is_none()
+            || controls.pitch_slide_range != previous.pitch_slide_range
+        {
+            self.pitch_slide_range = controls.pitch_slide_range.min(24);
         }
         if self.last_host_controls.is_none() || controls.step_time_hz != previous.step_time_hz {
             self.step_time_hz = controls.step_time_hz.clamp(1, 600);
@@ -692,9 +706,19 @@ impl MidiHandler {
         let hi_pitch_offset = (self.hi_pitch as i32) << 4;
         let vibrato_delta = self.lfo.vibrato_pitch_delta() as i32;
 
-        let final_period =
-            (self.macro_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta)
-                .clamp(0, self.max_macro_period());
+        // Pitch Slide is deliberately separate from Pitch and Hi-Pitch. Those
+        // controls are raw APU-period offsets used by the existing sequence and
+        // MIDI-CC behavior; this control is a conventional musical pitch bend.
+        // The APU period is proportional to 1/frequency, so apply the bend in
+        // frequency space rather than adding a fixed period offset.
+        let bend_semitones =
+            self.pitch_slide as f32 / 8192.0 * self.pitch_slide_range as f32;
+        let bend_ratio = 2.0_f32.powf(bend_semitones / 12.0);
+        let slide_period = (((self.macro_period as f32 + 0.5) / bend_ratio) - 0.5).round()
+            as i32;
+
+        let final_period = (slide_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta)
+            .clamp(0, self.max_macro_period());
 
         // Triangle octave parity — see fn docs. Halving the composed period keeps
         // `macro_period` in the pulse domain while the triangle plays the

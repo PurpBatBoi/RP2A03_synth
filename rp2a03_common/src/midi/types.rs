@@ -111,6 +111,10 @@ pub struct HostAutomationControls {
     pub hardware_volume: u8,
     pub fine_pitch: i8,
     pub hi_pitch: i8,
+    /// MIDI-style bipolar pitch bend value (-8192..=8191).
+    pub pitch_slide: i16,
+    /// Pitch-bend range in semitones (0..=24).
+    pub pitch_slide_range: u8,
     pub step_time_hz: u16,
     pub portamento_enabled: bool,
     pub portamento_speed: u8,
@@ -126,6 +130,8 @@ impl Default for HostAutomationControls {
             hardware_volume: 15,
             fine_pitch: 0,
             hi_pitch: 0,
+            pitch_slide: 0,
+            pitch_slide_range: 2,
             step_time_hz: 60,
             portamento_enabled: false,
             portamento_speed: 0,

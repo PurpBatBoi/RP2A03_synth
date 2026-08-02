@@ -61,6 +61,8 @@ fn host_automation_controls_update_the_matching_synth_controls() {
         hardware_volume: 11,
         fine_pitch: -24,
         hi_pitch: 5,
+        pitch_slide: 2048,
+        pitch_slide_range: 2,
         step_time_hz: 120,
         portamento_enabled: true,
         portamento_speed: 42,
@@ -75,6 +77,8 @@ fn host_automation_controls_update_the_matching_synth_controls() {
     assert_eq!(handler.portamento_speed, 42);
     assert_eq!(handler.fine_pitch, -24);
     assert_eq!(handler.hi_pitch, 5);
+    assert_eq!(handler.pitch_slide, 2048);
+    assert_eq!(handler.pitch_slide_range, 2);
     assert_eq!(handler.step_time_hz, 120);
 }
 
@@ -961,4 +965,70 @@ fn hi_pitch_host_automation_offsets_period() {
     let expected_period = (base_period - 32) as u16;
     let written_period = ((handler.prev_timer_hi as u16) << 8) | (handler.prev_timer_lo as u16);
     assert_eq!(written_period, expected_period);
+}
+
+#[test]
+fn pitch_slide_is_independent_and_centered() {
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    let seqs = default_seqs();
+
+    handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    let base_period = handler.macro_period;
+
+    handler.apply_host_automation(HostAutomationControls {
+        pitch_slide: 0,
+        ..HostAutomationControls::default()
+    });
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    let centered_period = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
+    assert_eq!(centered_period, base_period as u16);
+
+    handler.apply_host_automation(HostAutomationControls {
+        fine_pitch: 7,
+        hi_pitch: 2,
+        pitch_slide: 0,
+        ..HostAutomationControls::default()
+    });
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    let period_with_existing_controls =
+        ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
+    assert_eq!(period_with_existing_controls, (base_period - 7 - (2 << 4)) as u16);
+
+    handler.apply_host_automation(HostAutomationControls {
+        pitch_slide: 8191,
+        ..HostAutomationControls::default()
+    });
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    let raised_period = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
+    assert!(raised_period < base_period as u16);
+}
+
+#[test]
+fn pitch_slide_range_is_host_adjustable_up_to_two_octaves() {
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    let seqs = default_seqs();
+
+    handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    let base_period = handler.macro_period;
+
+    handler.apply_host_automation(HostAutomationControls {
+        pitch_slide: 8191,
+        pitch_slide_range: 24,
+        ..HostAutomationControls::default()
+    });
+    assert_eq!(handler.pitch_slide_range, 24);
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    let raised_period = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
+    assert!(raised_period <= base_period as u16 / 4);
+
+    handler.apply_host_automation(HostAutomationControls {
+        pitch_slide: 8191,
+        pitch_slide_range: 127,
+        ..HostAutomationControls::default()
+    });
+    assert_eq!(handler.pitch_slide_range, 24);
 }

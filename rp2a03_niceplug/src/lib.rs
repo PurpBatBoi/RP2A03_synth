@@ -152,6 +152,10 @@ struct Rp2a03Params {
     pub fine_pitch: IntParam,
     #[id = "hi_pitch"]
     pub hi_pitch: IntParam,
+    #[id = "pitch_slide"]
+    pub pitch_slide: IntParam,
+    #[id = "pitch_slide_range"]
+    pub pitch_slide_range: IntParam,
     #[id = "step_time"]
     pub step_time: IntParam,
     #[id = "waveform"]
@@ -204,6 +208,19 @@ impl Default for Rp2a03Params {
             hardware_volume: IntParam::new("HW Volume", 15, IntRange::Linear { min: 0, max: 15 }),
             fine_pitch: IntParam::new("Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
             hi_pitch: IntParam::new("Hi-Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
+            pitch_slide: IntParam::new(
+                "Pitch Slide",
+                0,
+                IntRange::Linear {
+                    min: -8192,
+                    max: 8191,
+                },
+            ),
+            pitch_slide_range: IntParam::new(
+                "Pitch Slide Range",
+                2,
+                IntRange::Linear { min: 0, max: 24 },
+            ),
             step_time: IntParam::new("Step Time", 60, IntRange::Linear { min: 1, max: 600 }),
             waveform: IntParam::new("Waveform", 0, IntRange::Linear { min: 0, max: 2 }),
             polyphony: BoolParam::new("Polyphony", false),
@@ -493,6 +510,8 @@ impl Rp2a03Plugin {
             hardware_volume: self.params.hardware_volume.value() as u8,
             fine_pitch: self.params.fine_pitch.value() as i8,
             hi_pitch: self.params.hi_pitch.value() as i8,
+            pitch_slide: self.params.pitch_slide.value() as i16,
+            pitch_slide_range: self.params.pitch_slide_range.value() as u8,
             step_time_hz: self.params.step_time.value() as u16,
             portamento_enabled: self.params.portamento_enabled.value(),
             portamento_speed: self.params.portamento_speed.value() as u8,
