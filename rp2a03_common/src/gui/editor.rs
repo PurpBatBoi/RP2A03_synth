@@ -199,6 +199,11 @@ fn draw_header(
                             .clicked()
                         {
                             let new_mode = ChannelMode::Noise;
+                            // Fine pitch is not an NES noise-channel control. Keep the
+                            // editor on a supported tab when switching into Noise.
+                            if data.selected_tab == 2 {
+                                data.selected_tab = 0;
+                            }
                             data.channel_mode = new_mode;
                             *changed_channel_mode = Some(new_mode);
                         }
@@ -301,7 +306,8 @@ fn draw_instrument_settings_panel(
                 for &(name, tab) in seq_types {
                     let is_duty = tab == 4;
                     let is_triangle = data.channel_mode == ChannelMode::Triangle;
-                    let enabled = !(is_duty && is_triangle);
+                    let is_noise_pitch = tab == 2 && data.channel_mode == ChannelMode::Noise;
+                    let enabled = !(is_duty && is_triangle) && !is_noise_pitch;
 
                     ui.add_enabled(
                         enabled,
@@ -623,6 +629,12 @@ pub fn render_editor_ui(
     ui.set_min_height(ui.available_height());
 
     data.set_all_selected_sequence_indices(shared_sequence_index);
+
+    // Noise has no fine-pitch control. This also handles channel changes made
+    // through host automation rather than through the editor combobox.
+    if data.channel_mode == ChannelMode::Noise && data.selected_tab == 2 {
+        data.selected_tab = 0;
+    }
 
     let mut changed_sequence_index = None;
     let mut changed_step_time_hz = None;

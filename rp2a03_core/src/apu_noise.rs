@@ -45,6 +45,11 @@ impl Default for Noise {
 }
 
 impl Noise {
+    /// FamiStudio's bundled NesSndEmu starts the noise generator from this
+    /// deterministic non-zero seed. The LFSR is not reset when a note writes
+    /// $400F; only the length counter and envelope are retriggered.
+    pub const INITIAL_SHIFT: u16 = 4141;
+
     pub const PERIOD_TABLE_NTSC: [u16; 16] = [
         4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068,
     ];
@@ -56,7 +61,7 @@ impl Noise {
         Self {
             period_index: 0,
             timer: Timer::new(Self::PERIOD_TABLE_NTSC[0] - 1),
-            shift: 1, // defaults to 1 on power up
+            shift: Self::INITIAL_SHIFT,
             shift_mode: ShiftMode::Zero,
             length: LengthCounter::new(),
             envelope: Envelope::new(),
@@ -164,7 +169,7 @@ impl Noise {
     pub fn reset(&mut self) {
         self.period_index = 0;
         self.timer = Timer::new(Self::PERIOD_TABLE_NTSC[0] - 1);
-        self.shift = 1;
+        self.shift = Self::INITIAL_SHIFT;
         self.shift_mode = ShiftMode::Zero;
         self.length.reset();
         self.envelope.reset();
@@ -183,7 +188,7 @@ mod tests {
     #[test]
     fn new_noise_initial_state() {
         let noise = Noise::new();
-        assert_eq!(noise.shift, 1);
+        assert_eq!(noise.shift, Noise::INITIAL_SHIFT);
         assert_eq!(noise.shift_mode, ShiftMode::Zero);
         assert!(!noise.silent());
         assert_eq!(noise.period_index, 0);
@@ -221,6 +226,16 @@ mod tests {
         // Clock quarter frame so envelope processes restart -> sets counter to 15
         noise.clock_quarter_frame();
         assert_eq!(noise.volume(), 15);
+    }
+
+    #[test]
+    fn note_trigger_does_not_reset_lfsr_state() {
+        let mut noise = Noise::new();
+        noise.set_enabled(true);
+        noise.shift = 0x2345;
+        noise.write_length(0x08);
+
+        assert_eq!(noise.shift, 0x2345);
     }
 
     #[test]
@@ -288,7 +303,7 @@ mod tests {
 
         noise.reset();
 
-        assert_eq!(noise.shift, 1);
+        assert_eq!(noise.shift, Noise::INITIAL_SHIFT);
         assert_eq!(noise.shift_mode, ShiftMode::Zero);
         assert_eq!(noise.period_index, 0);
         assert!(!noise.silent());
