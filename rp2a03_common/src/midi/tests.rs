@@ -695,18 +695,22 @@ fn releasing_top_note_returns_to_previously_held_note() {
         "sequences should restart on new note"
     );
 
+    // Let the newly active note advance before releasing it.
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    assert_eq!(handler.vol_seq_player.value(), 12);
+
     // Release D5 while C5 is still held
     handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs);
 
-    // Should switch back to C5 and retrigger sequences
+    // Should switch back to C5 without retriggering the envelopes
     assert_eq!(
         handler.active_note, 72,
         "active note should return to C5 (72) after releasing D5"
     );
     assert_eq!(
         handler.vol_seq_player.value(),
-        15,
-        "volume sequence should retrigger for the restored note"
+        12,
+        "volume sequence should stay at its current step for the restored note"
     );
     assert!(handler.gate, "gate should remain on while C5 is still held");
 }
@@ -779,8 +783,8 @@ fn releasing_top_note_restarts_frame_counter() {
 }
 
 #[test]
-fn releasing_top_note_restarts_pitch_sequences_for_held_note() {
-    // Verify that pitch/arp/hipitch sequences also retrigger when returning
+fn releasing_top_note_preserves_pitch_sequence_step_for_held_note() {
+    // Verify that the pitch sequence keeps its current step when returning
     // to a held note.
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
@@ -805,17 +809,22 @@ fn releasing_top_note_restarts_pitch_sequences_for_held_note() {
     handler.note_on(74, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     assert_eq!(handler.macro_period, base_d5 + 1); // pitch step 0 = 1
 
+    // Advance to the next pitch step while D5 is active.
+    let mut triangle = Triangle::new();
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    assert_eq!(handler.pitch_seq_player.value(), 2);
+
     // Release D5 → should retrigger for C5
     handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     assert_eq!(
         handler.macro_period,
-        base_c5 + 1,
-        "macro_period should be C5's base period + pitch step 0"
+        base_c5 + 2,
+        "macro_period should use C5's base period + the current pitch step"
     );
     assert_eq!(
         handler.pitch_seq_player.value(),
-        1,
-        "pitch sequence should be at step 0"
+        2,
+        "pitch sequence should stay at its current step"
     );
 }
 

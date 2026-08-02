@@ -144,11 +144,10 @@ impl MidiHandler {
             }
         } else {
             // Still notes in the stack — switch back to the previous note.
-            // Retrigger sequences and recalculate macro_period so the sound
-            // returns to the held note, just like dnFamiTracker's RunNote does
-            // when the top note is released and a lower note is still held.
+            // Keep sequence players at their current positions while
+            // recalculating macro_period for the restored note. Returning to a
+            // held note is a legato change, not a new envelope trigger.
             let previous_period = self.macro_period;
-            self.trigger_sequences(seqs);
             self.apply_top_note(channel, false);
             self.recalculate_macro_period(seqs);
             let target_period = self.macro_period;
@@ -159,7 +158,7 @@ impl MidiHandler {
 
     /// Trigger all enabled sequence players (restart from step 0).
     ///
-    /// Called on NoteOn and when restoring a held note after the top note is released.
+    /// Called when a genuinely new note is pressed.
     fn trigger_sequences(&mut self, seqs: &ActiveSequences) {
         if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
             self.vol_seq_player.trigger(&seqs.vol_seq);

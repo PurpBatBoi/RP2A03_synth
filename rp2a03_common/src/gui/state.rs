@@ -41,6 +41,11 @@ impl SequencePlayheads {
 pub struct SequenceSlot {
     pub text: String,
     pub sequence: Sequence,
+    /// Whether this envelope editor is enabled for this numbered sequence.
+    ///
+    /// This belongs to the slot rather than the envelope-type bank so changing
+    /// sequence indexes does not carry the previous index's enabled state over.
+    enabled: bool,
 }
 
 /// The complete set of sequences available to one envelope type.
@@ -88,7 +93,6 @@ pub struct SharedSequences {
     pub portamento_speed: i32,
     sequence_indices: [usize; SEQUENCE_TYPE_COUNT],
     sequence_banks: [SequenceBank; SEQUENCE_TYPE_COUNT],
-    enabled: [bool; SEQUENCE_TYPE_COUNT],
 }
 
 impl Default for SharedSequences {
@@ -102,7 +106,6 @@ impl Default for SharedSequences {
             portamento_speed: 0,
             sequence_indices: [0; SEQUENCE_TYPE_COUNT],
             sequence_banks: std::array::from_fn(|_| SequenceBank::default()),
-            enabled: [false; SEQUENCE_TYPE_COUNT],
         }
     }
 }
@@ -143,11 +146,16 @@ impl SharedSequences {
     }
 
     pub fn sequence_enabled(&self, tab: usize) -> bool {
-        self.enabled[Self::tab_index(tab)]
+        let tab = Self::tab_index(tab);
+        self.sequence_banks[tab]
+            .slot(self.sequence_indices[tab])
+            .enabled
     }
 
     pub fn sequence_enabled_mut(&mut self, tab: usize) -> &mut bool {
-        &mut self.enabled[Self::tab_index(tab)]
+        let tab = Self::tab_index(tab);
+        let index = self.sequence_indices[tab];
+        &mut self.sequence_banks[tab].slot_mut(index).enabled
     }
 }
 
@@ -190,5 +198,20 @@ mod tests {
         for tab in 0..SEQUENCE_TYPE_COUNT {
             assert_eq!(state.selected_sequence_index(tab), 42);
         }
+    }
+
+    #[test]
+    fn enabled_state_belongs_to_each_numbered_sequence_slot() {
+        let mut state = SharedSequences::default();
+
+        *state.sequence_enabled_mut(0) = true;
+        state.set_selected_sequence_index(0, 1);
+        assert!(!state.sequence_enabled(0));
+
+        *state.sequence_enabled_mut(0) = true;
+        state.set_selected_sequence_index(0, 0);
+        assert!(state.sequence_enabled(0));
+        state.set_selected_sequence_index(0, 1);
+        assert!(state.sequence_enabled(0));
     }
 }
