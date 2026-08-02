@@ -21,6 +21,7 @@ use std::time::Duration;
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
 const MAX_VOICES: usize = 8;
+const ALLOCATION_RAMP_CLOCKS: u32 = 2048;
 
 struct Voice {
     pulse: Pulse,
@@ -29,6 +30,7 @@ struct Voice {
     blip: BlipBuf,
     last_output: i32,
     last_triangle_output: i32,
+    allocation_ramp_clocks: u32,
     alloc_id: u64,
 }
 
@@ -47,6 +49,7 @@ impl Voice {
             blip,
             last_output: 0,
             last_triangle_output: 0,
+            allocation_ramp_clocks: 0,
             alloc_id: 0,
         }
     }
@@ -61,6 +64,7 @@ impl Voice {
         self.blip.clear();
         self.last_output = 0;
         self.last_triangle_output = 0;
+        self.allocation_ramp_clocks = 0;
     }
 
     /// Reset synthesis state for voice allocation while preserving the previous
@@ -82,6 +86,7 @@ impl Voice {
         self.midi_handler.reset();
         self.last_output = previous_output;
         self.last_triangle_output = previous_triangle_output;
+        self.allocation_ramp_clocks = ALLOCATION_RAMP_CLOCKS;
     }
 }
 
@@ -231,7 +236,29 @@ impl Rp2a03Plugin {
                     }
                 };
                 let previous_output = voice.last_output;
-                voice.last_output = (voice_output as f32 * gain) as i32;
+                let target_output = (voice_output as f32 * gain) as i32;
+                if voice.midi_handler.channel_mode != ChannelMode::Triangle {
+                    voice.allocation_ramp_clocks = 0;
+                }
+                if voice.allocation_ramp_clocks > 0 {
+                    // A recycled voice may still be holding the previous note's
+                    // level in BlipBuf. Chase the new triangle output over a short
+                    // APU-clock ramp instead of submitting one large allocation
+                    // delta at clock zero.
+                    let remaining = voice.allocation_ramp_clocks;
+                    let difference = target_output - previous_output;
+                    let step = if difference == 0 {
+                        0
+                    } else {
+                        let magnitude = (difference.unsigned_abs() / remaining)
+                            + u32::from(!difference.unsigned_abs().is_multiple_of(remaining));
+                        difference.signum() * magnitude.min(i32::MAX as u32) as i32
+                    };
+                    voice.last_output = previous_output + step;
+                    voice.allocation_ramp_clocks -= 1;
+                } else {
+                    voice.last_output = target_output;
+                }
                 let delta = voice.last_output - previous_output;
                 if delta != 0 {
                     voice.blip.add_delta(clock, delta);
