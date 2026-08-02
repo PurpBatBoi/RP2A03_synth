@@ -2,13 +2,13 @@
 //! MIDI/NoteEvent ingestion: NoteOn/NoteOff handling, CC dispatch, and the
 //! trigger-time macro-period computation performed on NoteOn.
 
+use super::handler::{AnyChannel, MidiHandler};
+use super::types::{ActiveSequences, ChannelMode};
 use nice_plug::prelude::*;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode};
 use rp2a03_core::software_lfo::DEFAULT_LFO_SPEED;
-use super::handler::{AnyChannel, MidiHandler};
-use super::types::{ActiveSequences, ChannelMode};
 
 impl MidiHandler {
     /// Process an incoming MIDI / Note event.
@@ -71,7 +71,19 @@ impl MidiHandler {
 
     /// Handle NoteOff event.
     pub fn note_off(&mut self, note: u8, channel: &mut AnyChannel, seqs: &ActiveSequences) {
+        let had_note = self
+            .note_stack
+            .iter()
+            .any(|(held_note, _)| *held_note == note);
         self.note_stack.retain(|(n, _)| *n != note);
+
+        // Polyphonic dispatch broadcasts NoteOff events to every voice. A voice
+        // that was not playing this note must remain completely unchanged;
+        // otherwise its remaining note would be treated as a restored mono note
+        // and its envelopes/LFO would be retriggered.
+        if !had_note {
+            return;
+        }
 
         if self.note_stack.is_empty() {
             let has_vol_rel = seqs.vol_enabled
@@ -163,8 +175,7 @@ impl MidiHandler {
                 ArpMode::Relative => {
                     // dn: SetNote(BaseNote + step0) then SetPeriod(TriggerNote(BaseNote))
                     let step0 = self.arp_seq_player.value();
-                    self.active_note =
-                        (self.active_note as i16 + step0).clamp(0, 127) as u8;
+                    self.active_note = (self.active_note as i16 + step0).clamp(0, 127) as u8;
                     self.macro_period = self.note_period(0);
                 }
             }

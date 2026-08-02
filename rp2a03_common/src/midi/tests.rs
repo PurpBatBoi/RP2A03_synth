@@ -1,13 +1,13 @@
 //! rp2a03_common\src\midi\tests.rs
 //! Tests for `MidiHandler` and its sequence/pitch/envelope processing.
 
+use super::handler::AnyChannel;
 use super::*;
 use nice_plug::prelude::*;
+use rp2a03_core::NTSC_CPU_CLOCK;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, Sequence};
-use rp2a03_core::NTSC_CPU_CLOCK;
-use super::handler::AnyChannel;
 
 fn default_seqs() -> ActiveSequences {
     ActiveSequences {
@@ -70,14 +70,21 @@ fn triangle_channel_produces_non_zero_output_on_note_on() {
     triangle.clock();
 
     assert!(!triangle.is_muted());
-    assert!(triangle.output() > 0.0, "Triangle output should be non-zero after note trigger and clock, got {}", triangle.output());
+    assert!(
+        triangle.output() > 0.0,
+        "Triangle output should be non-zero after note trigger and clock, got {}",
+        triangle.output()
+    );
 
     // Clock the triangle timer and verify that sequence steps
     let initial_step = triangle.sequence;
     for _ in 0..1000 {
         triangle.clock();
     }
-    assert_ne!(triangle.sequence, initial_step, "Triangle sequencer step should advance when clocked");
+    assert_ne!(
+        triangle.sequence, initial_step,
+        "Triangle sequencer step should advance when clocked"
+    );
 }
 
 #[test]
@@ -619,14 +626,25 @@ fn releasing_top_note_returns_to_previously_held_note() {
     // Press D5 (MIDI 74) while still holding C5
     handler.note_on(74, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     assert_eq!(handler.active_note, 74);
-    assert_eq!(handler.vol_seq_player.value(), 15, "sequences should restart on new note");
+    assert_eq!(
+        handler.vol_seq_player.value(),
+        15,
+        "sequences should restart on new note"
+    );
 
     // Release D5 while C5 is still held
     handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs);
 
     // Should switch back to C5 and retrigger sequences
-    assert_eq!(handler.active_note, 72, "active note should return to C5 (72) after releasing D5");
-    assert_eq!(handler.vol_seq_player.value(), 15, "volume sequence should retrigger for the restored note");
+    assert_eq!(
+        handler.active_note, 72,
+        "active note should return to C5 (72) after releasing D5"
+    );
+    assert_eq!(
+        handler.vol_seq_player.value(),
+        15,
+        "volume sequence should retrigger for the restored note"
+    );
     assert!(handler.gate, "gate should remain on while C5 is still held");
 }
 
@@ -690,7 +708,11 @@ fn releasing_top_note_restarts_frame_counter() {
         735,
         "frame_sample_counter should reset so the restored note gets a full attack step"
     );
-    assert_eq!(handler.vol_seq_player.value(), 15, "volume should be at step 0");
+    assert_eq!(
+        handler.vol_seq_player.value(),
+        15,
+        "volume should be at step 0"
+    );
 }
 
 #[test]
@@ -748,10 +770,16 @@ fn three_note_stack_returns_to_second_note_on_release() {
     assert_eq!(handler.active_note, 76);
 
     handler.note_off(76, &mut AnyChannel::Pulse(&mut pulse), &seqs); // release E5
-    assert_eq!(handler.active_note, 74, "should return to D5 after releasing E5");
+    assert_eq!(
+        handler.active_note, 74,
+        "should return to D5 after releasing E5"
+    );
 
     handler.note_off(74, &mut AnyChannel::Pulse(&mut pulse), &seqs); // release D5
-    assert_eq!(handler.active_note, 72, "should return to C5 after releasing D5");
+    assert_eq!(
+        handler.active_note, 72,
+        "should return to C5 after releasing D5"
+    );
 }
 
 #[test]
@@ -780,11 +808,41 @@ fn note_on_duplicate_note_retrigger_does_not_corrupt_stack() {
 
     handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     handler.note_on(60, 80, &mut AnyChannel::Pulse(&mut pulse), &seqs);
-    assert_eq!(handler.note_stack.len(), 1, "duplicate note should not be duplicated");
-    assert_eq!(handler.current_velocity, 80, "velocity should update to latest");
+    assert_eq!(
+        handler.note_stack.len(),
+        1,
+        "duplicate note should not be duplicated"
+    );
+    assert_eq!(
+        handler.current_velocity, 80,
+        "velocity should update to latest"
+    );
 
     handler.note_off(60, &mut AnyChannel::Pulse(&mut pulse), &seqs);
-    assert!(!handler.gate, "gate should be off after releasing the only note");
+    assert!(
+        !handler.gate,
+        "gate should be off after releasing the only note"
+    );
+}
+
+#[test]
+fn note_off_for_another_voice_does_not_retrigger_this_voice() {
+    let seqs = default_seqs();
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    pulse.set_enabled(true);
+
+    handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    handler.advance_frame_samples(&seqs, 44_100.0, 300);
+    let frame_counter_before = handler.frame_sample_counter;
+    let sequence_position_before = handler.vol_seq_player.pos;
+
+    handler.note_off(62, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+
+    assert_eq!(handler.frame_sample_counter, frame_counter_before);
+    assert_eq!(handler.vol_seq_player.pos, sequence_position_before);
+    assert_eq!(handler.active_note, 60);
+    assert!(handler.gate);
 }
 
 #[test]
