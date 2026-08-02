@@ -379,7 +379,7 @@ fn draw_instrument_settings_panel(
                     if ui
                         .add(
                             egui::DragValue::new(&mut data.max_voices)
-                                .range(1..=24)
+                                .range(1..=8)
                                 .suffix(" voices"),
                         )
                         .changed()

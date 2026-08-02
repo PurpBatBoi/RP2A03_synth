@@ -82,7 +82,7 @@ pub struct SharedSequences {
     pub channel_mode: ChannelMode,
     /// Whether the plugin should allocate more than one internal voice.
     pub polyphony: bool,
-    /// Maximum number of internal voices to allocate (1..=24).
+    /// Maximum number of internal voices to allocate (1..=8).
     pub max_voices: i32,
     sequence_indices: [usize; SEQUENCE_TYPE_COUNT],
     sequence_banks: [SequenceBank; SEQUENCE_TYPE_COUNT],

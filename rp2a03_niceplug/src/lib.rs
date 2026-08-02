@@ -20,12 +20,13 @@ use std::time::Duration;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
-const MAX_VOICES: usize = 24;
+const MAX_VOICES: usize = 8;
 
 struct Voice {
     pulse: Pulse,
     triangle: Triangle,
     midi_handler: MidiHandler,
+    blip: BlipBuf,
     last_output: i32,
     last_triangle_output: i32,
     alloc_id: u64,
@@ -37,10 +38,13 @@ impl Voice {
         pulse.set_enabled(true);
         let mut triangle = Triangle::new();
         triangle.set_enabled(true);
+        let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE);
+        blip.set_rates(NTSC_CPU_CLOCK, 44100.0);
         Self {
             pulse,
             triangle,
             midi_handler: MidiHandler::new(),
+            blip,
             last_output: 0,
             last_triangle_output: 0,
             alloc_id: 0,
@@ -54,7 +58,23 @@ impl Voice {
         self.triangle.reset();
         self.triangle.set_enabled(true);
         self.midi_handler.reset();
+        self.blip.clear();
         self.last_output = 0;
+        self.last_triangle_output = 0;
+    }
+
+    /// Reset synthesis state for voice allocation while preserving the previous
+    /// output level. The next BlipBuf delta then transitions from the old note
+    /// to the new note instead of introducing an artificial zero-level click.
+    fn reset_for_allocation(&mut self) {
+        let previous_output = self.last_output;
+        self.pulse.reset();
+        self.pulse.set_enabled(true);
+        self.pulse.write_sweep(0x08);
+        self.triangle.reset();
+        self.triangle.set_enabled(true);
+        self.midi_handler.reset();
+        self.last_output = previous_output;
         self.last_triangle_output = 0;
     }
 }
@@ -62,10 +82,10 @@ impl Voice {
 pub struct Rp2a03Plugin {
     params: Arc<Rp2a03Params>,
     voices: Vec<Voice>,
-    blip: BlipBuf,
     sample_rate: f32,
     alloc_counter: u64,
     last_active_voice_count: usize,
+    sample_scratch: Vec<i16>,
     /// Program Change selection remains active until the host changes the Index parameter.
     midi_program_index: Option<usize>,
     last_sequence_parameter: i32,
@@ -108,16 +128,13 @@ struct Rp2a03Params {
 
 impl Default for Rp2a03Plugin {
     fn default() -> Self {
-        let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE);
-        blip.set_rates(NTSC_CPU_CLOCK, 44100.0);
-
         Self {
             params: Arc::new(Rp2a03Params::default()),
             voices: (0..MAX_VOICES).map(|_| Voice::new()).collect(),
-            blip,
             sample_rate: 44100.0,
             alloc_counter: 0,
             last_active_voice_count: 1,
+            sample_scratch: Vec::new(),
             midi_program_index: None,
             last_sequence_parameter: 0,
             shared_sequences: Arc::new(Mutex::new(SharedSequences::default())),
@@ -150,7 +167,7 @@ impl Default for Rp2a03Params {
             step_time: IntParam::new("Step Time", 60, IntRange::Linear { min: 1, max: 600 }),
             waveform: IntParam::new("Waveform", 0, IntRange::Linear { min: 0, max: 1 }),
             polyphony: BoolParam::new("Polyphony", false),
-            max_voices: IntParam::new("Max Voices", 8, IntRange::Linear { min: 1, max: 24 }),
+            max_voices: IntParam::new("Max Voices", 8, IntRange::Linear { min: 1, max: 8 }),
         }
     }
 }
@@ -175,14 +192,9 @@ impl Rp2a03Plugin {
             return;
         }
 
-        let clocks_needed = self.blip.clocks_needed(sample_count);
-        let mut previous_output: i32 = self.voices[..active_voice_count]
-            .iter()
-            .map(|voice| voice.last_output)
-            .sum();
+        let clocks_needed = self.voices[0].blip.clocks_needed(sample_count);
 
         for clock in 0..clocks_needed {
-            let mut current_output = 0i32;
             for (voice, gain) in self.voices[..active_voice_count]
                 .iter_mut()
                 .zip(master_gains.iter().copied())
@@ -212,24 +224,38 @@ impl Rp2a03Plugin {
                         }
                     }
                 };
+                let previous_output = voice.last_output;
                 voice.last_output = (voice_output as f32 * gain) as i32;
-                current_output += voice.last_output;
-            }
-
-            let delta = current_output - previous_output;
-            if delta != 0 {
-                self.blip.add_delta(clock, delta);
-                previous_output = current_output;
+                let delta = voice.last_output - previous_output;
+                if delta != 0 {
+                    voice.blip.add_delta(clock, delta);
+                }
             }
         }
 
-        self.blip.end_frame(clocks_needed);
+        for voice in &mut self.voices[..active_voice_count] {
+            voice.blip.end_frame(clocks_needed);
+        }
 
-        let mut buf_i16 = vec![0i16; sample_count as usize];
-        self.blip.read_samples(&mut buf_i16, false);
-
-        for (i, sample) in buf_i16.iter().enumerate() {
-            output[i] = (*sample as f32 / 32768.0).clamp(-1.0, 1.0);
+        self.sample_scratch.resize(output.len(), 0);
+        output.fill(0.0);
+        let mix_gain = if active_voice_count > 1 {
+            1.0 / active_voice_count as f32
+        } else {
+            1.0
+        };
+        for voice in &mut self.voices[..active_voice_count] {
+            self.sample_scratch.fill(0);
+            let samples_read = voice.blip.read_samples(&mut self.sample_scratch, false);
+            for (out, sample) in output[..samples_read]
+                .iter_mut()
+                .zip(self.sample_scratch[..samples_read].iter())
+            {
+                *out += (*sample as f32 / 32768.0) * mix_gain;
+            }
+        }
+        for sample in output.iter_mut() {
+            *sample = sample.clamp(-1.0, 1.0);
         }
     }
 
@@ -305,7 +331,7 @@ impl Rp2a03Plugin {
                     .unwrap_or(0)
             });
 
-        self.voices[index].reset();
+        self.voices[index].reset_for_allocation();
         self.alloc_counter = self.alloc_counter.wrapping_add(1);
         self.voices[index].alloc_id = self.alloc_counter;
         index
@@ -534,10 +560,10 @@ impl Plugin for Rp2a03Plugin {
         _context: &mut impl InitContext<Self>,
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
-        self.blip = BlipBuf::new(BLIP_BUFFER_SIZE);
-        self.blip
-            .set_rates(NTSC_CPU_CLOCK, buffer_config.sample_rate as f64);
         for voice in &mut self.voices {
+            voice
+                .blip
+                .set_rates(NTSC_CPU_CLOCK, buffer_config.sample_rate as f64);
             voice.reset();
             voice.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
         }
@@ -554,7 +580,6 @@ impl Plugin for Rp2a03Plugin {
             voice.reset();
             voice.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
         }
-        self.blip.clear();
         self.alloc_counter = 0;
         self.last_active_voice_count = 1;
         self.midi_program_index = None;
@@ -582,17 +607,13 @@ impl Plugin for Rp2a03Plugin {
             let mut data = self.shared_sequences.lock();
             data.channel_mode = channel_mode;
             data.polyphony = self.params.polyphony.value();
-            data.max_voices = self.params.max_voices.value().clamp(1, 24);
+            data.max_voices = self.params.max_voices.value().clamp(1, 8);
         }
         let num_samples = buffer.samples();
         let active_voice_count = self.active_voice_count();
         if active_voice_count < self.last_active_voice_count {
             for voice in &mut self.voices[active_voice_count..self.last_active_voice_count] {
                 voice.reset();
-            }
-            self.blip.clear();
-            for voice in &mut self.voices[..active_voice_count] {
-                voice.last_output = 0;
             }
         }
         self.last_active_voice_count = active_voice_count;
