@@ -129,6 +129,15 @@ impl Noise {
         self.envelope.restart();
     }
 
+    /// Restart the deterministic noise attack without changing the selected
+    /// period or LFSR mode. The first shift after the retrigger still waits
+    /// for the full selected period, matching the FamiStudio timing model.
+    pub fn retrigger(&mut self) {
+        self.shift = Self::INITIAL_SHIFT;
+        self.timer.counter = 0;
+        self.timer_started = false;
+    }
+
     /// Enable or disable length counter from $4015.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.length.set_enabled(enabled);
@@ -268,16 +277,17 @@ mod tests {
     }
 
     #[test]
-    fn note_trigger_does_not_reseed_or_reset_timer() {
+    fn note_trigger_reseeds_without_changing_mode_or_period() {
         let mut noise = Noise::new();
         noise.write_timer(0x87);
         noise.shift = 0x2345;
         noise.timer.counter = 3;
 
-        noise.write_length(0xF8);
+        noise.retrigger();
 
-        assert_eq!(noise.shift, 0x2345);
-        assert_eq!(noise.timer.counter, 3);
+        assert_eq!(noise.shift, Noise::INITIAL_SHIFT);
+        assert_eq!(noise.timer.counter, 0);
+        assert!(!noise.timer_started);
         assert_eq!(noise.period_index, 7);
         assert_eq!(noise.shift_mode, ShiftMode::One);
     }
