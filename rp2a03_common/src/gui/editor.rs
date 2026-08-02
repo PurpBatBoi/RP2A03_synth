@@ -98,9 +98,7 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
 
 fn draw_header(ui: &mut egui::Ui, data: &mut SharedSequences, changed_channel_mode: &mut Option<ChannelMode>) {
     let mut polyphony = false;
-    let mut _legato = false;
-    let mut _portamento = false;
-    let mut _portamento_amount = 24u8;
+    let mut portamento = false;
 
     const HEADER_H: f32 = 92.0;
     const LOGO_W: f32 = 312.0;
@@ -201,42 +199,13 @@ fn draw_header(ui: &mut egui::Ui, data: &mut SharedSequences, changed_channel_mo
             |ui| {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut polyphony, "Polyphony");
-                    // ui.checkbox(&mut legato, "Legato");
-                    // ui.checkbox(&mut portamento, "Portamento");
+                    ui.checkbox(&mut portamento, "Portamento");
                 })
                 .response
             },
         );
 
         let _check_row_w = check_row.inner.rect.width();
-
-        //------------------------------------------------------
-        // Portamento knob
-        //------------------------------------------------------
-
-        // const CONTROL_W: f32 = 100.0;
-        // const CONTROL_H: f32 = 50.0;
-        // const CONTROL_GAP_FROM_ROW: f32 = 20.0;
-
-        // let control_x = controls_x + check_row_w + CONTROL_GAP_FROM_ROW;
-        // let control_top = CENTER_Y - CONTROL_H / 2.0;
-
-        // ui.scope_builder(
-        //     egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-        //         egui::pos2(origin.x + control_x, origin.y + control_top),
-        //         egui::vec2(CONTROL_W, CONTROL_H),
-        //     )),
-        //     |ui| {
-        //         ui.vertical_centered(|ui| {
-        //             ui.label("Portamento Amount");
-        //             ui.add(
-        //                 egui::DragValue::new(&mut portamento_amount)
-        //                     .range(0..=127)
-        //                     .speed(1.0),
-        //             );
-        //         });
-        //     },
-        // );
     });
 
     ui.add_space(12.0);
@@ -260,25 +229,14 @@ fn draw_instrument_settings_panel(
     step_time_hz: u32,
     changed_step_time_hz: &mut Option<i32>,
 ) {
-    // Show "Duty / Noise" tab only for Pulse mode.
-    let seq_types_pulse: [(&str, usize); 5] = [
+    // "Duty / Noise" tab is disabled for Triangle mode.
+    let seq_types: &[(&str, usize)] = &[
         ("Volume", 0),
         ("Arpeggio", 1),
         ("Pitch", 2),
         ("Hi-Pitch", 3),
         ("Duty / Noise", 4),
     ];
-    let seq_types_triangle: [(&str, usize); 4] = [
-        ("Volume", 0),
-        ("Arpeggio", 1),
-        ("Pitch", 2),
-        ("Hi-Pitch", 3),
-    ];
-    let seq_types: &[(&str, usize)] = if data.channel_mode == ChannelMode::Triangle {
-        &seq_types_triangle
-    } else {
-        &seq_types_pulse
-    };
 
     const PANEL_WIDTH: f32 = 180.0;
     const GROUP_GAP: f32 = 12.0;
@@ -311,10 +269,14 @@ fn draw_instrument_settings_panel(
                 ui.end_row();
 
                 for &(name, tab) in seq_types {
-                    ui.checkbox(data.sequence_enabled_mut(tab), "");
+                    let is_duty = tab == 4;
+                    let is_triangle = data.channel_mode == ChannelMode::Triangle;
+                    let enabled = !(is_duty && is_triangle);
+
+                    ui.add_enabled(enabled, egui::Checkbox::new(data.sequence_enabled_mut(tab), ""));
 
                     if ui
-                        .selectable_label(data.selected_tab == tab, name)
+                        .add_enabled(enabled, egui::Button::new(name).selected(data.selected_tab == tab))
                         .clicked()
                     {
                         if data.selected_tab != tab {
@@ -364,7 +326,7 @@ fn draw_instrument_settings_panel(
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(remaining),
         |ui| {
-            group_box(ui, "Step settings", |ui| {
+            group_box(ui, "Settings", |ui| {
                 // Fill the same width as Instrument settings.
                 ui.set_min_width(ui.available_width());
 
@@ -381,19 +343,34 @@ fn draw_instrument_settings_panel(
                 // Time controls
                 // -------------------------------------------------
                 ui.horizontal(|ui| {
-                    ui.label("Step Time:");
+                    ui.label("Engine Speed:");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut hz = step_time_hz as i32;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut hz)
+                                    .range(1..=600)
+                                    .suffix(" Hz"),
+                            )
+                            .changed()
+                        {
+                            *changed_step_time_hz = Some(hz);
+                        }
+                    });
+                });
 
-                    let mut hz = step_time_hz as i32;
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut hz)
-                                .range(1..=600)
-                                .suffix(" Hz"),
-                        )
-                        .changed()
-                    {
-                        *changed_step_time_hz = Some(hz);
-                    }
+                ui.horizontal(|ui| {
+                    ui.label("Polyphony:");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let _ = ui.button("knob");
+                    });
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Porta. Speed:");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let _ = ui.button("knob");
+                    });
                 });
             });
         },
