@@ -20,6 +20,9 @@ use std::time::Duration;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
+// Nominal synth-instance output calibration: 20*log10(0.39810717) = -8 dBFS.
+// This trims the final bus without changing per-voice, polyphony, or MIDI gain.
+const MASTER_OUTPUT_GAIN: f32 = 0.398_107_17;
 const MAX_VOICES: usize = 8;
 const ALLOCATION_RAMP_CLOCKS: u32 = 2048;
 
@@ -292,7 +295,7 @@ impl Rp2a03Plugin {
             }
         }
         for sample in output.iter_mut() {
-            *sample = sample.clamp(-1.0, 1.0);
+            *sample = (*sample * MASTER_OUTPUT_GAIN).clamp(-1.0, 1.0);
         }
     }
 
