@@ -384,20 +384,10 @@ impl Rp2a03Plugin {
         }
     }
 
-    fn select_voice(&mut self, note: u8) -> usize {
+    fn select_voice(&mut self) -> usize {
         let voice_count = self.active_voice_count();
         if voice_count == 1 {
             return 0;
-        }
-
-        if let Some(index) = self.voices[..voice_count].iter().position(|voice| {
-            voice
-                .midi_handler
-                .note_stack
-                .iter()
-                .any(|(n, _)| *n == note)
-        }) {
-            return index;
         }
 
         let index = self.voices[..voice_count]
@@ -420,8 +410,8 @@ impl Rp2a03Plugin {
 
     fn handle_event(&mut self, event: &NoteEvent<()>, seqs: &ActiveSequences) -> Option<usize> {
         match event {
-            NoteEvent::NoteOn { note, .. } => {
-                let index = self.select_voice(*note);
+            NoteEvent::NoteOn { .. } => {
+                let index = self.select_voice();
                 let voice = &mut self.voices[index];
                 voice.begin_triangle_attack_ramp();
                 voice.midi_handler.handle_event_with_noise(
@@ -432,7 +422,39 @@ impl Rp2a03Plugin {
                     seqs,
                 )
             }
-            NoteEvent::NoteOff { .. } | NoteEvent::Choke { .. } | NoteEvent::MidiCC { .. } => {
+            NoteEvent::NoteOff { note, .. } => {
+                // In polyphonic mode, route a NoteOff to one matching voice.
+                // Broadcasting by pitch would release every overlapping note
+                // with the same MIDI key. The oldest matching allocation is
+                // released first, which gives repeated notes FIFO pairing.
+                let voice_count = self.active_voice_count();
+                let index = self.voices[..voice_count]
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, voice)| {
+                        voice
+                            .midi_handler
+                            .note_stack
+                            .iter()
+                            .any(|(held_note, _)| *held_note == *note)
+                    })
+                    .min_by_key(|(_, voice)| voice.alloc_id)
+                    .map(|(index, _)| index);
+
+                if let Some(index) = index {
+                    let voice = &mut self.voices[index];
+                    voice.midi_handler.handle_event_with_noise(
+                        event,
+                        &mut voice.pulse,
+                        &mut voice.triangle,
+                        Some(&mut voice.noise),
+                        seqs,
+                    )
+                } else {
+                    None
+                }
+            }
+            NoteEvent::Choke { .. } | NoteEvent::MidiCC { .. } => {
                 let mut program = None;
                 for voice in &mut self.voices {
                     program = voice
