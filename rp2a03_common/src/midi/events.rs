@@ -5,6 +5,7 @@
 use super::handler::{AnyChannel, MidiHandler};
 use super::types::{ActiveSequences, ChannelMode};
 use nice_plug::prelude::*;
+use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode};
@@ -19,9 +20,21 @@ impl MidiHandler {
         triangle: &mut Triangle,
         seqs: &ActiveSequences,
     ) -> Option<usize> {
+        self.handle_event_with_noise(event, pulse, triangle, None, seqs)
+    }
+
+    pub fn handle_event_with_noise<S>(
+        &mut self,
+        event: &NoteEvent<S>,
+        pulse: &mut Pulse,
+        triangle: &mut Triangle,
+        noise: Option<&mut Noise>,
+        seqs: &ActiveSequences,
+    ) -> Option<usize> {
         let mut channel = match self.channel_mode {
-            ChannelMode::Pulse | ChannelMode::Noise => AnyChannel::Pulse(pulse),
+            ChannelMode::Pulse => AnyChannel::Pulse(pulse),
             ChannelMode::Triangle => AnyChannel::Triangle(triangle),
+            ChannelMode::Noise => AnyChannel::Noise(noise.expect("noise channel is required")),
         };
 
         match event {
@@ -60,6 +73,7 @@ impl MidiHandler {
         let reset_phase = match channel {
             AnyChannel::Pulse(_) => !self.pulse_phase_initialized,
             AnyChannel::Triangle(_) => !self.gate,
+            AnyChannel::Noise(_) => !self.gate,
         };
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));

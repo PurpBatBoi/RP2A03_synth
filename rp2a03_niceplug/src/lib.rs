@@ -10,6 +10,7 @@ use rp2a03_common::{
     style,
 };
 use rp2a03_core::NTSC_CPU_CLOCK;
+use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::blip_buf::BlipBuf;
@@ -29,6 +30,7 @@ const ALLOCATION_RAMP_CLOCKS: u32 = 2048;
 struct Voice {
     pulse: Pulse,
     triangle: Triangle,
+    noise: Noise,
     midi_handler: MidiHandler,
     blip: BlipBuf,
     last_output: i32,
@@ -43,11 +45,14 @@ impl Voice {
         pulse.set_enabled(true);
         let mut triangle = Triangle::new();
         triangle.set_enabled(true);
+        let mut noise = Noise::new();
+        noise.set_enabled(true);
         let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE);
         blip.set_rates(NTSC_CPU_CLOCK, 44100.0);
         Self {
             pulse,
             triangle,
+            noise,
             midi_handler: MidiHandler::new(),
             blip,
             last_output: 0,
@@ -63,6 +68,8 @@ impl Voice {
         self.pulse.write_sweep(0x08);
         self.triangle.reset();
         self.triangle.set_enabled(true);
+        self.noise.reset();
+        self.noise.set_enabled(true);
         self.midi_handler.reset();
         self.blip.clear();
         self.last_output = 0;
@@ -82,6 +89,8 @@ impl Voice {
         self.pulse.write_sweep(0x08);
         self.triangle.reset();
         self.triangle.set_enabled(true);
+        self.noise.reset();
+        self.noise.set_enabled(true);
         // A triangle timer/register write does not reset the waveform's 32-step
         // phase. Preserve it when recycling a polyphonic voice so the DAC does
         // not jump from the held release level back to sequence step zero.
@@ -183,11 +192,15 @@ impl Default for Rp2a03Params {
             fine_pitch: IntParam::new("Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
             hi_pitch: IntParam::new("Hi-Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
             step_time: IntParam::new("Step Time", 60, IntRange::Linear { min: 1, max: 600 }),
-            waveform: IntParam::new("Waveform", 0, IntRange::Linear { min: 0, max: 1 }),
+            waveform: IntParam::new("Waveform", 0, IntRange::Linear { min: 0, max: 2 }),
             polyphony: BoolParam::new("Polyphony", false),
             max_voices: IntParam::new("Max Voices", 8, IntRange::Linear { min: 1, max: 8 }),
             portamento_enabled: BoolParam::new("Portamento", false),
-            portamento_speed: IntParam::new("Portamento Speed", 0, IntRange::Linear { min: 0, max: 127 }),
+            portamento_speed: IntParam::new(
+                "Portamento Speed",
+                0,
+                IntRange::Linear { min: 0, max: 127 },
+            ),
         }
     }
 }
@@ -220,10 +233,18 @@ impl Rp2a03Plugin {
                 .zip(master_gains.iter().copied())
             {
                 let voice_output = match voice.midi_handler.channel_mode {
-                    ChannelMode::Pulse | ChannelMode::Noise => {
+                    ChannelMode::Pulse => {
                         voice.pulse.clock();
                         if voice.midi_handler.gate() && !voice.pulse.is_muted() {
                             voice.pulse.output() as i32 * AMPLITUDE_SCALE
+                        } else {
+                            0
+                        }
+                    }
+                    ChannelMode::Noise => {
+                        voice.noise.clock();
+                        if voice.midi_handler.gate() && !voice.noise.is_muted() {
+                            voice.noise.output() as i32 * AMPLITUDE_SCALE
                         } else {
                             0
                         }
@@ -315,9 +336,10 @@ impl Rp2a03Plugin {
             let mut any_gated = false;
 
             for voice in &mut self.voices[..active_voice_count] {
-                master_gains.push(voice.midi_handler.apply_current_modulation(
+                master_gains.push(voice.midi_handler.apply_current_modulation_with_noise(
                     &mut voice.pulse,
                     &mut voice.triangle,
+                    Some(&mut voice.noise),
                     seqs,
                 ));
                 if voice.midi_handler.gate() {
@@ -388,25 +410,39 @@ impl Rp2a03Plugin {
             NoteEvent::NoteOn { note, .. } => {
                 let index = self.select_voice(*note);
                 let voice = &mut self.voices[index];
-                voice
-                    .midi_handler
-                    .handle_event(event, &mut voice.pulse, &mut voice.triangle, seqs)
+                voice.midi_handler.handle_event_with_noise(
+                    event,
+                    &mut voice.pulse,
+                    &mut voice.triangle,
+                    Some(&mut voice.noise),
+                    seqs,
+                )
             }
             NoteEvent::NoteOff { .. } | NoteEvent::Choke { .. } | NoteEvent::MidiCC { .. } => {
                 let mut program = None;
                 for voice in &mut self.voices {
                     program = voice
                         .midi_handler
-                        .handle_event(event, &mut voice.pulse, &mut voice.triangle, seqs)
+                        .handle_event_with_noise(
+                            event,
+                            &mut voice.pulse,
+                            &mut voice.triangle,
+                            Some(&mut voice.noise),
+                            seqs,
+                        )
                         .or(program);
                 }
                 program
             }
             NoteEvent::MidiProgramChange { .. } => {
                 let voice = &mut self.voices[0];
-                voice
-                    .midi_handler
-                    .handle_event(event, &mut voice.pulse, &mut voice.triangle, seqs)
+                voice.midi_handler.handle_event_with_noise(
+                    event,
+                    &mut voice.pulse,
+                    &mut voice.triangle,
+                    Some(&mut voice.noise),
+                    seqs,
+                )
             }
             _ => None,
         }

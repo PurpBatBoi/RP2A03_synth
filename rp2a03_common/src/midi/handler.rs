@@ -3,22 +3,27 @@
 //! per-tick modulation / register-write logic. NoteEvent ingestion (NoteOn,
 //! NoteOff, CC dispatch) lives in `events.rs`.
 
+use super::types::{
+    ActiveSequences, ChannelMode, HostAutomationControls, freq_to_period, midi_note_to_freq,
+    midi_note_to_noise_period,
+};
+use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, SequencePlayer};
 use rp2a03_core::software_lfo::SoftwareLfo;
-use super::types::{freq_to_period, midi_note_to_freq, ActiveSequences, ChannelMode, HostAutomationControls};
 
 // ─────────────────────────────────────────────
 // AnyChannel — zero-cost dispatch shim
 // ─────────────────────────────────────────────
 
-/// A thin wrapper that gives uniform access to either a `Pulse` or a `Triangle`
+/// A thin wrapper that gives uniform access to an APU channel.
 /// channel, used inside `MidiHandler` methods so they don't need to be
 /// duplicated for each channel type.
 pub enum AnyChannel<'a> {
     Pulse(&'a mut Pulse),
     Triangle(&'a mut Triangle),
+    Noise(&'a mut Noise),
 }
 
 impl<'a> AnyChannel<'a> {
@@ -26,6 +31,7 @@ impl<'a> AnyChannel<'a> {
         match self {
             AnyChannel::Pulse(p) => p.set_enabled(enabled),
             AnyChannel::Triangle(t) => t.set_enabled(enabled),
+            AnyChannel::Noise(n) => n.set_enabled(enabled),
         }
     }
 
@@ -33,6 +39,7 @@ impl<'a> AnyChannel<'a> {
         match self {
             AnyChannel::Pulse(p) => p.write_timer_lo(val),
             AnyChannel::Triangle(t) => t.write_timer_lo(val),
+            AnyChannel::Noise(_) => {}
         }
     }
 
@@ -40,6 +47,7 @@ impl<'a> AnyChannel<'a> {
         match self {
             AnyChannel::Pulse(p) => p.write_timer_hi(val),
             AnyChannel::Triangle(t) => t.write_timer_hi(val),
+            AnyChannel::Noise(_) => {}
         }
     }
 
@@ -47,6 +55,25 @@ impl<'a> AnyChannel<'a> {
         match self {
             AnyChannel::Pulse(p) => p.set_period_hi_soft(hi_bits),
             AnyChannel::Triangle(t) => t.set_period_hi_soft(hi_bits),
+            AnyChannel::Noise(_) => {}
+        }
+    }
+
+    pub fn write_noise_timer(&mut self, period_index: u8, short_mode: bool) {
+        if let AnyChannel::Noise(n) = self {
+            n.write_timer((period_index & 0x0F) | if short_mode { 0x80 } else { 0 });
+        }
+    }
+
+    pub fn write_noise_ctrl(&mut self, val: u8) {
+        if let AnyChannel::Noise(n) = self {
+            n.write_ctrl(val);
+        }
+    }
+
+    pub fn write_noise_length(&mut self) {
+        if let AnyChannel::Noise(n) = self {
+            n.write_length(0xF8);
         }
     }
 }
@@ -251,6 +278,7 @@ impl MidiHandler {
                     }
                 }
                 AnyChannel::Triangle(t) => t.write_linear_counter(0xFF),
+                AnyChannel::Noise(n) => n.write_length(0xF8),
             }
 
             if reset_phase {
@@ -283,8 +311,7 @@ impl MidiHandler {
             self.lfo
                 .set_tremolo(self.lfo.tremolo_depth, controls.tremolo_speed);
         }
-        if self.last_host_controls.is_none()
-            || controls.hardware_volume != previous.hardware_volume
+        if self.last_host_controls.is_none() || controls.hardware_volume != previous.hardware_volume
         {
             self.hardware_volume = controls.hardware_volume.min(15);
         }
@@ -352,8 +379,7 @@ impl MidiHandler {
                     // Each step permanently shifts the active base note (accumulating).
                     if self.arp_seq_player.state == SeqState::Running {
                         let arp_step = self.arp_seq_player.clock_tick(&seqs.arp_seq);
-                        self.active_note =
-                            (self.active_note as i16 + arp_step).clamp(0, 127) as u8;
+                        self.active_note = (self.active_note as i16 + arp_step).clamp(0, 127) as u8;
                         self.macro_period = self.note_period(0);
                     }
                 }
@@ -476,19 +502,54 @@ impl MidiHandler {
         triangle: &mut Triangle,
         seqs: &ActiveSequences,
     ) -> f32 {
+        self.apply_current_modulation_with_noise(pulse, triangle, None, seqs)
+    }
+
+    pub fn apply_current_modulation_with_noise(
+        &mut self,
+        pulse: &mut Pulse,
+        triangle: &mut Triangle,
+        mut noise: Option<&mut Noise>,
+        seqs: &ActiveSequences,
+    ) -> f32 {
         let master_gain = self.cc_expression as f32 / 127.0;
 
         match self.channel_mode {
-            ChannelMode::Pulse => {
-                self.apply_pulse_modulation(pulse, seqs, master_gain)
-            }
-            ChannelMode::Triangle => {
-                self.apply_triangle_modulation(triangle, seqs, master_gain)
-            }
+            ChannelMode::Pulse => self.apply_pulse_modulation(pulse, seqs, master_gain),
+            ChannelMode::Triangle => self.apply_triangle_modulation(triangle, seqs, master_gain),
             ChannelMode::Noise => {
-                // Noise not yet implemented — fall through to Pulse behavior as silent.
+                if let Some(noise) = noise.as_deref_mut() {
+                    self.apply_noise_modulation(noise, seqs);
+                }
                 master_gain
             }
+        }
+    }
+
+    fn apply_noise_modulation(&mut self, noise: &mut Noise, seqs: &ActiveSequences) {
+        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
+            self.vol_seq_player.value().clamp(0, 15) as u32
+        } else {
+            15
+        };
+        let hardware_scaled = vol_val * self.hardware_volume as u32 / 15;
+        let cc7_scaled = hardware_scaled * self.cc_volume as u32 / 127;
+        let apu_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
+        let short_mode = seqs.duty_enabled
+            && !seqs.duty_seq.values.is_empty()
+            && self.duty_seq_player.value() != 0;
+        noise.write_ctrl(0x30 | apu_vol);
+        let note =
+            (self.active_note as i16 + self.current_noise_arpeggio(seqs)).clamp(0, 127) as u8;
+        let period = midi_note_to_noise_period(note);
+        noise.write_timer(period | if short_mode { 0x80 } else { 0 });
+    }
+
+    fn current_noise_arpeggio(&self, seqs: &ActiveSequences) -> i16 {
+        if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
+            self.arp_seq_player.value() as i16
+        } else {
+            0
         }
     }
 
@@ -624,7 +685,8 @@ impl MidiHandler {
         let vibrato_delta = self.lfo.vibrato_pitch_delta() as i32;
 
         let final_period =
-            (self.macro_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta).clamp(0, 0x7FF);
+            (self.macro_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta)
+                .clamp(0, 0x7FF);
 
         // Triangle octave parity — see fn docs. Halving the composed period keeps
         // `macro_period` in the pulse domain while the triangle plays the

@@ -194,10 +194,14 @@ fn draw_header(
                             data.channel_mode = new_mode;
                             *changed_channel_mode = Some(new_mode);
                         }
-                        // Noise: visible but disabled
-                        ui.add_enabled_ui(false, |ui| {
-                            ui.selectable_value(&mut waveform_id, 2, "2A03 | Noise");
-                        });
+                        if ui
+                            .selectable_value(&mut waveform_id, 2, "2A03 | Noise")
+                            .clicked()
+                        {
+                            let new_mode = ChannelMode::Noise;
+                            data.channel_mode = new_mode;
+                            *changed_channel_mode = Some(new_mode);
+                        }
                     });
             },
         );

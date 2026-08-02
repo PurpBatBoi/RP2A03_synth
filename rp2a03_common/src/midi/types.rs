@@ -3,7 +3,6 @@
 
 /// Which APU channel waveform is active for this plugin instance.
 ///
-/// `Noise` is defined for future use but is not yet functional.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum ChannelMode {
@@ -23,9 +22,9 @@ impl ChannelMode {
     }
 }
 
+use rp2a03_core::NTSC_CPU_CLOCK;
 use rp2a03_core::sequencer::Sequence;
 use rp2a03_core::software_lfo::DEFAULT_LFO_SPEED;
-use rp2a03_core::NTSC_CPU_CLOCK;
 
 /// Converts MIDI note number to frequency in Hz.
 pub fn midi_note_to_freq(note: u8) -> f32 {
@@ -39,6 +38,37 @@ pub fn freq_to_period(freq: f32) -> u16 {
     }
     let t = (NTSC_CPU_CLOCK as f32 / (16.0 * freq)) - 0.5;
     t.round().clamp(0.0, 2047.0) as u16
+}
+
+/// Maps a MIDI key to the 4-bit NES noise period used by FamiStudio.
+/// FamiStudio first converts MIDI to its internal C0-based note (`key - 11`),
+/// then masks and inverts the low nibble at the `$400E` register boundary.
+#[inline]
+pub fn midi_note_to_noise_period(note: u8) -> u8 {
+    let internal = (note as i16 - 11).clamp(1, 96) as u8;
+    (internal & 0x0F) ^ 0x0F
+}
+
+#[cfg(test)]
+mod noise_mapping_tests {
+    use super::midi_note_to_noise_period;
+
+    #[test]
+    fn matches_famistudio_first_noise_octave() {
+        assert_eq!(midi_note_to_noise_period(12), 14); // C0
+        assert_eq!(midi_note_to_noise_period(26), 0); // D1, highest
+        assert_eq!(midi_note_to_noise_period(27), 15); // D#1 wraps
+    }
+
+    #[test]
+    fn noise_mapping_repeats_every_sixteen_keys() {
+        for note in 12..=91 {
+            assert_eq!(
+                midi_note_to_noise_period(note),
+                midi_note_to_noise_period(note + 16)
+            );
+        }
+    }
 }
 
 /// Container holding owned copies of all 5 active sequences and their enable statuses.
