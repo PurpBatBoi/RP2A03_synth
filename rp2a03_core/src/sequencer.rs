@@ -11,7 +11,7 @@
 //! - Loop marker `|`: defines step index where sequence loops back while key is held.
 //! - Release marker `/`: defines step index where playback jumps when key is released `NoteOff`).
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum PitchMode {
     #[default]
@@ -21,7 +21,7 @@ pub enum PitchMode {
 
 /// Arpeggio sequence mode — mirrors `seq_setting_t` in Dn-FamiTracker `Sequence.h`.
 /// (Scheme mode is intentionally omitted.)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum ArpMode {
     /// `SETTING_ARP_ABSOLUTE` (0): each step is a signed semitone offset from the
@@ -33,7 +33,7 @@ pub enum ArpMode {
     Relative = 2,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
     ///

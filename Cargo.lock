@@ -1884,11 +1884,15 @@ dependencies = [
  "image",
  "nice-plug",
  "rp2a03_core",
+ "serde",
 ]
 
 [[package]]
 name = "rp2a03_core"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "rp2a03_niceplug"

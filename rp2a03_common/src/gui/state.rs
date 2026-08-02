@@ -37,7 +37,7 @@ impl SequencePlayheads {
 }
 
 /// A numbered sequence and its editable FamiTracker text representation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SequenceSlot {
     pub text: String,
     pub sequence: Sequence,
@@ -54,15 +54,15 @@ pub struct SequenceSlot {
 /// example, volume sequence 1 and duty sequence 8 independently. This type is
 /// channel-agnostic so triangle, noise, and future expansion-chip editors can
 /// reuse it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SequenceBank {
-    slots: [SequenceSlot; MAX_SEQUENCES],
+    slots: Vec<SequenceSlot>,
 }
 
 impl Default for SequenceBank {
     fn default() -> Self {
         Self {
-            slots: std::array::from_fn(|_| SequenceSlot::default()),
+            slots: vec![SequenceSlot::default(); MAX_SEQUENCES],
         }
     }
 }
@@ -78,7 +78,7 @@ impl SequenceBank {
 }
 
 /// Shared sequence data for one instrument instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SharedSequences {
     /// The envelope type currently shown by the editor.
     pub selected_tab: usize,

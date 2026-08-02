@@ -3,7 +3,7 @@
 
 /// Which APU channel waveform is active for this plugin instance.
 ///
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum ChannelMode {
     #[default]
@@ -38,6 +38,18 @@ pub fn freq_to_period(freq: f32) -> u16 {
     }
     let t = (NTSC_CPU_CLOCK as f32 / (16.0 * freq)) - 0.5;
     t.round().clamp(0.0, 2047.0) as u16
+}
+
+/// Converts a frequency to the extended pulse-domain period used before the
+/// triangle channel's octave compensation. Triangle periods are halved at the
+/// register boundary, so they need the full 12-bit intermediate range to use
+/// the NES timer's complete 11-bit range.
+pub fn freq_to_triangle_period(freq: f32) -> u16 {
+    if freq <= 0.0 {
+        return 4095;
+    }
+    let t = (NTSC_CPU_CLOCK as f32 / (16.0 * freq)) - 0.5;
+    t.round().clamp(0.0, 4095.0) as u16
 }
 
 /// Maps a MIDI key to the 4-bit NES noise period used by FamiStudio.

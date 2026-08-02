@@ -4,7 +4,8 @@
 //! NoteOff, CC dispatch) lives in `events.rs`.
 
 use super::types::{
-    ActiveSequences, ChannelMode, HostAutomationControls, freq_to_period, midi_note_to_freq,
+    ActiveSequences, ChannelMode, HostAutomationControls, freq_to_period, freq_to_triangle_period,
+    midi_note_to_freq,
     midi_note_to_noise_period,
 };
 use rp2a03_core::apu_noise::Noise;
@@ -213,6 +214,13 @@ impl Default for MidiHandler {
 }
 
 impl MidiHandler {
+    pub(super) fn max_macro_period(&self) -> i32 {
+        if self.channel_mode == ChannelMode::Triangle {
+            0x0FFF
+        } else {
+            0x07FF
+        }
+    }
     /// Create a new `MidiHandler`.
     pub fn new() -> Self {
         Self::default()
@@ -393,7 +401,7 @@ impl MidiHandler {
                 PitchMode::Relative => self.macro_period += pitch_step,
                 PitchMode::Absolute => self.macro_period = self.note_period(0) + pitch_step,
             }
-            self.macro_period = self.macro_period.clamp(0, 0x7FF);
+            self.macro_period = self.macro_period.clamp(0, self.max_macro_period());
         }
 
         if seqs.hipitch_enabled
@@ -401,7 +409,8 @@ impl MidiHandler {
             && self.hipitch_seq_player.state == SeqState::Running
         {
             let hipitch_step = self.hipitch_seq_player.clock_tick(&seqs.hipitch_seq) as i32;
-            self.macro_period = (self.macro_period + (hipitch_step << 4)).clamp(0, 0x7FF);
+            self.macro_period =
+                (self.macro_period + (hipitch_step << 4)).clamp(0, self.max_macro_period());
         }
 
         if seqs.duty_enabled
@@ -418,9 +427,9 @@ impl MidiHandler {
     /// legato target. Periods are interpolated in the same pulse-domain units
     /// used by all existing pitch modulation.
     pub(super) fn start_portamento(&mut self, from: i32, target: i32) {
-        self.portamento_target_period = target.clamp(0, 0x7FF);
+        self.portamento_target_period = target.clamp(0, self.max_macro_period());
         if self.portamento_enabled && self.portamento_speed > 0 && from != target {
-            self.macro_period = from.clamp(0, 0x7FF);
+            self.macro_period = from.clamp(0, self.max_macro_period());
             self.portamento_active = true;
         } else {
             self.macro_period = self.portamento_target_period;
@@ -459,7 +468,11 @@ impl MidiHandler {
     pub(super) fn note_period(&self, arp_semitones: i16) -> i32 {
         let note = (self.active_note as i16 + self.octave_offset as i16 + arp_semitones)
             .clamp(0, 127) as u8;
-        freq_to_period(midi_note_to_freq(note)) as i32
+        if self.channel_mode == ChannelMode::Triangle {
+            freq_to_triangle_period(midi_note_to_freq(note)) as i32
+        } else {
+            freq_to_period(midi_note_to_freq(note)) as i32
+        }
     }
 
     /// Number of samples that can be rendered before the next envelope tick.
@@ -681,7 +694,7 @@ impl MidiHandler {
 
         let final_period =
             (self.macro_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta)
-                .clamp(0, 0x7FF);
+                .clamp(0, self.max_macro_period());
 
         // Triangle octave parity — see fn docs. Halving the composed period keeps
         // `macro_period` in the pulse domain while the triangle plays the

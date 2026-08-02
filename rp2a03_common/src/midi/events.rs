@@ -216,7 +216,7 @@ impl MidiHandler {
             self.macro_period += (self.hipitch_seq_player.value() as i32) << 4;
         }
 
-        self.macro_period = self.macro_period.clamp(0, 0x7FF);
+        self.macro_period = self.macro_period.clamp(0, self.max_macro_period());
     }
 
 }

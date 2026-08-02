@@ -21,9 +21,9 @@ use std::time::Duration;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
-// Nominal synth-instance output calibration: 20*log10(0.6309573) = -4 dBFS.
+// Nominal synth-instance output calibration: 20*log10(0.7943282) = -2 dBFS.
 // This trims the final bus without changing per-voice, polyphony, or MIDI gain.
-const MASTER_OUTPUT_GAIN: f32 = 0.630_957_3;
+const MASTER_OUTPUT_GAIN: f32 = 0.794_328_2;
 const MAX_VOICES: usize = 8;
 const ALLOCATION_RAMP_CLOCKS: u32 = 2048;
 
@@ -112,7 +112,6 @@ pub struct Rp2a03Plugin {
     /// Program Change selection remains active until the host changes the Index parameter.
     midi_program_index: Option<usize>,
     last_sequence_parameter: i32,
-    shared_sequences: Arc<Mutex<SharedSequences>>,
     sequence_playheads: Arc<[AtomicUsize; SEQUENCE_TYPE_COUNT]>,
 }
 
@@ -120,6 +119,9 @@ pub struct Rp2a03Plugin {
 struct Rp2a03Params {
     #[persist = "editor_state"]
     pub egui_state: Arc<EguiState>,
+
+    #[persist = "envelope_data"]
+    pub shared_sequences: Arc<Mutex<SharedSequences>>,
 
     /// Selects the same numbered sequence slot for all five pulse envelopes.
     #[id = "sequence_number"]
@@ -164,7 +166,6 @@ impl Default for Rp2a03Plugin {
             sample_scratch: Vec::new(),
             midi_program_index: None,
             last_sequence_parameter: 0,
-            shared_sequences: Arc::new(Mutex::new(SharedSequences::default())),
             sequence_playheads: Arc::new(std::array::from_fn(|_| {
                 AtomicUsize::new(NO_PLAYHEAD_STEP)
             })),
@@ -176,6 +177,7 @@ impl Default for Rp2a03Params {
     fn default() -> Self {
         Self {
             egui_state: EguiState::from_size(758, 590),
+            shared_sequences: Arc::new(Mutex::new(SharedSequences::default())),
             sequence_number: IntParam::new(
                 "Sequence Index",
                 0,
@@ -464,7 +466,7 @@ impl Rp2a03Plugin {
     }
 
     fn active_sequences(&self, sequence_index: usize) -> ActiveSequences {
-        let mut data = self.shared_sequences.lock();
+        let mut data = self.params.shared_sequences.lock();
         data.set_all_selected_sequence_indices(sequence_index);
         ActiveSequences {
             vol_seq: data.selected_sequence(0).clone(),
@@ -568,7 +570,7 @@ impl Plugin for Rp2a03Plugin {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        let shared = self.shared_sequences.clone();
+        let shared = self.params.shared_sequences.clone();
         let params = self.params.clone();
         let playheads = self.sequence_playheads.clone();
 
@@ -698,7 +700,7 @@ impl Plugin for Rp2a03Plugin {
         }
         // Sync channel mode into shared GUI state so the combobox reflects the current value.
         {
-            let mut data = self.shared_sequences.lock();
+            let mut data = self.params.shared_sequences.lock();
             data.channel_mode = channel_mode;
             data.polyphony = self.params.polyphony.value();
             data.max_voices = self.params.max_voices.value().clamp(1, 8);
