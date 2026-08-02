@@ -239,11 +239,15 @@ impl Rp2a03Plugin {
 
         self.sample_scratch.resize(output.len(), 0);
         output.fill(0.0);
-        let mix_gain = if active_voice_count > 1 {
-            1.0 / active_voice_count as f32
+        // Normalize mono and polyphonic operation against the same configured
+        // voice capacity. This keeps a single note at the same level when the
+        // Polyphony switch is toggled.
+        let mix_voice_count = if self.params.polyphony.value() {
+            active_voice_count
         } else {
-            1.0
+            (self.params.max_voices.value() as usize).clamp(1, MAX_VOICES)
         };
+        let mix_gain = 1.0 / mix_voice_count as f32;
         for voice in &mut self.voices[..active_voice_count] {
             self.sample_scratch.fill(0);
             let samples_read = voice.blip.read_samples(&mut self.sample_scratch, false);
