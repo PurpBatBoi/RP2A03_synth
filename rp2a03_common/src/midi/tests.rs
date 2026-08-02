@@ -43,6 +43,8 @@ fn host_automation_controls_update_the_matching_synth_controls() {
         fine_pitch: -24,
         hi_pitch: 5,
         step_time_hz: 120,
+        portamento_enabled: true,
+        portamento_speed: 42,
     });
 
     assert_eq!(handler.lfo.vibrato_depth, 7);
@@ -50,9 +52,42 @@ fn host_automation_controls_update_the_matching_synth_controls() {
     assert_eq!(handler.lfo.tremolo_depth, 9);
     assert_eq!(handler.lfo.tremolo_speed, 30);
     assert_eq!(handler.hardware_volume, 11);
+    assert!(handler.portamento_enabled);
+    assert_eq!(handler.portamento_speed, 42);
     assert_eq!(handler.fine_pitch, -24);
     assert_eq!(handler.hi_pitch, 5);
     assert_eq!(handler.step_time_hz, 120);
+}
+
+#[test]
+fn portamento_reaches_target_and_disabled_mode_is_instant() {
+    let mut handler = MidiHandler::new();
+    handler.portamento_enabled = true;
+    handler.portamento_speed = 127;
+    handler.start_portamento(900, 300);
+    assert_eq!(handler.macro_period, 900);
+    handler.clock_sequences_one_frame(&default_seqs());
+    assert_eq!(handler.macro_period, 300);
+    assert!(!handler.portamento_active);
+
+    handler.portamento_enabled = false;
+    handler.start_portamento(300, 900);
+    assert_eq!(handler.macro_period, 900);
+    assert!(!handler.portamento_active);
+}
+
+#[test]
+fn portamento_moves_in_the_correct_direction() {
+    let mut handler = MidiHandler::new();
+    handler.portamento_enabled = true;
+    handler.portamento_speed = 1;
+    handler.start_portamento(300, 900);
+    handler.clock_sequences_one_frame(&default_seqs());
+    assert!(handler.macro_period > 300 && handler.macro_period < 900);
+
+    handler.start_portamento(900, 300);
+    handler.clock_sequences_one_frame(&default_seqs());
+    assert!(handler.macro_period < 900 && handler.macro_period > 300);
 }
 
 #[test]

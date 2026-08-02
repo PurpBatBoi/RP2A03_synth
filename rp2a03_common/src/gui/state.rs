@@ -84,6 +84,8 @@ pub struct SharedSequences {
     pub polyphony: bool,
     /// Maximum number of internal voices to allocate (1..=8).
     pub max_voices: i32,
+    pub portamento_enabled: bool,
+    pub portamento_speed: i32,
     sequence_indices: [usize; SEQUENCE_TYPE_COUNT],
     sequence_banks: [SequenceBank; SEQUENCE_TYPE_COUNT],
     enabled: [bool; SEQUENCE_TYPE_COUNT],
@@ -96,6 +98,8 @@ impl Default for SharedSequences {
             channel_mode: ChannelMode::Pulse,
             polyphony: false,
             max_voices: 8,
+            portamento_enabled: false,
+            portamento_speed: 0,
             sequence_indices: [0; SEQUENCE_TYPE_COUNT],
             sequence_banks: std::array::from_fn(|_| SequenceBank::default()),
             enabled: [false; SEQUENCE_TYPE_COUNT],

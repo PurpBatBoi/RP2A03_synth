@@ -52,6 +52,8 @@ impl MidiHandler {
         channel: &mut AnyChannel,
         seqs: &ActiveSequences,
     ) {
+        let previous_period = self.macro_period;
+        let was_gated = self.gate;
         // A note arriving while another note is sounding is a legato change:
         // preserve the pulse duty phase and let the normal soft timer path
         // update pitch if needed.
@@ -65,6 +67,13 @@ impl MidiHandler {
         self.trigger_sequences(seqs);
         self.apply_top_note(channel, reset_phase);
         self.recalculate_macro_period(seqs);
+        let target_period = self.macro_period;
+        if was_gated {
+            self.start_portamento(previous_period, target_period);
+        } else {
+            self.portamento_target_period = target_period;
+            self.portamento_active = false;
+        }
 
         self.frame_sample_counter = 0.0;
     }
@@ -128,9 +137,12 @@ impl MidiHandler {
             // Retrigger sequences and recalculate macro_period so the sound
             // returns to the held note, just like dnFamiTracker's RunNote does
             // when the top note is released and a lower note is still held.
+            let previous_period = self.macro_period;
             self.trigger_sequences(seqs);
             self.apply_top_note(channel, false);
             self.recalculate_macro_period(seqs);
+            let target_period = self.macro_period;
+            self.start_portamento(previous_period, target_period);
             self.frame_sample_counter = 0.0;
         }
     }

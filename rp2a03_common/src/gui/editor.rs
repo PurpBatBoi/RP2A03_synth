@@ -20,6 +20,8 @@ pub struct EditorResult {
     pub new_polyphony: Option<bool>,
     /// If the user changed the maximum voice count.
     pub new_max_voices: Option<i32>,
+    pub new_portamento_enabled: Option<bool>,
+    pub new_portamento_speed: Option<i32>,
 }
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
@@ -105,8 +107,9 @@ fn draw_header(
     data: &mut SharedSequences,
     changed_channel_mode: &mut Option<ChannelMode>,
     changed_polyphony: &mut Option<bool>,
+    changed_portamento_enabled: &mut Option<bool>,
 ) {
-    let mut portamento = false;
+    let mut portamento = data.portamento_enabled;
 
     const HEADER_H: f32 = 92.0;
     const LOGO_W: f32 = 312.0;
@@ -215,7 +218,10 @@ fn draw_header(
                     if ui.checkbox(&mut data.polyphony, "Polyphony").changed() {
                         *changed_polyphony = Some(data.polyphony);
                     }
-                    ui.checkbox(&mut portamento, "Portamento");
+                    if ui.checkbox(&mut portamento, "Portamento").changed() {
+                        data.portamento_enabled = portamento;
+                        *changed_portamento_enabled = Some(portamento);
+                    }
                 })
                 .response
             },
@@ -245,6 +251,7 @@ fn draw_instrument_settings_panel(
     step_time_hz: u32,
     changed_step_time_hz: &mut Option<i32>,
     changed_max_voices: &mut Option<i32>,
+    changed_portamento_speed: &mut Option<i32>,
 ) {
     // "Duty / Noise" tab is disabled for Triangle mode.
     let seq_types: &[(&str, usize)] = &[
@@ -392,7 +399,12 @@ fn draw_instrument_settings_panel(
             ui.horizontal(|ui| {
                 ui.label("Porta. Speed:");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let _ = ui.button("knob");
+                    if ui
+                        .add(egui::DragValue::new(&mut data.portamento_speed).range(0..=127))
+                        .changed()
+                    {
+                        *changed_portamento_speed = Some(data.portamento_speed);
+                    }
                 });
             });
         });
@@ -536,6 +548,7 @@ fn draw_main_content(
     step_time_hz: u32,
     changed_step_time_hz: &mut Option<i32>,
     changed_max_voices: &mut Option<i32>,
+    changed_portamento_speed: &mut Option<i32>,
 ) {
     const LEFT_W: f32 = 180.0;
     const GAP: f32 = 8.0;
@@ -565,6 +578,7 @@ fn draw_main_content(
             step_time_hz,
             changed_step_time_hz,
             changed_max_voices,
+            changed_portamento_speed,
         );
     });
 
@@ -607,8 +621,16 @@ pub fn render_editor_ui(
     let mut changed_channel_mode = None;
     let mut changed_polyphony = None;
     let mut changed_max_voices = None;
+    let mut changed_portamento_enabled = None;
+    let mut changed_portamento_speed = None;
 
-    draw_header(ui, data, &mut changed_channel_mode, &mut changed_polyphony);
+    draw_header(
+        ui,
+        data,
+        &mut changed_channel_mode,
+        &mut changed_polyphony,
+        &mut changed_portamento_enabled,
+    );
     draw_chip_tabs(ui, data);
 
     // Reserve footer space at the bottom of the window with spacing gap
@@ -639,6 +661,7 @@ pub fn render_editor_ui(
             step_time_hz,
             &mut changed_step_time_hz,
             &mut changed_max_voices,
+            &mut changed_portamento_speed,
         );
     });
 
@@ -653,6 +676,8 @@ pub fn render_editor_ui(
         new_channel_mode: changed_channel_mode,
         new_polyphony: changed_polyphony,
         new_max_voices: changed_max_voices,
+        new_portamento_enabled: changed_portamento_enabled,
+        new_portamento_speed: changed_portamento_speed,
     }
 }
 

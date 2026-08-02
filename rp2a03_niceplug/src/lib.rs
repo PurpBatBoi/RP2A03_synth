@@ -138,6 +138,10 @@ struct Rp2a03Params {
     pub polyphony: BoolParam,
     #[id = "max_voices"]
     pub max_voices: IntParam,
+    #[id = "portamento_enabled"]
+    pub portamento_enabled: BoolParam,
+    #[id = "portamento_speed"]
+    pub portamento_speed: IntParam,
 }
 
 impl Default for Rp2a03Plugin {
@@ -182,6 +186,8 @@ impl Default for Rp2a03Params {
             waveform: IntParam::new("Waveform", 0, IntRange::Linear { min: 0, max: 1 }),
             polyphony: BoolParam::new("Polyphony", false),
             max_voices: IntParam::new("Max Voices", 8, IntRange::Linear { min: 1, max: 8 }),
+            portamento_enabled: BoolParam::new("Portamento", false),
+            portamento_speed: IntParam::new("Portamento Speed", 0, IntRange::Linear { min: 0, max: 127 }),
         }
     }
 }
@@ -416,6 +422,8 @@ impl Rp2a03Plugin {
             fine_pitch: self.params.fine_pitch.value() as i8,
             hi_pitch: self.params.hi_pitch.value() as i8,
             step_time_hz: self.params.step_time.value() as u16,
+            portamento_enabled: self.params.portamento_enabled.value(),
+            portamento_speed: self.params.portamento_speed.value() as u8,
         }
     }
 
@@ -588,6 +596,16 @@ impl Plugin for Rp2a03Plugin {
                             setter.set_parameter(&params.max_voices, new_max_voices);
                             setter.end_set_parameter(&params.max_voices);
                         }
+                        if let Some(enabled) = result.new_portamento_enabled {
+                            setter.begin_set_parameter(&params.portamento_enabled);
+                            setter.set_parameter(&params.portamento_enabled, enabled);
+                            setter.end_set_parameter(&params.portamento_enabled);
+                        }
+                        if let Some(speed) = result.new_portamento_speed {
+                            setter.begin_set_parameter(&params.portamento_speed);
+                            setter.set_parameter(&params.portamento_speed, speed);
+                            setter.end_set_parameter(&params.portamento_speed);
+                        }
                     });
             },
         )
@@ -648,6 +666,8 @@ impl Plugin for Rp2a03Plugin {
             data.channel_mode = channel_mode;
             data.polyphony = self.params.polyphony.value();
             data.max_voices = self.params.max_voices.value().clamp(1, 8);
+            data.portamento_enabled = self.params.portamento_enabled.value();
+            data.portamento_speed = self.params.portamento_speed.value().clamp(0, 127);
         }
         let num_samples = buffer.samples();
         let active_voice_count = self.active_voice_count();

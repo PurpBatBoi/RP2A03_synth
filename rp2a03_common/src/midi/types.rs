@@ -70,6 +70,8 @@ pub struct HostAutomationControls {
     pub fine_pitch: i8,
     pub hi_pitch: i8,
     pub step_time_hz: u16,
+    pub portamento_enabled: bool,
+    pub portamento_speed: u8,
 }
 
 impl Default for HostAutomationControls {
@@ -83,6 +85,8 @@ impl Default for HostAutomationControls {
             fine_pitch: 0,
             hi_pitch: 0,
             step_time_hz: 60,
+            portamento_enabled: false,
+            portamento_speed: 0,
         }
     }
 }

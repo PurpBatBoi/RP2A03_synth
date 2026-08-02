@@ -110,6 +110,13 @@ pub struct MidiHandler {
     /// Fine pitch and vibrato are *not* folded in here; they are composed onto
     /// `macro_period` at register-write time (dn: `CalculatePeriod`).
     pub macro_period: i32,
+    /// Target period for the current legato transition.
+    pub portamento_target_period: i32,
+    /// Whether the current note transition is being glided.
+    pub portamento_active: bool,
+    /// Host-controlled portamento state.
+    pub portamento_enabled: bool,
+    pub portamento_speed: u8,
     /// Cache of last written control register byte to avoid redundant register writes.
     ///
     /// Only ever compared against bytes written to the Pulse struct — the triangle
@@ -170,6 +177,10 @@ impl Default for MidiHandler {
             hipitch_seq_player: SequencePlayer::new(),
             duty_seq_player: SequencePlayer::new(),
             macro_period: 0,
+            portamento_target_period: 0,
+            portamento_active: false,
+            portamento_enabled: false,
+            portamento_speed: 0,
             prev_ctrl: 0xFF,
             prev_timer_lo: 0xFF,
             prev_timer_hi: 0xFF,
@@ -207,6 +218,10 @@ impl MidiHandler {
         self.hipitch_seq_player.reset();
         self.duty_seq_player.reset();
         self.macro_period = 0;
+        self.portamento_target_period = 0;
+        self.portamento_active = false;
+        self.portamento_enabled = false;
+        self.portamento_speed = 0;
         self.prev_ctrl = 0xFF;
         self.prev_timer_lo = 0xFF;
         self.prev_timer_hi = 0xFF;
@@ -281,6 +296,20 @@ impl MidiHandler {
         }
         if self.last_host_controls.is_none() || controls.step_time_hz != previous.step_time_hz {
             self.step_time_hz = controls.step_time_hz.clamp(1, 600);
+        }
+        if self.last_host_controls.is_none()
+            || controls.portamento_enabled != previous.portamento_enabled
+        {
+            self.portamento_enabled = controls.portamento_enabled;
+            if !self.portamento_enabled {
+                self.macro_period = self.portamento_target_period;
+                self.portamento_active = false;
+            }
+        }
+        if self.last_host_controls.is_none()
+            || controls.portamento_speed != previous.portamento_speed
+        {
+            self.portamento_speed = controls.portamento_speed;
         }
 
         self.last_host_controls = Some(controls);
@@ -357,6 +386,42 @@ impl MidiHandler {
         {
             self.duty_seq_player.clock_tick(&seqs.duty_seq);
         }
+
+        self.advance_portamento();
+    }
+
+    /// Starts a glide from the currently sounding period to a newly triggered
+    /// legato target. Periods are interpolated in the same pulse-domain units
+    /// used by all existing pitch modulation.
+    pub(super) fn start_portamento(&mut self, from: i32, target: i32) {
+        self.portamento_target_period = target.clamp(0, 0x7FF);
+        if self.portamento_enabled && self.portamento_speed > 0 && from != target {
+            self.macro_period = from.clamp(0, 0x7FF);
+            self.portamento_active = true;
+        } else {
+            self.macro_period = self.portamento_target_period;
+            self.portamento_active = false;
+        }
+    }
+
+    fn advance_portamento(&mut self) {
+        if !self.portamento_active {
+            return;
+        }
+        let difference = self.portamento_target_period - self.macro_period;
+        if difference == 0 {
+            self.portamento_active = false;
+            return;
+        }
+        let distance = difference.unsigned_abs() as i32;
+        let step = ((distance * self.portamento_speed as i32) + 126) / 127;
+        let step = step.max(1);
+        self.macro_period = if difference > 0 {
+            (self.macro_period + step).min(self.portamento_target_period)
+        } else {
+            (self.macro_period - step).max(self.portamento_target_period)
+        };
+        self.portamento_active = self.macro_period != self.portamento_target_period;
     }
 
     /// dn `TriggerNote` equivalent: the APU period for the active note with the octave
