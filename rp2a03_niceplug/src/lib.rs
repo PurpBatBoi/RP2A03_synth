@@ -2,36 +2,70 @@
 //! RP2A03 Plugin wrapper using nice-plug.
 
 use nice_plug::prelude::*;
-use nice_plug_egui::{create_egui_editor, EguiSettings, EguiState};
+use nice_plug_egui::{EguiSettings, EguiState, create_egui_editor};
 use parking_lot::Mutex;
 use rp2a03_common::{
-    render_editor_ui, style, ActiveSequences, ChannelMode, HostAutomationControls, MidiHandler,
-    SequencePlayheads, SharedSequences, MAX_SEQUENCES, NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT,
+    ActiveSequences, ChannelMode, HostAutomationControls, MAX_SEQUENCES, MidiHandler,
+    NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT, SequencePlayheads, SharedSequences, render_editor_ui,
+    style,
 };
+use rp2a03_core::NTSC_CPU_CLOCK;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::sequencer::{SeqState, Sequence, SequencePlayer};
-use rp2a03_core::NTSC_CPU_CLOCK;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
+const MAX_VOICES: usize = 24;
+
+struct Voice {
+    pulse: Pulse,
+    triangle: Triangle,
+    midi_handler: MidiHandler,
+    last_output: i32,
+    last_triangle_output: i32,
+    alloc_id: u64,
+}
+
+impl Voice {
+    fn new() -> Self {
+        let mut pulse = Pulse::new(PulseChannel::One);
+        pulse.set_enabled(true);
+        let mut triangle = Triangle::new();
+        triangle.set_enabled(true);
+        Self {
+            pulse,
+            triangle,
+            midi_handler: MidiHandler::new(),
+            last_output: 0,
+            last_triangle_output: 0,
+            alloc_id: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.pulse.reset();
+        self.pulse.set_enabled(true);
+        self.pulse.write_sweep(0x08);
+        self.triangle.reset();
+        self.triangle.set_enabled(true);
+        self.midi_handler.reset();
+        self.last_output = 0;
+        self.last_triangle_output = 0;
+    }
+}
 
 pub struct Rp2a03Plugin {
     params: Arc<Rp2a03Params>,
-    pulse: Pulse,
-    triangle: Triangle,
+    voices: Vec<Voice>,
     blip: BlipBuf,
     sample_rate: f32,
-    last_output: i32,
-    // The triangle DAC holds its last value while the channel is gated off.
-    // Keeping this separate from last_output avoids carrying a pulse value
-    // across a waveform switch.
-    last_triangle_output: i32,
-    midi_handler: MidiHandler,
+    alloc_counter: u64,
+    last_active_voice_count: usize,
     /// Program Change selection remains active until the host changes the Index parameter.
     midi_program_index: Option<usize>,
     last_sequence_parameter: i32,
@@ -66,26 +100,24 @@ struct Rp2a03Params {
     pub step_time: IntParam,
     #[id = "waveform"]
     pub waveform: IntParam,
+    #[id = "polyphony"]
+    pub polyphony: BoolParam,
+    #[id = "max_voices"]
+    pub max_voices: IntParam,
 }
 
 impl Default for Rp2a03Plugin {
     fn default() -> Self {
-        let mut pulse = Pulse::new(PulseChannel::One);
-        pulse.set_enabled(true);
-        let mut triangle = Triangle::new();
-        triangle.set_enabled(true);
         let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE);
         blip.set_rates(NTSC_CPU_CLOCK, 44100.0);
 
         Self {
             params: Arc::new(Rp2a03Params::default()),
-            pulse,
-            triangle,
+            voices: (0..MAX_VOICES).map(|_| Voice::new()).collect(),
             blip,
             sample_rate: 44100.0,
-            last_output: 0,
-            last_triangle_output: 0,
-            midi_handler: MidiHandler::new(),
+            alloc_counter: 0,
+            last_active_voice_count: 1,
             midi_program_index: None,
             last_sequence_parameter: 0,
             shared_sequences: Arc::new(Mutex::new(SharedSequences::default())),
@@ -117,55 +149,77 @@ impl Default for Rp2a03Params {
             hi_pitch: IntParam::new("Hi-Pitch", 0, IntRange::Linear { min: -64, max: 63 }),
             step_time: IntParam::new("Step Time", 60, IntRange::Linear { min: 1, max: 600 }),
             waveform: IntParam::new("Waveform", 0, IntRange::Linear { min: 0, max: 1 }),
+            polyphony: BoolParam::new("Polyphony", false),
+            max_voices: IntParam::new("Max Voices", 8, IntRange::Linear { min: 1, max: 24 }),
         }
     }
 }
 
 impl Rp2a03Plugin {
-    fn render_samples_with_current_modulation(&mut self, output: &mut [f32], master_gain: f32) {
+    fn active_voice_count(&self) -> usize {
+        if self.params.polyphony.value() {
+            (self.params.max_voices.value() as usize).clamp(1, MAX_VOICES)
+        } else {
+            1
+        }
+    }
+
+    fn render_samples_with_current_modulation(
+        &mut self,
+        output: &mut [f32],
+        master_gains: &[f32],
+        active_voice_count: usize,
+    ) {
         let sample_count = output.len() as u32;
         if sample_count == 0 {
             return;
         }
 
         let clocks_needed = self.blip.clocks_needed(sample_count);
+        let mut previous_output: i32 = self.voices[..active_voice_count]
+            .iter()
+            .map(|voice| voice.last_output)
+            .sum();
 
         for clock in 0..clocks_needed {
-            let current_output = match self.midi_handler.channel_mode {
-                ChannelMode::Pulse | ChannelMode::Noise => {
-                    self.pulse.clock();
-                    if self.midi_handler.gate() && !self.pulse.is_muted() {
-                        self.pulse.output() as i32 * AMPLITUDE_SCALE
-                    } else {
-                        0
-                    }
-                }
-                ChannelMode::Triangle => {
-                    if self.midi_handler.gate() {
-                        self.triangle.clock();
-                        if !self.triangle.is_muted() {
-                            // High-resolution output for Triangle to avoid 4-bit integer quantization aliasing on 0-14 steps
-                            let output =
-                                (self.triangle.output() * AMPLITUDE_SCALE as f32) as i32;
-                            self.last_triangle_output = output;
-                            output
+            let mut current_output = 0i32;
+            for (voice, gain) in self.voices[..active_voice_count]
+                .iter_mut()
+                .zip(master_gains.iter().copied())
+            {
+                let voice_output = match voice.midi_handler.channel_mode {
+                    ChannelMode::Pulse | ChannelMode::Noise => {
+                        voice.pulse.clock();
+                        if voice.midi_handler.gate() && !voice.pulse.is_muted() {
+                            voice.pulse.output() as i32 * AMPLITUDE_SCALE
                         } else {
                             0
                         }
-                    } else {
-                        // Do not create a full-scale discontinuity on NoteOff.
-                        // The NES triangle DAC remains at its last level while
-                        // the linear counter is stopped; BlipBuf's high-pass
-                        // stage then bleeds that DC level away naturally.
-                        self.last_triangle_output
                     }
-                }
-            };
+                    ChannelMode::Triangle => {
+                        if voice.midi_handler.gate() {
+                            voice.triangle.clock();
+                            if !voice.triangle.is_muted() {
+                                let output =
+                                    (voice.triangle.output() * AMPLITUDE_SCALE as f32) as i32;
+                                voice.last_triangle_output = output;
+                                output
+                            } else {
+                                0
+                            }
+                        } else {
+                            voice.last_triangle_output
+                        }
+                    }
+                };
+                voice.last_output = (voice_output as f32 * gain) as i32;
+                current_output += voice.last_output;
+            }
 
-            let delta = current_output - self.last_output;
+            let delta = current_output - previous_output;
             if delta != 0 {
                 self.blip.add_delta(clock, delta);
-                self.last_output = current_output;
+                previous_output = current_output;
             }
         }
 
@@ -175,34 +229,114 @@ impl Rp2a03Plugin {
         self.blip.read_samples(&mut buf_i16, false);
 
         for (i, sample) in buf_i16.iter().enumerate() {
-            output[i] = (*sample as f32 / 32768.0) * master_gain;
+            output[i] = (*sample as f32 / 32768.0).clamp(-1.0, 1.0);
         }
     }
 
     fn generate_samples(&mut self, output: &mut [f32], seqs: &ActiveSequences) {
+        let active_voice_count = self.active_voice_count();
         let mut rendered = 0;
 
         while rendered < output.len() {
-            let master_gain = self
-                .midi_handler
-                .apply_current_modulation(&mut self.pulse, &mut self.triangle, seqs);
+            let mut master_gains = Vec::with_capacity(active_voice_count);
+            let mut segment_len = output.len() - rendered;
+            let mut any_gated = false;
 
-            let segment_len = if self.midi_handler.gate() {
-                self.midi_handler
-                    .samples_until_next_frame(self.sample_rate)
-                    .min(output.len() - rendered)
-            } else {
-                output.len() - rendered
-            };
+            for voice in &mut self.voices[..active_voice_count] {
+                master_gains.push(voice.midi_handler.apply_current_modulation(
+                    &mut voice.pulse,
+                    &mut voice.triangle,
+                    seqs,
+                ));
+                if voice.midi_handler.gate() {
+                    any_gated = true;
+                    segment_len = segment_len.min(
+                        voice
+                            .midi_handler
+                            .samples_until_next_frame(self.sample_rate),
+                    );
+                }
+            }
+
+            if !any_gated {
+                segment_len = output.len() - rendered;
+            }
 
             self.render_samples_with_current_modulation(
                 &mut output[rendered..rendered + segment_len],
-                master_gain,
+                &master_gains,
+                active_voice_count,
             );
-
             rendered += segment_len;
-            self.midi_handler
-                .advance_frame_samples(seqs, self.sample_rate, segment_len);
+
+            for voice in &mut self.voices[..active_voice_count] {
+                voice
+                    .midi_handler
+                    .advance_frame_samples(seqs, self.sample_rate, segment_len);
+            }
+        }
+    }
+
+    fn select_voice(&mut self, note: u8) -> usize {
+        let voice_count = self.active_voice_count();
+        if voice_count == 1 {
+            return 0;
+        }
+
+        if let Some(index) = self.voices[..voice_count].iter().position(|voice| {
+            voice
+                .midi_handler
+                .note_stack
+                .iter()
+                .any(|(n, _)| *n == note)
+        }) {
+            return index;
+        }
+
+        let index = self.voices[..voice_count]
+            .iter()
+            .position(|voice| !voice.midi_handler.gate())
+            .unwrap_or_else(|| {
+                self.voices[..voice_count]
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, voice)| voice.alloc_id)
+                    .map(|(index, _)| index)
+                    .unwrap_or(0)
+            });
+
+        self.voices[index].reset();
+        self.alloc_counter = self.alloc_counter.wrapping_add(1);
+        self.voices[index].alloc_id = self.alloc_counter;
+        index
+    }
+
+    fn handle_event(&mut self, event: &NoteEvent<()>, seqs: &ActiveSequences) -> Option<usize> {
+        match event {
+            NoteEvent::NoteOn { note, .. } => {
+                let index = self.select_voice(*note);
+                let voice = &mut self.voices[index];
+                voice
+                    .midi_handler
+                    .handle_event(event, &mut voice.pulse, &mut voice.triangle, seqs)
+            }
+            NoteEvent::NoteOff { .. } | NoteEvent::Choke { .. } | NoteEvent::MidiCC { .. } => {
+                let mut program = None;
+                for voice in &mut self.voices {
+                    program = voice
+                        .midi_handler
+                        .handle_event(event, &mut voice.pulse, &mut voice.triangle, seqs)
+                        .or(program);
+                }
+                program
+            }
+            NoteEvent::MidiProgramChange { .. } => {
+                let voice = &mut self.voices[0];
+                voice
+                    .midi_handler
+                    .handle_event(event, &mut voice.pulse, &mut voice.triangle, seqs)
+            }
+            _ => None,
         }
     }
 
@@ -239,27 +373,27 @@ impl Rp2a03Plugin {
     fn publish_sequence_playheads(&self, seqs: &ActiveSequences) {
         let steps = [
             sequence_play_step(
-                &self.midi_handler.vol_seq_player,
+                &self.voices[0].midi_handler.vol_seq_player,
                 &seqs.vol_seq,
                 seqs.vol_enabled,
             ),
             sequence_play_step(
-                &self.midi_handler.arp_seq_player,
+                &self.voices[0].midi_handler.arp_seq_player,
                 &seqs.arp_seq,
                 seqs.arp_enabled,
             ),
             sequence_play_step(
-                &self.midi_handler.pitch_seq_player,
+                &self.voices[0].midi_handler.pitch_seq_player,
                 &seqs.pitch_seq,
                 seqs.pitch_enabled,
             ),
             sequence_play_step(
-                &self.midi_handler.hipitch_seq_player,
+                &self.voices[0].midi_handler.hipitch_seq_player,
                 &seqs.hipitch_seq,
                 seqs.hipitch_enabled,
             ),
             sequence_play_step(
-                &self.midi_handler.duty_seq_player,
+                &self.voices[0].midi_handler.duty_seq_player,
                 &seqs.duty_seq,
                 seqs.duty_enabled,
             ),
@@ -347,8 +481,13 @@ impl Plugin for Rp2a03Plugin {
                 egui::Frame::NONE
                     .inner_margin(egui::Margin::same(12))
                     .show(ui, |ui| {
-                        let result =
-                            render_editor_ui(ui, &mut data, sequence_index, &playheads, step_time_hz);
+                        let result = render_editor_ui(
+                            ui,
+                            &mut data,
+                            sequence_index,
+                            &playheads,
+                            step_time_hz,
+                        );
 
                         if let Some(new_index) = result.new_sequence_index {
                             data.set_all_selected_sequence_indices(new_index);
@@ -371,6 +510,18 @@ impl Plugin for Rp2a03Plugin {
                             setter.set_parameter(&params.waveform, mode_i32);
                             setter.end_set_parameter(&params.waveform);
                         }
+
+                        if let Some(new_polyphony) = result.new_polyphony {
+                            setter.begin_set_parameter(&params.polyphony);
+                            setter.set_parameter(&params.polyphony, new_polyphony);
+                            setter.end_set_parameter(&params.polyphony);
+                        }
+
+                        if let Some(new_max_voices) = result.new_max_voices {
+                            setter.begin_set_parameter(&params.max_voices);
+                            setter.set_parameter(&params.max_voices, new_max_voices);
+                            setter.end_set_parameter(&params.max_voices);
+                        }
                     });
             },
         )
@@ -386,15 +537,12 @@ impl Plugin for Rp2a03Plugin {
         self.blip = BlipBuf::new(BLIP_BUFFER_SIZE);
         self.blip
             .set_rates(NTSC_CPU_CLOCK, buffer_config.sample_rate as f64);
-        self.pulse.reset();
-        self.pulse.set_enabled(true);
-        self.pulse.write_sweep(0x08);
-        self.triangle.reset();
-        self.triangle.set_enabled(true);
-        self.last_output = 0;
-        self.last_triangle_output = 0;
-        self.midi_handler.reset();
-        self.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
+        for voice in &mut self.voices {
+            voice.reset();
+            voice.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
+        }
+        self.alloc_counter = 0;
+        self.last_active_voice_count = 1;
         self.midi_program_index = None;
         self.last_sequence_parameter = self.params.sequence_number.value();
         self.clear_sequence_playheads();
@@ -402,16 +550,13 @@ impl Plugin for Rp2a03Plugin {
     }
 
     fn reset(&mut self) {
-        self.pulse.reset();
-        self.pulse.set_enabled(true);
-        self.pulse.write_sweep(0x08);
-        self.triangle.reset();
-        self.triangle.set_enabled(true);
+        for voice in &mut self.voices {
+            voice.reset();
+            voice.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
+        }
         self.blip.clear();
-        self.last_output = 0;
-        self.last_triangle_output = 0;
-        self.midi_handler.reset();
-        self.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
+        self.alloc_counter = 0;
+        self.last_active_voice_count = 1;
         self.midi_program_index = None;
         self.last_sequence_parameter = self.params.sequence_number.value();
         self.clear_sequence_playheads();
@@ -423,14 +568,34 @@ impl Plugin for Rp2a03Plugin {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        self.midi_handler
-            .apply_host_automation(self.host_automation_controls());
+        let host_controls = self.host_automation_controls();
+        for voice in &mut self.voices {
+            voice.midi_handler.apply_host_automation(host_controls);
+        }
         // Sync channel mode from host parameter (handles DAW automation / state recall).
-        self.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
+        let channel_mode = ChannelMode::from_i32(self.params.waveform.value());
+        for voice in &mut self.voices {
+            voice.midi_handler.channel_mode = channel_mode;
+        }
         // Sync channel mode into shared GUI state so the combobox reflects the current value.
-        self.shared_sequences.lock().channel_mode =
-            ChannelMode::from_i32(self.params.waveform.value());
+        {
+            let mut data = self.shared_sequences.lock();
+            data.channel_mode = channel_mode;
+            data.polyphony = self.params.polyphony.value();
+            data.max_voices = self.params.max_voices.value().clamp(1, 24);
+        }
         let num_samples = buffer.samples();
+        let active_voice_count = self.active_voice_count();
+        if active_voice_count < self.last_active_voice_count {
+            for voice in &mut self.voices[active_voice_count..self.last_active_voice_count] {
+                voice.reset();
+            }
+            self.blip.clear();
+            for voice in &mut self.voices[..active_voice_count] {
+                voice.last_output = 0;
+            }
+        }
+        self.last_active_voice_count = active_voice_count;
         let mut next_event = context.next_event();
         let mut sample_pos: usize = 0;
         let mut mono_buf = vec![0.0f32; num_samples];
@@ -467,10 +632,7 @@ impl Plugin for Rp2a03Plugin {
                     next_event = Some(event);
                     break;
                 }
-                if let Some(program_index) =
-                    self.midi_handler
-                        .handle_event(&event, &mut self.pulse, &mut self.triangle, &active_seqs)
-                {
+                if let Some(program_index) = self.handle_event(&event, &active_seqs) {
                     sequence_index = program_index.min(MAX_SEQUENCES - 1);
                     self.midi_program_index = Some(sequence_index);
                     active_seqs = self.active_sequences(sequence_index);

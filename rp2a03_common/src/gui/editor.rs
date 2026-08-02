@@ -1,7 +1,7 @@
 //! rp2a03_common\src\gui\editor.rs
 //! Layout rendering logic for the reusable sequence editor window.
 
-use super::state::{SequencePlayheads, SharedSequences, MAX_SEQUENCES};
+use super::state::{MAX_SEQUENCES, SequencePlayheads, SharedSequences};
 use super::widgets::{draw_envelope_bar_graph, group_box, repeating_button};
 use crate::ChannelMode;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence};
@@ -16,6 +16,10 @@ pub struct EditorResult {
     pub new_step_time_hz: Option<i32>,
     /// If the user changed the channel mode via the waveform combobox.
     pub new_channel_mode: Option<ChannelMode>,
+    /// If the user changed the polyphony toggle.
+    pub new_polyphony: Option<bool>,
+    /// If the user changed the maximum voice count.
+    pub new_max_voices: Option<i32>,
 }
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
@@ -96,8 +100,12 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
     }
 }
 
-fn draw_header(ui: &mut egui::Ui, data: &mut SharedSequences, changed_channel_mode: &mut Option<ChannelMode>) {
-    let mut polyphony = false;
+fn draw_header(
+    ui: &mut egui::Ui,
+    data: &mut SharedSequences,
+    changed_channel_mode: &mut Option<ChannelMode>,
+    changed_polyphony: &mut Option<bool>,
+) {
     let mut portamento = false;
 
     const HEADER_H: f32 = 92.0;
@@ -162,12 +170,18 @@ fn draw_header(ui: &mut egui::Ui, data: &mut SharedSequences, changed_channel_mo
                         ChannelMode::Noise => "2A03 | Noise",
                     })
                     .show_ui(ui, |ui| {
-                        if ui.selectable_value(&mut waveform_id, 0, "2A03 | Pulse").clicked() {
+                        if ui
+                            .selectable_value(&mut waveform_id, 0, "2A03 | Pulse")
+                            .clicked()
+                        {
                             let new_mode = ChannelMode::Pulse;
                             data.channel_mode = new_mode;
                             *changed_channel_mode = Some(new_mode);
                         }
-                        if ui.selectable_value(&mut waveform_id, 1, "2A03 | Triangle").clicked() {
+                        if ui
+                            .selectable_value(&mut waveform_id, 1, "2A03 | Triangle")
+                            .clicked()
+                        {
                             let new_mode = ChannelMode::Triangle;
                             // If Duty tab was active, revert to Volume
                             if data.selected_tab == 4 {
@@ -198,7 +212,9 @@ fn draw_header(ui: &mut egui::Ui, data: &mut SharedSequences, changed_channel_mo
             )),
             |ui| {
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut polyphony, "Polyphony");
+                    if ui.checkbox(&mut data.polyphony, "Polyphony").changed() {
+                        *changed_polyphony = Some(data.polyphony);
+                    }
                     ui.checkbox(&mut portamento, "Portamento");
                 })
                 .response
@@ -228,6 +244,7 @@ fn draw_instrument_settings_panel(
     changed_sequence_index: &mut Option<usize>,
     step_time_hz: u32,
     changed_step_time_hz: &mut Option<i32>,
+    changed_max_voices: &mut Option<i32>,
 ) {
     // "Duty / Noise" tab is disabled for Triangle mode.
     let seq_types: &[(&str, usize)] = &[
@@ -273,10 +290,16 @@ fn draw_instrument_settings_panel(
                     let is_triangle = data.channel_mode == ChannelMode::Triangle;
                     let enabled = !(is_duty && is_triangle);
 
-                    ui.add_enabled(enabled, egui::Checkbox::new(data.sequence_enabled_mut(tab), ""));
+                    ui.add_enabled(
+                        enabled,
+                        egui::Checkbox::new(data.sequence_enabled_mut(tab), ""),
+                    );
 
                     if ui
-                        .add_enabled(enabled, egui::Button::new(name).selected(data.selected_tab == tab))
+                        .add_enabled(
+                            enabled,
+                            egui::Button::new(name).selected(data.selected_tab == tab),
+                        )
                         .clicked()
                     {
                         if data.selected_tab != tab {
@@ -301,10 +324,7 @@ fn draw_instrument_settings_panel(
             let mut index = shared_sequence_index;
 
             if ui
-                .add(
-                    egui::DragValue::new(&mut index)
-                        .range(0..=MAX_SEQUENCES - 1),
-                )
+                .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
                 .changed()
             {
                 *changed_sequence_index = Some(index);
@@ -323,58 +343,60 @@ fn draw_instrument_settings_panel(
     // Everything remaining in the left panel belongs to Time settings.
     let remaining = ui.available_rect_before_wrap();
 
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(remaining),
-        |ui| {
-            group_box(ui, "Settings", |ui| {
-                // Fill the same width as Instrument settings.
-                ui.set_min_width(ui.available_width());
+    ui.scope_builder(egui::UiBuilder::new().max_rect(remaining), |ui| {
+        group_box(ui, "Settings", |ui| {
+            // Fill the same width as Instrument settings.
+            ui.set_min_width(ui.available_width());
 
-                // group_box() adds:
-                //
-                // top    = PADDING + TITLE_HEIGHT = 20px
-                // bottom = PADDING                = 10px
-                //
-                // Therefore its contents need to be 30px shorter
-                // than the outer available rectangle.
-                ui.set_min_height(ui.available_height());
+            // group_box() adds:
+            //
+            // top    = PADDING + TITLE_HEIGHT = 20px
+            // bottom = PADDING                = 10px
+            //
+            // Therefore its contents need to be 30px shorter
+            // than the outer available rectangle.
+            ui.set_min_height(ui.available_height());
 
-                // -------------------------------------------------
-                // Time controls
-                // -------------------------------------------------
-                ui.horizontal(|ui| {
-                    ui.label("Engine Speed:");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mut hz = step_time_hz as i32;
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut hz)
-                                    .range(1..=600)
-                                    .suffix(" Hz"),
-                            )
-                            .changed()
-                        {
-                            *changed_step_time_hz = Some(hz);
-                        }
-                    });
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Polyphony:");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let _ = ui.button("knob");
-                    });
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Porta. Speed:");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let _ = ui.button("knob");
-                    });
+            // -------------------------------------------------
+            // Time controls
+            // -------------------------------------------------
+            ui.horizontal(|ui| {
+                ui.label("Engine Speed:");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut hz = step_time_hz as i32;
+                    if ui
+                        .add(egui::DragValue::new(&mut hz).range(1..=600).suffix(" Hz"))
+                        .changed()
+                    {
+                        *changed_step_time_hz = Some(hz);
+                    }
                 });
             });
-        },
-    );
+
+            ui.horizontal(|ui| {
+                ui.label("Polyphony:");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut data.max_voices)
+                                .range(1..=24)
+                                .suffix(" voices"),
+                        )
+                        .changed()
+                    {
+                        *changed_max_voices = Some(data.max_voices);
+                    }
+                });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Porta. Speed:");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let _ = ui.button("knob");
+                });
+            });
+        });
+    });
 }
 
 fn draw_sequence_editor_panel(
@@ -450,7 +472,10 @@ fn draw_sequence_editor_panel(
 
             ui.add_space(15.0);
 
-            ui.label(format!("{} ms", (cur_len as u64 * 1000) / (step_time_hz as u64).max(1)));
+            ui.label(format!(
+                "{} ms",
+                (cur_len as u64 * 1000) / (step_time_hz as u64).max(1)
+            ));
 
             if tab == 1 {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -510,7 +535,7 @@ fn draw_main_content(
     playheads: &SequencePlayheads,
     step_time_hz: u32,
     changed_step_time_hz: &mut Option<i32>,
-    _changed_channel_mode: &mut Option<ChannelMode>,
+    changed_max_voices: &mut Option<i32>,
 ) {
     const LEFT_W: f32 = 180.0;
     const GAP: f32 = 8.0;
@@ -523,40 +548,29 @@ fn draw_main_content(
 
     let left_rect = egui::Rect::from_min_max(
         egui::pos2(available.min.x, content_top),
-        egui::pos2(
-            available.min.x + LEFT_W,
-            available.max.y,
-        ),
+        egui::pos2(available.min.x + LEFT_W, available.max.y),
     );
 
     let right_rect = egui::Rect::from_min_max(
-        egui::pos2(
-            left_rect.max.x + GAP,
-            content_top,
-        ),
+        egui::pos2(left_rect.max.x + GAP, content_top),
         available.max,
     );
 
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(left_rect),
-        |ui| {
-            draw_instrument_settings_panel(
-                ui,
-                data,
-                shared_sequence_index,
-                changed_sequence_index,
-                step_time_hz,
-                changed_step_time_hz,
-            );
-        },
-    );
+    ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
+        draw_instrument_settings_panel(
+            ui,
+            data,
+            shared_sequence_index,
+            changed_sequence_index,
+            step_time_hz,
+            changed_step_time_hz,
+            changed_max_voices,
+        );
+    });
 
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(right_rect),
-        |ui| {
-            draw_sequence_editor_panel(ui, data, playheads, step_time_hz);
-        },
-    );
+    ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
+        draw_sequence_editor_panel(ui, data, playheads, step_time_hz);
+    });
 }
 
 fn draw_footer(ui: &mut egui::Ui) {
@@ -591,8 +605,10 @@ pub fn render_editor_ui(
     let mut changed_sequence_index = None;
     let mut changed_step_time_hz = None;
     let mut changed_channel_mode = None;
+    let mut changed_polyphony = None;
+    let mut changed_max_voices = None;
 
-    draw_header(ui, data, &mut changed_channel_mode);
+    draw_header(ui, data, &mut changed_channel_mode, &mut changed_polyphony);
     draw_chip_tabs(ui, data);
 
     // Reserve footer space at the bottom of the window with spacing gap
@@ -622,7 +638,7 @@ pub fn render_editor_ui(
             playheads,
             step_time_hz,
             &mut changed_step_time_hz,
-            &mut changed_channel_mode,
+            &mut changed_max_voices,
         );
     });
 
@@ -635,6 +651,8 @@ pub fn render_editor_ui(
         new_sequence_index: changed_sequence_index,
         new_step_time_hz: changed_step_time_hz,
         new_channel_mode: changed_channel_mode,
+        new_polyphony: changed_polyphony,
+        new_max_voices: changed_max_voices,
     }
 }
 
