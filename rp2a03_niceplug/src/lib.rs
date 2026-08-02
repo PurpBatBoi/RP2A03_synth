@@ -21,6 +21,7 @@ use std::time::Duration;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
+const TRIANGLE_AMPLITUDE_SCALE: i32 = 3000;
 // Nominal synth-instance output calibration: 20*log10(0.7943282) = -2 dBFS.
 // This trims the final bus without changing per-voice, polyphony, or MIDI gain.
 const MASTER_OUTPUT_GAIN: f32 = 0.794_328_2;
@@ -284,7 +285,7 @@ impl Rp2a03Plugin {
                             voice.triangle.clock();
                             if !voice.triangle.is_muted() {
                                 let output =
-                                    (voice.triangle.output() * AMPLITUDE_SCALE as f32) as i32;
+                                    (voice.triangle.output() * TRIANGLE_AMPLITUDE_SCALE as f32) as i32;
                                 voice.last_triangle_output = output;
                                 output
                             } else {
