@@ -9,7 +9,6 @@ use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode};
-use rp2a03_core::software_lfo::DEFAULT_LFO_SPEED;
 
 impl MidiHandler {
     /// Process an incoming MIDI / Note event.
@@ -45,10 +44,7 @@ impl MidiHandler {
             NoteEvent::NoteOff { note, .. } => {
                 self.note_off(*note, &mut channel, seqs);
             }
-            NoteEvent::MidiCC { cc, value, .. } => {
-                let value_u8 = (value * 127.0).clamp(0.0, 127.0) as u8;
-                self.handle_control_change(*cc, value_u8);
-            }
+            NoteEvent::MidiCC { .. } => {}
             NoteEvent::MidiProgramChange { program, .. } => {
                 return Some(*program as usize);
             }
@@ -222,48 +218,4 @@ impl MidiHandler {
         self.macro_period = self.macro_period.clamp(0, 0x7FF);
     }
 
-    /// Handle MIDI Control Change messages.
-    pub fn handle_control_change(&mut self, controller: u8, value: u8) {
-        match controller {
-            1 => {
-                let depth = value >> 3;
-                let speed = if self.lfo.vibrato_speed == 0 {
-                    DEFAULT_LFO_SPEED
-                } else {
-                    self.lfo.vibrato_speed
-                };
-                self.lfo.set_vibrato(depth, speed);
-            }
-            2 => {
-                let speed = value >> 1;
-                self.lfo.set_vibrato(self.lfo.vibrato_depth, speed);
-            }
-            3 => {
-                let depth = value >> 3;
-                let speed = if self.lfo.tremolo_speed == 0 {
-                    DEFAULT_LFO_SPEED
-                } else {
-                    self.lfo.tremolo_speed
-                };
-                self.lfo.set_tremolo(depth, speed);
-            }
-            4 => {
-                let speed = value >> 1;
-                self.lfo.set_tremolo(self.lfo.tremolo_depth, speed);
-            }
-            7 => {
-                self.cc_volume = value;
-            }
-            11 => {
-                self.cc_expression = value;
-            }
-            14 => {
-                self.fine_pitch = value as i8 - 64;
-            }
-            15 => {
-                self.hi_pitch = value as i8 - 64;
-            }
-            _ => {}
-        }
-    }
 }

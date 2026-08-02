@@ -93,10 +93,6 @@ pub struct MidiHandler {
     pub gate: bool,
     /// Current active note velocity (0..127)
     pub current_velocity: u8,
-    /// MIDI CC 07 (Volume MSB, 0..127, default 127) — scales APU 15-value volume
-    pub cc_volume: u8,
-    /// MIDI CC 11 (Expression MSB, 0..127, default 127) — plugin-level gain
-    pub cc_expression: u8,
     /// MIDI CC 14 (Pitch offset, -64..+63 semitone cents offset)
     pub fine_pitch: i8,
     /// MIDI CC 15 (Hi-pitch offset, -64..+63 coarse high-period offset)
@@ -188,8 +184,6 @@ impl Default for MidiHandler {
             octave_offset: 12,
             gate: false,
             current_velocity: 127,
-            cc_volume: 127,
-            cc_expression: 127,
             fine_pitch: 0,
             hi_pitch: 0,
             hardware_volume: 15,
@@ -229,8 +223,6 @@ impl MidiHandler {
         self.note_stack.clear();
         self.gate = false;
         self.current_velocity = 127;
-        self.cc_volume = 127;
-        self.cc_expression = 127;
         self.fine_pitch = 0;
         self.hi_pitch = 0;
         self.hardware_volume = 15;
@@ -517,7 +509,7 @@ impl MidiHandler {
         mut noise: Option<&mut Noise>,
         seqs: &ActiveSequences,
     ) -> f32 {
-        let master_gain = self.cc_expression as f32 / 127.0;
+        let master_gain = 1.0;
 
         match self.channel_mode {
             ChannelMode::Pulse => self.apply_pulse_modulation(pulse, seqs, master_gain),
@@ -538,8 +530,7 @@ impl MidiHandler {
             15
         };
         let hardware_scaled = vol_val * self.hardware_volume as u32 / 15;
-        let cc7_scaled = hardware_scaled * self.cc_volume as u32 / 127;
-        let apu_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
+        let apu_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
         let short_mode = seqs.duty_enabled
             && !seqs.duty_seq.values.is_empty()
             && self.duty_seq_player.value() != 0;
@@ -586,8 +577,7 @@ impl MidiHandler {
         };
 
         let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15) as u32;
-        let cc7_scaled = (hardware_scaled * self.cc_volume as u32 / 127) as u32;
-        let vel_scaled_vol = (cc7_scaled * self.current_velocity as u32 / 127) as u8;
+        let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
         let tremolo_sub = self.lfo.tremolo_volume_delta();
         let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
 
@@ -637,8 +627,7 @@ impl MidiHandler {
         };
 
         let hardware_scaled = vol_val * (self.hardware_volume as f32 / 15.0);
-        let cc7_scaled = hardware_scaled * (self.cc_volume as f32 / 127.0);
-        let vel_scaled_vol = cc7_scaled * (self.current_velocity as f32 / 127.0);
+        let vel_scaled_vol = hardware_scaled * (self.current_velocity as f32 / 127.0);
         let tremolo_sub = self.lfo.tremolo_volume_delta() as f32;
         let apu_vol = (vel_scaled_vol - tremolo_sub).clamp(0.0, 15.0);
 

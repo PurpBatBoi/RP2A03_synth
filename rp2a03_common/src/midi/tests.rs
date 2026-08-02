@@ -909,7 +909,7 @@ fn note_off_for_another_voice_does_not_retrigger_this_voice() {
 }
 
 #[test]
-fn hi_pitch_cc15_and_host_automation_offsets_period() {
+fn hi_pitch_host_automation_offsets_period() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
     let mut triangle = Triangle::new();
@@ -918,8 +918,10 @@ fn hi_pitch_cc15_and_host_automation_offsets_period() {
     // Default hi_pitch is 0
     assert_eq!(handler.hi_pitch, 0);
 
-    // CC 15 sets hi_pitch (value 66 -> +2)
-    handler.handle_control_change(15, 66);
+    handler.apply_host_automation(HostAutomationControls {
+        hi_pitch: 2,
+        ..HostAutomationControls::default()
+    });
     assert_eq!(handler.hi_pitch, 2);
 
     // Trigger note and update modulation
