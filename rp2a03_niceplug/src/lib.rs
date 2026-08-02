@@ -545,8 +545,8 @@ fn load_sequence_playheads(playheads: &[AtomicUsize; SEQUENCE_TYPE_COUNT]) -> Se
 }
 
 impl Plugin for Rp2a03Plugin {
-    const NAME: &'static str = "RP2A03 Synth";
-    const VENDOR: &'static str = "RP2A03 Project";
+    const NAME: &'static str = "RP2A03_Synth";
+    const VENDOR: &'static str = "PurpBatBoi";
     const URL: &'static str = "";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -777,7 +777,7 @@ impl Plugin for Rp2a03Plugin {
 
 impl ClapPlugin for Rp2a03Plugin {
     const CLAP_ID: &'static str = "com.rp2a03.synth";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("NES APU Pulse Channel Synth");
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("NES APU+MAPPERS Synthesizer");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
