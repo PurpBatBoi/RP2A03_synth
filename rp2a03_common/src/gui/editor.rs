@@ -215,9 +215,11 @@ fn draw_header(
             )),
             |ui| {
                 ui.horizontal(|ui| {
-                    if ui.checkbox(&mut data.polyphony, "Polyphony").changed() {
-                        *changed_polyphony = Some(data.polyphony);
-                    }
+                    ui.add_enabled_ui(!data.portamento_enabled, |ui| {
+                        if ui.checkbox(&mut data.polyphony, "Polyphony").changed() {
+                            *changed_polyphony = Some(data.polyphony);
+                        }
+                    });
                     if ui.checkbox(&mut portamento, "Portamento").changed() {
                         data.portamento_enabled = portamento;
                         *changed_portamento_enabled = Some(portamento);
@@ -383,16 +385,18 @@ fn draw_instrument_settings_panel(
             ui.horizontal(|ui| {
                 ui.label("Polyphony:");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut data.max_voices)
-                                .range(1..=8)
-                                .suffix(" voices"),
-                        )
-                        .changed()
-                    {
-                        *changed_max_voices = Some(data.max_voices);
-                    }
+                    ui.add_enabled_ui(!data.portamento_enabled, |ui| {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut data.max_voices)
+                                    .range(1..=8)
+                                    .suffix(" voices"),
+                            )
+                            .changed()
+                        {
+                            *changed_max_voices = Some(data.max_voices);
+                        }
+                    });
                 });
             });
 
