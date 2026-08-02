@@ -212,7 +212,10 @@ impl MidiHandler {
     /// Apply top note from monophonic note stack.
     ///
     /// `pub(super)` because it's also called from `note_on` / `note_off` in `events.rs`.
-    pub(super) fn apply_top_note(&mut self, channel: &mut AnyChannel) {
+    /// `reset_phase` is true only for a fresh attack. Legato note changes
+    /// preserve the pulse duty phase so they do not emulate an unnecessary
+    /// `$4003/$4007` write.
+    pub(super) fn apply_top_note(&mut self, channel: &mut AnyChannel, reset_phase: bool) {
         if let Some(&(note, velocity)) = self.note_stack.last() {
             self.active_note = note;
             self.current_velocity = velocity;
@@ -220,15 +223,21 @@ impl MidiHandler {
             channel.set_enabled(true);
 
             match channel {
-                AnyChannel::Pulse(p) => p.write_sweep(0x08),
+                AnyChannel::Pulse(p) => {
+                    if reset_phase {
+                        p.write_sweep(0x08)
+                    }
+                }
                 AnyChannel::Triangle(t) => t.write_linear_counter(0xFF),
             }
 
-            // Reset the sentinel so the next update_modulation frame is guaranteed to call
-            // write_timer_hi (full phase reset) regardless of whether the new note shares
-            // the same high-period bits as the previous note. 0xFF is never a valid 3-bit
-            // timer_hi value (valid range 0–7), so this safely signals "note just triggered".
-            self.prev_timer_hi = 0xFF;
+            if reset_phase {
+                // Reset the sentinel so the next update_modulation frame is guaranteed to call
+                // write_timer_hi (full phase reset) regardless of whether the new note shares
+                // the same high-period bits as the previous note. 0xFF is never a valid 3-bit
+                // timer_hi value (valid range 0–7), so this safely signals "note just triggered".
+                self.prev_timer_hi = 0xFF;
+            }
         }
     }
 

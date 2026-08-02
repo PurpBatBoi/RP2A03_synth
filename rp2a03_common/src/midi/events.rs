@@ -52,11 +52,15 @@ impl MidiHandler {
         channel: &mut AnyChannel,
         seqs: &ActiveSequences,
     ) {
+        // A note arriving while another note is sounding is a legato change:
+        // preserve the pulse duty phase and let the normal soft timer path
+        // update pitch if needed.
+        let reset_phase = !self.gate;
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 
         self.trigger_sequences(seqs);
-        self.apply_top_note(channel);
+        self.apply_top_note(channel, reset_phase);
         self.recalculate_macro_period(seqs);
 
         self.frame_sample_counter = 0.0;
@@ -110,7 +114,7 @@ impl MidiHandler {
             // returns to the held note, just like dnFamiTracker's RunNote does
             // when the top note is released and a lower note is still held.
             self.trigger_sequences(seqs);
-            self.apply_top_note(channel);
+            self.apply_top_note(channel, false);
             self.recalculate_macro_period(seqs);
             self.frame_sample_counter = 0.0;
         }
