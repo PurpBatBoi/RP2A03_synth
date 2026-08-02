@@ -622,7 +622,7 @@ fn draw_footer(ui: &mut egui::Ui) {
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("0.0.4-Alpha").weak());
+        ui.label(egui::RichText::new("0.0.5-Alpha").weak());
         // ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         //     ui.button("Settings")
         // });
