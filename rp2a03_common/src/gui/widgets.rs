@@ -44,7 +44,7 @@ pub fn draw_envelope_bar_graph(
         egui::StrokeKind::Outside,
     );
 
-    let num_steps = seq.len();
+    let mut num_steps = seq.len();
 
     // Arpeggio scroll state handling: +/- 10 semitones visible (-10 to +10, 21 rows)
     let visible_span = 10i16;
@@ -101,6 +101,18 @@ pub fn draw_envelope_bar_graph(
             Sense::hover(),
         )
     };
+
+    // An empty envelope has no step columns to draw into. Start it with a
+    // small, useful canvas when the user begins drawing directly on the graph.
+    const MIN_DRAW_STEPS: usize = 5;
+    if num_steps == 0
+        && (graph_response.clicked_by(egui::PointerButton::Primary)
+            || graph_response.drag_started_by(egui::PointerButton::Primary)
+            || graph_response.dragged_by(egui::PointerButton::Primary))
+    {
+        seq.values.resize(MIN_DRAW_STEPS, 0);
+        num_steps = MIN_DRAW_STEPS;
+    }
 
     // Handle mouse wheel scrolling for Arpeggio
     if is_arpeggio && (graph_response.hovered() || scrollbar_response.hovered()) {

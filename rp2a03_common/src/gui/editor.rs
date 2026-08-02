@@ -446,110 +446,125 @@ fn draw_sequence_editor_panel(
         // Controls below graph: add_space(6) + Size row (~22) + add_space(6) + TextEdit (~20) = ~54px.
         const CONTROLS_HEIGHT: f32 = 54.0;
         let graph_height = (ui.available_height() - CONTROLS_HEIGHT).max(150.0);
-
-        let (text, sequence) = data.selected_sequence_mut(tab);
+        let mut auto_enable = false;
 
         let (min_val, max_val) = sequence_range(tab);
 
-        let is_arpeggio = tab == 1;
-        if draw_envelope_bar_graph(
-            ui,
-            sequence,
-            min_val,
-            max_val,
-            is_arpeggio,
-            playheads.step(tab),
-            graph_height,
-        ) {
-            *text = sequence_to_text(sequence);
-        }
+        {
+            let (text, sequence) = data.selected_sequence_mut(tab);
 
-        ui.add_space(6.0);
-
-        ui.horizontal(|ui| {
-            ui.label("Size:");
-
-            let cur_len = sequence.len();
-
-            if repeating_button(ui, "-") && cur_len > 0 {
-                sequence.values.pop();
-
-                let new_len = sequence.len();
-
-                if sequence.loop_point.is_some_and(|p| p >= new_len) {
-                    sequence.loop_point = None;
-                }
-
-                if sequence.release_point.is_some_and(|p| p >= new_len) {
-                    sequence.release_point = None;
-                }
-
+            let is_arpeggio = tab == 1;
+            if draw_envelope_bar_graph(
+                ui,
+                sequence,
+                min_val,
+                max_val,
+                is_arpeggio,
+                playheads.step(tab),
+                graph_height,
+            ) {
                 *text = sequence_to_text(sequence);
+                auto_enable = true;
             }
 
-            ui.add_sized(
-                [28.0, 18.0],
-                egui::Label::new(egui::RichText::new(cur_len.to_string()).strong()),
+            ui.add_space(6.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Size:");
+
+                let mut desired_len = sequence.len();
+
+                if repeating_button(ui, "-") {
+                    desired_len = desired_len.saturating_sub(1);
+                }
+
+                // FamiTracker-style size control: drag the number vertically to
+                // grow or shrink the sequence, while retaining the +/- buttons.
+                ui.add_sized(
+                    [28.0, 18.0],
+                    egui::DragValue::new(&mut desired_len)
+                        .speed(1.0)
+                        .range(0..=256),
+                );
+
+                if repeating_button(ui, "+") {
+                    desired_len = desired_len.saturating_add(1).min(256);
+                }
+
+                if desired_len != sequence.len() {
+                    auto_enable = true;
+                    sequence.values.resize(desired_len, 0);
+
+                    if sequence.loop_point.is_some_and(|p| p >= desired_len) {
+                        sequence.loop_point = None;
+                    }
+
+                    if sequence.release_point.is_some_and(|p| p >= desired_len) {
+                        sequence.release_point = None;
+                    }
+
+                    *text = sequence_to_text(sequence);
+                }
+
+                ui.add_space(15.0);
+
+                ui.label(format!(
+                    "{} ms",
+                    (sequence.len() as u64 * 1000) / (step_time_hz as u64).max(1)
+                ));
+
+                if tab == 1 {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.radio_value(&mut sequence.arp_mode, ArpMode::Absolute, "Absolute");
+
+                        ui.radio_value(&mut sequence.arp_mode, ArpMode::Relative, "Relative");
+
+                        ui.label(egui::RichText::new("Mode:").weak());
+                    });
+                }
+
+                if tab == 2 {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
+
+                        ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
+
+                        ui.label(egui::RichText::new("Mode:").weak());
+                    });
+                }
+            });
+
+            ui.add_space(6.0);
+
+            let edit = ui.add(
+                egui::TextEdit::singleline(text)
+                    .desired_width(ui.available_width())
+                    .font(egui::TextStyle::Monospace),
             );
 
-            if repeating_button(ui, "+") {
-                sequence.values.push(0);
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+            if edit.changed() {
+                auto_enable = true;
+                let sanitized = sanitize_sequence_text(text);
+                let prev_mode = sequence.pitch_mode;
+
+                *sequence = if sanitized.trim().is_empty() {
+                    Sequence::default()
+                } else {
+                    Sequence::parse_clamped(&sanitized, min_val, max_val).0
+                };
+
+                sequence.pitch_mode = prev_mode;
+            }
+
+            if enter_pressed || edit.lost_focus() {
                 *text = sequence_to_text(sequence);
             }
-
-            ui.add_space(15.0);
-
-            ui.label(format!(
-                "{} ms",
-                (cur_len as u64 * 1000) / (step_time_hz as u64).max(1)
-            ));
-
-            if tab == 1 {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.radio_value(&mut sequence.arp_mode, ArpMode::Absolute, "Absolute");
-
-                    ui.radio_value(&mut sequence.arp_mode, ArpMode::Relative, "Relative");
-
-                    ui.label(egui::RichText::new("Mode:").weak());
-                });
-            }
-
-            if tab == 2 {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.radio_value(&mut sequence.pitch_mode, PitchMode::Absolute, "Absolute");
-
-                    ui.radio_value(&mut sequence.pitch_mode, PitchMode::Relative, "Relative");
-
-                    ui.label(egui::RichText::new("Mode:").weak());
-                });
-            }
-        });
-
-        ui.add_space(6.0);
-
-        let edit = ui.add(
-            egui::TextEdit::singleline(text)
-                .desired_width(ui.available_width())
-                .font(egui::TextStyle::Monospace),
-        );
-
-        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-        if edit.changed() {
-            let sanitized = sanitize_sequence_text(text);
-            let prev_mode = sequence.pitch_mode;
-
-            *sequence = if sanitized.trim().is_empty() {
-                Sequence::default()
-            } else {
-                Sequence::parse_clamped(&sanitized, min_val, max_val).0
-            };
-
-            sequence.pitch_mode = prev_mode;
         }
 
-        if enter_pressed || edit.lost_focus() {
-            *text = sequence_to_text(sequence);
+        if auto_enable {
+            *data.sequence_enabled_mut(tab) = true;
         }
     });
 }
