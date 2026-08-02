@@ -20,9 +20,9 @@ use std::time::Duration;
 
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
-// Nominal synth-instance output calibration: 20*log10(0.39810717) = -8 dBFS.
+// Nominal synth-instance output calibration: 20*log10(0.6309573) = -4 dBFS.
 // This trims the final bus without changing per-voice, polyphony, or MIDI gain.
-const MASTER_OUTPUT_GAIN: f32 = 0.398_107_17;
+const MASTER_OUTPUT_GAIN: f32 = 0.630_957_3;
 const MAX_VOICES: usize = 8;
 const ALLOCATION_RAMP_CLOCKS: u32 = 2048;
 
