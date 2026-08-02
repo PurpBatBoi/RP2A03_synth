@@ -100,6 +100,17 @@ impl Voice {
         self.last_triangle_output = previous_triangle_output;
         self.allocation_ramp_clocks = ALLOCATION_RAMP_CLOCKS;
     }
+
+    /// Smooth a fresh triangle attack when the voice is reused in monophonic
+    /// mode. Polyphonic voice recycling sets this as part of allocation reset,
+    /// but the single voice is intentionally not reset between notes.
+    fn begin_triangle_attack_ramp(&mut self) {
+        if self.midi_handler.channel_mode == ChannelMode::Triangle
+            && !self.midi_handler.gate()
+        {
+            self.allocation_ramp_clocks = ALLOCATION_RAMP_CLOCKS;
+        }
+    }
 }
 
 pub struct Rp2a03Plugin {
@@ -412,6 +423,7 @@ impl Rp2a03Plugin {
             NoteEvent::NoteOn { note, .. } => {
                 let index = self.select_voice(*note);
                 let voice = &mut self.voices[index];
+                voice.begin_triangle_attack_ramp();
                 voice.midi_handler.handle_event_with_noise(
                     event,
                     &mut voice.pulse,
