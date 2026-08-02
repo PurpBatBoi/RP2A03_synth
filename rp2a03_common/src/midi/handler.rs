@@ -254,7 +254,8 @@ impl MidiHandler {
     /// `pub(super)` because it's also called from `note_on` / `note_off` in `events.rs`.
     /// `reset_phase` is true only for a fresh attack. Legato note changes
     /// preserve the pulse duty phase so they do not emulate an unnecessary
-    /// `$4003/$4007` write.
+    /// `$4003/$4007` write. Noise attacks reset to a deterministic phase so
+    /// every MIDI-track note uses the same locked metallic timbre.
     pub(super) fn apply_top_note(&mut self, channel: &mut AnyChannel, reset_phase: bool) {
         if let Some(&(note, velocity)) = self.note_stack.last() {
             self.active_note = note;

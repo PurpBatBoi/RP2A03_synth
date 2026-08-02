@@ -7,6 +7,7 @@ use nice_plug::prelude::*;
 use rp2a03_core::NTSC_CPU_CLOCK;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
+use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, Sequence};
 
 fn default_seqs() -> ActiveSequences {
@@ -22,6 +23,24 @@ fn default_seqs() -> ActiveSequences {
         duty_seq: Sequence::default(),
         duty_enabled: false,
     }
+}
+
+#[test]
+fn noise_note_on_restarts_lfsr_phase() {
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::Noise;
+    let mut noise = Noise::new();
+    noise.set_enabled(true);
+    let seqs = default_seqs();
+
+    handler.note_on(60, 127, &mut AnyChannel::Noise(&mut noise), &seqs);
+    noise.shift = 0x2345;
+    noise.timer.counter = 2;
+
+    handler.note_on(62, 127, &mut AnyChannel::Noise(&mut noise), &seqs);
+
+    assert_eq!(noise.shift, Noise::INITIAL_SHIFT);
+    assert_eq!(noise.timer.counter, 0);
 }
 
 /// Period of MIDI 72 (note 60 + the default +12 octave offset) — the dn

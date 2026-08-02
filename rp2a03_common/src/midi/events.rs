@@ -69,7 +69,9 @@ impl MidiHandler {
         let reset_phase = match channel {
             AnyChannel::Pulse(_) => !self.pulse_phase_initialized,
             AnyChannel::Triangle(_) => !self.gate,
-            AnyChannel::Noise(_) => !self.gate,
+            // Each MIDI-track noise note starts from the same deterministic
+            // phase so its metallic timbre remains locked across notes.
+            AnyChannel::Noise(_) => true,
         };
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
