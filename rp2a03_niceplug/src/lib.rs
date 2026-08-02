@@ -68,14 +68,20 @@ impl Voice {
     /// to the new note instead of introducing an artificial zero-level click.
     fn reset_for_allocation(&mut self) {
         let previous_output = self.last_output;
+        let previous_triangle_output = self.last_triangle_output;
+        let triangle_sequence = self.triangle.sequence;
         self.pulse.reset();
         self.pulse.set_enabled(true);
         self.pulse.write_sweep(0x08);
         self.triangle.reset();
         self.triangle.set_enabled(true);
+        // A triangle timer/register write does not reset the waveform's 32-step
+        // phase. Preserve it when recycling a polyphonic voice so the DAC does
+        // not jump from the held release level back to sequence step zero.
+        self.triangle.sequence = triangle_sequence;
         self.midi_handler.reset();
         self.last_output = previous_output;
-        self.last_triangle_output = 0;
+        self.last_triangle_output = previous_triangle_output;
     }
 }
 

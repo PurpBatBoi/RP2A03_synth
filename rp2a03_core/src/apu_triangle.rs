@@ -78,6 +78,7 @@ pub struct Triangle {
     pub linear: LinearCounter,
     pub force_silent: bool,
     pub volume: f32,
+    volume_target: f32,
 }
 
 impl Default for Triangle {
@@ -101,6 +102,7 @@ impl Triangle {
             linear: LinearCounter::new(),
             force_silent: false,
             volume: 15.0,
+            volume_target: 15.0,
         }
     }
 
@@ -118,7 +120,32 @@ impl Triangle {
     }
 
     pub fn set_volume(&mut self, volume: f32) {
-        self.volume = volume.clamp(0.0, 15.0);
+        let volume = volume.clamp(0.0, 15.0);
+        self.volume = volume;
+        self.volume_target = volume;
+    }
+
+    /// Set the audible volume target without introducing a discontinuity.
+    ///
+    /// The target is reached by `clock()`, which runs at the APU clock rate.
+    /// This keeps envelope timing sample-accurate while preventing a volume
+    /// sequence step from appearing as an instantaneous DAC jump.
+    pub fn set_volume_target(&mut self, volume: f32) {
+        self.volume_target = volume.clamp(0.0, 15.0);
+    }
+
+    #[inline]
+    fn advance_volume(&mut self) {
+        // At the NTSC CPU clock this reaches a full-scale change in about
+        // 1 ms, short enough to retain envelope articulation but long enough
+        // to suppress clicks from frame-rate volume changes.
+        const SLEW_PER_CLOCK: f32 = 1.0 / 128.0;
+        let delta = self.volume_target - self.volume;
+        if delta.abs() <= SLEW_PER_CLOCK {
+            self.volume = self.volume_target;
+        } else {
+            self.volume += delta.signum() * SLEW_PER_CLOCK;
+        }
     }
 
     pub fn volume(&self) -> f32 {
@@ -173,6 +200,7 @@ impl Triangle {
     /// the 32-step sequence advances.
     /// Also applies any pending length counter reload (must happen each cycle).
     pub fn clock(&mut self) {
+        self.advance_volume();
         self.length.reload();
         if self.timer.tick() && self.length.counter() > 0 && self.linear.counter() > 0 {
             self.sequence = (self.sequence + 1) & 0x1F;
@@ -209,6 +237,7 @@ impl Triangle {
         self.linear.reset();
         self.force_silent = false;
         self.volume = 15.0;
+        self.volume_target = 15.0;
     }
 }
 
@@ -302,6 +331,32 @@ mod tests {
             let delta = outputs[i] - outputs[i + 1];
             assert!((delta - expected_step_delta).abs() < 1e-6, "Step delta should be smooth linear delta {}, got {}", expected_step_delta, delta);
         }
+    }
+
+    #[test]
+    fn target_volume_slews_without_changing_immediate_volume_api() {
+        let mut tri = Triangle::new();
+        tri.set_enabled(true);
+        tri.write_linear_counter(0xFF);
+        tri.linear.reload = true;
+        tri.linear.clock();
+        tri.write_timer_lo(0x80);
+        tri.write_timer_hi(0x02);
+        tri.length.reload();
+        tri.sequence = 0;
+
+        tri.set_volume(15.0);
+        tri.set_volume_target(0.0);
+        assert_eq!(tri.volume(), 15.0);
+
+        tri.clock();
+        assert!(tri.volume() < 15.0);
+        assert!(tri.volume() > 0.0);
+
+        for _ in 0..2_000 {
+            tri.clock();
+        }
+        assert_eq!(tri.volume(), 0.0);
     }
 
     #[test]

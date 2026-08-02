@@ -88,6 +88,34 @@ fn triangle_channel_produces_non_zero_output_on_note_on() {
 }
 
 #[test]
+fn triangle_custom_volume_steps_are_slewed_at_the_apu_clock_rate() {
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::Triangle;
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    let seqs = ActiveSequences {
+        vol_seq: Sequence::parse("15 15 15 14 11 4 1"),
+        vol_enabled: true,
+        ..default_seqs()
+    };
+
+    handler.note_on(60, 127, &mut AnyChannel::Triangle(&mut triangle), &seqs);
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44_100.0, 1);
+    triangle.clock();
+
+    // Advance through the three initial envelope frames until the target
+    // changes from 15 to 14. The audible volume must not jump at that frame.
+    handler.advance_frame_samples(&seqs, 44_100.0, 735 * 3);
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44_100.0, 1);
+    let volume_at_boundary = triangle.volume();
+    assert_eq!(volume_at_boundary, 15.0);
+
+    triangle.clock();
+    assert!(triangle.volume() < volume_at_boundary);
+    assert!(triangle.volume() > 14.0);
+}
+
+#[test]
 fn program_change_returns_its_sequence_index() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);

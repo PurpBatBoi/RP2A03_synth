@@ -518,7 +518,7 @@ impl MidiHandler {
             }
         }
 
-        triangle.set_volume(apu_vol);
+        triangle.set_volume_target(apu_vol);
 
         // 2. Pitch application (same logic, AnyChannel dispatch).
         self.apply_pitch_registers(&mut AnyChannel::Triangle(triangle));
