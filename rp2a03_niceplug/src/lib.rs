@@ -27,6 +27,10 @@ pub struct Rp2a03Plugin {
     blip: BlipBuf,
     sample_rate: f32,
     last_output: i32,
+    // The triangle DAC holds its last value while the channel is gated off.
+    // Keeping this separate from last_output avoids carrying a pulse value
+    // across a waveform switch.
+    last_triangle_output: i32,
     midi_handler: MidiHandler,
     /// Program Change selection remains active until the host changes the Index parameter.
     midi_program_index: Option<usize>,
@@ -80,6 +84,7 @@ impl Default for Rp2a03Plugin {
             blip,
             sample_rate: 44100.0,
             last_output: 0,
+            last_triangle_output: 0,
             midi_handler: MidiHandler::new(),
             midi_program_index: None,
             last_sequence_parameter: 0,
@@ -136,12 +141,23 @@ impl Rp2a03Plugin {
                     }
                 }
                 ChannelMode::Triangle => {
-                    self.triangle.clock();
-                    if self.midi_handler.gate() && !self.triangle.is_muted() {
-                        // High-resolution output for Triangle to avoid 4-bit integer quantization aliasing on 0-14 steps
-                        (self.triangle.output() * AMPLITUDE_SCALE as f32) as i32
+                    if self.midi_handler.gate() {
+                        self.triangle.clock();
+                        if !self.triangle.is_muted() {
+                            // High-resolution output for Triangle to avoid 4-bit integer quantization aliasing on 0-14 steps
+                            let output =
+                                (self.triangle.output() * AMPLITUDE_SCALE as f32) as i32;
+                            self.last_triangle_output = output;
+                            output
+                        } else {
+                            0
+                        }
                     } else {
-                        0
+                        // Do not create a full-scale discontinuity on NoteOff.
+                        // The NES triangle DAC remains at its last level while
+                        // the linear counter is stopped; BlipBuf's high-pass
+                        // stage then bleeds that DC level away naturally.
+                        self.last_triangle_output
                     }
                 }
             };
@@ -376,6 +392,7 @@ impl Plugin for Rp2a03Plugin {
         self.triangle.reset();
         self.triangle.set_enabled(true);
         self.last_output = 0;
+        self.last_triangle_output = 0;
         self.midi_handler.reset();
         self.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
         self.midi_program_index = None;
@@ -392,6 +409,7 @@ impl Plugin for Rp2a03Plugin {
         self.triangle.set_enabled(true);
         self.blip.clear();
         self.last_output = 0;
+        self.last_triangle_output = 0;
         self.midi_handler.reset();
         self.midi_handler.channel_mode = ChannelMode::from_i32(self.params.waveform.value());
         self.midi_program_index = None;
