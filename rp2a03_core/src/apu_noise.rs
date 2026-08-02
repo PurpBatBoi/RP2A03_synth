@@ -31,8 +31,6 @@ pub enum ShiftMode {
 pub struct Noise {
     pub period_index: u8,
     pub timer: Timer,
-    /// Whether the oscillator has consumed its initial FamiStudio-style delay.
-    timer_started: bool,
     pub shift: u16,
     pub shift_mode: ShiftMode,
     pub length: LengthCounter,
@@ -63,7 +61,6 @@ impl Noise {
         Self {
             period_index: 0,
             timer: Timer::new(Self::PERIOD_TABLE_NTSC[0] - 1),
-            timer_started: false,
             shift: Self::INITIAL_SHIFT,
             shift_mode: ShiftMode::Zero,
             length: LengthCounter::new(),
@@ -130,12 +127,11 @@ impl Noise {
     }
 
     /// Restart the deterministic noise attack without changing the selected
-    /// period or LFSR mode. The first shift after the retrigger still waits
-    /// for the full selected period, matching the FamiStudio timing model.
+    /// period or LFSR mode. This is useful for the synth's retrigger behavior;
+    /// normal register writes do not reset the LFSR.
     pub fn retrigger(&mut self) {
         self.shift = Self::INITIAL_SHIFT;
         self.timer.counter = 0;
-        self.timer_started = false;
     }
 
     /// Enable or disable length counter from $4015.
@@ -156,16 +152,6 @@ impl Noise {
     /// Also applies any pending length counter reload (must happen each cycle).
     pub fn clock(&mut self) {
         self.length.reload();
-        if !self.timer_started {
-            // NesSndEmu/FamiStudio starts with delay = 0: output the current
-            // LFSR state first, then advance it after one complete period.
-            // Timer::tick() fires immediately when its counter is zero, so
-            // preload the timer period for the first interval. This produces
-            // period + 1 clocks, which is the register-table period because
-            // timer.period stores table_period - 1.
-            self.timer.counter = self.timer.period;
-            self.timer_started = true;
-        }
         if self.timer.tick() {
             let shift_by = if self.shift_mode == ShiftMode::One {
                 6
@@ -191,7 +177,6 @@ impl Noise {
     pub fn reset(&mut self) {
         self.period_index = 0;
         self.timer = Timer::new(Self::PERIOD_TABLE_NTSC[0] - 1);
-        self.timer_started = false;
         self.shift = Self::INITIAL_SHIFT;
         self.shift_mode = ShiftMode::Zero;
         self.length.reset();
@@ -237,21 +222,6 @@ mod tests {
     }
 
     #[test]
-    fn first_lfsr_shift_matches_famistudio_delay() {
-        let mut noise = Noise::new();
-        noise.write_timer(0); // 4 CPU clocks per LFSR step
-        let initial = noise.shift;
-
-        for _ in 0..3 {
-            noise.clock();
-            assert_eq!(noise.shift, initial);
-        }
-
-        noise.clock();
-        assert_ne!(noise.shift, initial);
-    }
-
-    #[test]
     fn write_length_loads_counter_and_restarts_envelope() {
         let mut noise = Noise::new();
         noise.set_enabled(true);
@@ -277,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn note_trigger_reseeds_without_changing_mode_or_period() {
+    fn explicit_retrigger_reseeds_without_changing_mode_or_period() {
         let mut noise = Noise::new();
         noise.write_timer(0x87);
         noise.shift = 0x2345;
@@ -287,7 +257,6 @@ mod tests {
 
         assert_eq!(noise.shift, Noise::INITIAL_SHIFT);
         assert_eq!(noise.timer.counter, 0);
-        assert!(!noise.timer_started);
         assert_eq!(noise.period_index, 7);
         assert_eq!(noise.shift_mode, ShiftMode::One);
     }
@@ -319,7 +288,6 @@ mod tests {
     fn lfsr_shift_mode_zero_feedback() {
         let mut noise = Noise::new();
         noise.timer.period = 0; // clock on every tick
-        noise.timer_started = true;
         noise.shift = 0b000_0000_0000_0011; // bit 0 = 1, bit 1 = 1 -> XOR = 0
         noise.clock();
         // Shift right by 1, bit 14 gets feedback 0
@@ -336,7 +304,6 @@ mod tests {
         let mut noise = Noise::new();
         noise.shift_mode = ShiftMode::One;
         noise.timer.period = 0;
-        noise.timer_started = true;
 
         // Mode 1: XOR bit 0 and bit 6
         noise.shift = (1 << 6) | 1; // bit 6 = 1, bit 0 = 1 -> XOR = 0
