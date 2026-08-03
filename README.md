@@ -46,7 +46,7 @@ The per-channel building blocks — timers, envelopes, sweep, length/linear
 counters, the frame counter, the duty sequencers — are modeled at the register
 level. But this is a *synthesizer*, not an emulator, so a number of deliberate
 liberties were taken where strict accuracy would just make the instrument
-annoying to play:
+annoying to use:
 
 - **Voice count.** Real hardware gives you exactly two pulse channels, one
   triangle, and one noise. Here every voice owns its own full set of channel
@@ -71,7 +71,7 @@ annoying to play:
 
 The intent is that anything sounding like the NES sounds *right*, while none of
 the hardware's arbitrary limits stop you from writing music. If you need
-bit-exact hardware behavior for verification work, use [FamiStudio](https://famistudio.org/), [Furnace Tracker](https://tildearrow.org/furnace/) or [dnFamiTracker](https://github.com/Dn-Programming-Core-Management/Dn-FamiTracker)!
+bit-exact hardware behavior, use [FamiStudio](https://famistudio.org/), [Furnace Tracker](https://tildearrow.org/furnace/) or [dnFamiTracker](https://github.com/Dn-Programming-Core-Management/Dn-FamiTracker)!
 
 ## Workspace Structure
 
