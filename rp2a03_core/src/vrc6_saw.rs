@@ -273,7 +273,8 @@ mod tests {
     fn write_freq_lo_and_hi_combine_correctly() {
         let mut saw = Vrc6Saw::new();
         saw.write_freq_lo(0xFD);
-        saw.write_freq_hi(0x02); // enabled, high bits = 0x02
+        // D7 set to enable, D3..D0 = high 4 bits of the frequency.
+        saw.write_freq_hi(0x82);
         assert_eq!(saw.frequency, 0x02FD);
         assert!(saw.enabled);
     }

@@ -278,11 +278,15 @@ mod tests {
         pulse.write_freq_lo(0x01); // small period so it clocks fast
         pulse.write_freq_hi(0x80); // enabled
 
-        // Clock enough to move the duty step past 0.
+        // frequency = 1, so the divider reload is 2 and the duty step advances
+        // on every second clock: 8 clocks -> 4 steps.
         for _ in 0..8 {
             pulse.clock();
         }
-        assert_eq!(pulse.duty.current_step, 0, "small duty_cycle keeps failing output but step should still advance");
+        assert_eq!(
+            pulse.duty.current_step, 4,
+            "the duty step must keep advancing even while the duty gate reads low"
+        );
 
         // Disable, which should reset the step back to 0.
         pulse.write_freq_hi(0x00); // disabled
@@ -291,30 +295,40 @@ mod tests {
 
     #[test]
     fn frequency_shift_speeds_up_divider_reload() {
-        let mut pulse = Vrc6Pulse::new();
-        pulse.write_ctrl(0x8F); // ignore_duty, volume 0xF, always "on"
-        pulse.write_freq_lo(0xFF);
-        pulse.write_freq_hi(0x80); // enabled, freq = 0x0FF = 255
+        // Two otherwise identical channels that differ only in frequency shift.
+        // The shift has to be set before the divider is first clocked: the
+        // divider only picks up a new reload value when its counter expires,
+        // so changing the shift mid-count does not take effect until then.
+        let build = |shift: u8| {
+            let mut pulse = Vrc6Pulse::new();
+            pulse.write_ctrl(0x8F); // ignore_duty, volume 0xF, always "on"
+            pulse.write_freq_lo(0xFF);
+            pulse.write_freq_hi(0x80); // enabled, freq = 0x0FF = 255
+            pulse.set_frequency_shift(shift);
+            pulse
+        };
 
-        // With shift = 0, reload = 255 + 1 = 256 clocks per duty step.
-        pulse.set_frequency_shift(0);
-        pulse.clock();
-        let step_before = pulse.duty.current_step;
+        let mut slow = build(0); // reload = 255 + 1 = 256
+        let mut fast = build(8); // reload = (255 >> 8) + 1 = 1, VRC6 "quarter" mode
 
-        // With shift = 8 (VRC6's "quarter" mode), reload = (255 >> 8) + 1 = 1,
-        // so the duty step should advance every single clock.
-        pulse.set_frequency_shift(8);
-        for _ in 0..3 {
-            pulse.clock();
+        for _ in 0..20 {
+            slow.clock();
+            fast.clock();
         }
-        assert_ne!(pulse.duty.current_step, step_before);
+
+        // The divider counter starts at 1, so both advance once on the very
+        // first clock. After that `slow` is counting down from 256 and stays
+        // put, while `fast` reloads to 1 and advances on every clock.
+        assert_eq!(slow.duty.current_step, 1);
+        assert_eq!(fast.duty.current_step, 20 & 0x0F);
     }
 
     #[test]
     fn write_freq_lo_and_hi_combine_correctly() {
         let mut pulse = Vrc6Pulse::new();
         pulse.write_freq_lo(0xFD);
-        pulse.write_freq_hi(0x02); // enabled, high bits = 0x02
+        // D7 set to enable, D3..D0 = high 4 bits of the frequency.
+        pulse.write_freq_hi(0x82);
         assert_eq!(pulse.frequency, 0x02FD);
         assert!(pulse.enabled);
     }

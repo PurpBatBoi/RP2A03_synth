@@ -73,6 +73,12 @@ jobs:
         with:
           key: ${{ matrix.platform }}
 
+      # Only the two backend-agnostic crates: rp2a03_niceplug's tests would drag
+      # the editor's rendering backend into feature resolution for no gain, and
+      # every test lives in core/common anyway.
+      - name: Run tests
+        run: cargo test -p rp2a03_core -p rp2a03_common --release
+
       - name: Bundle plugin
         run: cargo xtask ${{ matrix.bundle_cmd }} ${{ env.PACKAGE }} --release ${{ matrix.features }}
 
