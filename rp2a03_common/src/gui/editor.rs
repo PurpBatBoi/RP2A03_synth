@@ -84,6 +84,45 @@ fn sequence_range(tab: usize, channel_mode: ChannelMode, vol_mode: VolMode) -> (
     }
 }
 
+/// Switches a volume sequence between the 4-bit and 6-bit step ranges.
+///
+/// dn remaps the existing steps when the setting flips (`SequenceSetting.cpp`:
+/// `x * 4` / `x / 4`) so the envelope keeps its shape instead of flattening
+/// against the new ceiling. Halving is lossy — the low two bits are gone for good.
+fn set_volume_step_mode(text: &mut String, sequence: &mut Sequence, next: VolMode) {
+    if sequence.vol_mode == next {
+        return;
+    }
+
+    let scale_up = next == VolMode::Steps64;
+    let (min_val, max_val) = sequence_range(0, ChannelMode::Vrc6Saw, next);
+
+    for value in &mut sequence.values {
+        *value = if scale_up { *value * 4 } else { *value / 4 };
+        *value = (*value).clamp(min_val, max_val);
+    }
+
+    sequence.vol_mode = next;
+    *text = sequence_to_text(sequence);
+}
+
+/// Brings the selected volume sequence back to the 4-bit range once the editor is
+/// no longer on the VRC6 sawtooth.
+///
+/// 64-step is a saw-only setting, so leaving that waveform has to behave like
+/// unticking the toggle — otherwise the stored steps keep their 0..63 values while
+/// every other channel reads them through a 0..15 clamp, and the text box disagrees
+/// with the graph. Idempotent, so it is safe to run every frame and it catches host
+/// automation and state recall as well as the waveform combobox.
+fn sync_volume_step_mode_to_channel(data: &mut SharedSequences) {
+    if data.channel_mode == ChannelMode::Vrc6Saw {
+        return;
+    }
+
+    let (text, sequence) = data.selected_sequence_mut(0);
+    set_volume_step_mode(text, sequence, VolMode::Steps16);
+}
+
 /// Sanitizes the selected numbered sequence for an envelope type.
 pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
     let (sanitized, prev_pitch_mode, prev_arp_mode, prev_vol_mode) = {
@@ -590,22 +629,12 @@ fn draw_sequence_editor_panel(
                         let mut is_64 = sequence.vol_mode == VolMode::Steps64;
 
                         if ui.checkbox(&mut is_64, "64-Step").changed() {
-                            // dn rescales the existing steps when the setting flips
-                            // (SequenceSetting.cpp: `x * 4` / `x / 4`).
                             let next = if is_64 {
                                 VolMode::Steps64
                             } else {
                                 VolMode::Steps16
                             };
-                            let (next_min, next_max) = sequence_range(tab, channel_mode, next);
-
-                            for value in &mut sequence.values {
-                                *value = if is_64 { *value * 4 } else { *value / 4 };
-                                *value = (*value).clamp(next_min, next_max);
-                            }
-
-                            sequence.vol_mode = next;
-                            *text = sequence_to_text(sequence);
+                            set_volume_step_mode(text, sequence, next);
                             auto_enable = true;
                         }
                     });
@@ -735,6 +764,9 @@ pub fn render_editor_ui(
     if data.channel_mode == ChannelMode::Noise && matches!(data.selected_tab, 2 | 3) {
         data.selected_tab = 0;
     }
+
+    // 64-step volume is saw-only; drop back to the 4-bit range on every other channel.
+    sync_volume_step_mode_to_channel(data);
 
     let mut changed_sequence_index = None;
     let mut changed_step_time_hz = None;
@@ -898,6 +930,62 @@ mod tests {
             sequence_range(4, ChannelMode::Pulse, VolMode::Steps16),
             (0, 3)
         );
+    }
+
+    #[test]
+    fn leaving_the_saw_waveform_rescales_a_64_step_volume_sequence() {
+        for channel_mode in [
+            ChannelMode::Pulse,
+            ChannelMode::Triangle,
+            ChannelMode::Noise,
+            ChannelMode::Vrc6Pulse,
+        ] {
+            let mut data = SharedSequences::default();
+            data.channel_mode = ChannelMode::Vrc6Saw;
+            data.selected_sequence_mut(0).0.push_str("63 32 4 0");
+            cleanup_tab_sequence(&mut data, 0);
+
+            {
+                let (text, sequence) = data.selected_sequence_mut(0);
+                set_volume_step_mode(text, sequence, VolMode::Steps64);
+            }
+            // "63 32 4 0" was authored under 16-step, so cleanup clamped it to
+            // [15, 15, 4, 0] before the x4 promotion.
+            assert_eq!(data.selected_sequence(0).values, vec![60, 60, 16, 0]);
+
+            data.channel_mode = channel_mode;
+            sync_volume_step_mode_to_channel(&mut data);
+
+            assert_eq!(data.selected_sequence(0).vol_mode, VolMode::Steps16);
+            assert_eq!(
+                data.selected_sequence(0).values,
+                vec![15, 15, 4, 0],
+                "{channel_mode:?} must see 4-bit steps"
+            );
+            // The text box has to agree with the graph, not keep showing 0..63.
+            assert_eq!(data.selected_sequence_mut(0).0, "15 15 4 0");
+
+            // Idempotent — a second frame on the same channel changes nothing.
+            sync_volume_step_mode_to_channel(&mut data);
+            assert_eq!(data.selected_sequence(0).values, vec![15, 15, 4, 0]);
+        }
+    }
+
+    #[test]
+    fn staying_on_the_saw_waveform_keeps_64_step_values() {
+        let mut data = SharedSequences::default();
+        data.channel_mode = ChannelMode::Vrc6Saw;
+        data.selected_sequence_mut(0).0.push_str("15 8 0");
+        cleanup_tab_sequence(&mut data, 0);
+
+        {
+            let (text, sequence) = data.selected_sequence_mut(0);
+            set_volume_step_mode(text, sequence, VolMode::Steps64);
+        }
+
+        sync_volume_step_mode_to_channel(&mut data);
+        assert_eq!(data.selected_sequence(0).vol_mode, VolMode::Steps64);
+        assert_eq!(data.selected_sequence(0).values, vec![60, 32, 0]);
     }
 
     #[test]
