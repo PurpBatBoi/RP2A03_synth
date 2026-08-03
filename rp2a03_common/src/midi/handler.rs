@@ -10,7 +10,7 @@ use super::types::{
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
-use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, SequencePlayer};
+use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, SequencePlayer, VolMode};
 use rp2a03_core::software_lfo::SoftwareLfo;
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
 use rp2a03_core::vrc6_saw::Vrc6Saw;
@@ -792,25 +792,75 @@ impl MidiHandler {
         seqs: &ActiveSequences,
         master_gain: f32,
     ) -> f32 {
+        // dn `CVRC6Sawtooth::RefreshChannel` writes $B000 = 0 to mute; the saw's
+        // rate register has no gate bit of its own.
         if !self.gate {
             vrc6_saw.write_rate(0);
             return master_gain;
         }
 
-        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
-            self.vol_seq_player.value().clamp(0, 63) as u8
+        let vol_active = seqs.vol_enabled && !seqs.vol_seq.values.is_empty();
+        let duty_active = seqs.duty_enabled && !seqs.duty_seq.values.is_empty();
+
+        // dn stores the 16-step/64-step choice on the volume sequence itself
+        // (`CSequence::GetSetting`), latched by `CSeqInstHandlerSawtooth`.
+        let steps_64 = seqs.vol_seq.vol_mode == VolMode::Steps64;
+
+        // `level` is the volume-envelope contribution before the mode-specific
+        // register packing, and is what the release tail tests against — the packed
+        // byte carries the duty bit and would never reach 0.
+        let (level, rate_val) = if steps_64 {
+            let vol_val = if vol_active {
+                self.vol_seq_player.value().clamp(0, 63) as u8
+            } else {
+                63
+            };
+
+            let hardware_scaled =
+                (vol_val as u32 * self.hardware_volume as u32 / 15).min(63) as u32;
+            let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
+            let tremolo_sub = self.lfo.tremolo_volume_delta() * 4;
+            let level = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 63);
+
+            // 64-step ignores the duty sequence entirely
+            // (dn `CSeqInstHandlerSawtooth::IsDutyIgnored`).
+            (level, level)
         } else {
-            63
+            let vol_val = if vol_active {
+                self.vol_seq_player.value().clamp(0, 15) as u8
+            } else {
+                15
+            };
+
+            let hardware_scaled = vol_val as u32 * self.hardware_volume as u32 / 15;
+            let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
+            let tremolo_sub = self.lfo.tremolo_volume_delta();
+            let level = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
+
+            // dn `CVRC6Sawtooth::CalculateVolume`:
+            //   (CChannelHandler::CalculateVolume() << 1) | ((m_iDutyPeriod & 0x01) << 5)
+            // The saw's duty is a single bit (`MAX_DUTY = 0x01`) acting as the rate MSB.
+            let duty_val = if duty_active {
+                self.duty_seq_player.value().clamp(0, 1) as u8
+            } else {
+                0
+            };
+
+            (level, (level << 1) | (duty_val << 5))
         };
 
-        let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15).min(63) as u32;
-        let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
-        let tremolo_sub = (self.lfo.tremolo_volume_delta() * 4) as u8;
-        let rate_val = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 63);
-
-        if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
-            if self.vol_seq_player.state == SeqState::End && rate_val == 0 {
-                self.gate = false;
+        if self.note_stack.is_empty() {
+            if vol_active && self.vol_seq_player.is_releasing {
+                if self.vol_seq_player.state == SeqState::End && level == 0 {
+                    self.gate = false;
+                }
+            } else if !vol_active && duty_active && self.duty_seq_player.is_releasing {
+                // `note_off` keeps the gate alive when *either* the volume or the duty
+                // sequence has a release point. With no volume sequence, nothing above
+                // can ever clear it, so the duty release has to.
+                if self.duty_seq_player.state == SeqState::End {
+                    self.gate = false;
+                }
             }
         }
 

@@ -1,6 +1,7 @@
 /target
 /Ideas-ref-folder
 .agents
+AGENTS.md
 
 # Compiled binaries and plugin bundles
 *.exe
@@ -10,4 +11,4 @@
 *.clap
 *.vst3
 *.vst
-*.d
+*.d

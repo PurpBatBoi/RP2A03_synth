@@ -65,6 +65,11 @@ impl Vrc6Saw {
         self.accumulator_rate = val & 0x3F;
     }
 
+    /// Current $B000 accumulator rate (0..=63), as last masked by [`Self::write_rate`].
+    pub fn rate(&self) -> u8 {
+        self.accumulator_rate
+    }
+
     /// $B001 Frequency low
     ///   D7..D0: Frequency low 8 bits
     pub fn write_freq_lo(&mut self, val: u8) {

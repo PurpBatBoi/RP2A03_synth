@@ -33,6 +33,21 @@ pub enum ArpMode {
     Relative = 2,
 }
 
+/// Volume sequence resolution — mirrors `SETTING_VOL_16_STEPS` / `SETTING_VOL_64_STEPS`
+/// in Dn-FamiTracker `Sequence.h`.  Only meaningful for the VRC6 sawtooth, whose
+/// `$B000` accumulator rate is 6-bit; every other channel uses the 4-bit APU range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum VolMode {
+    /// `SETTING_VOL_16_STEPS` (0): steps are 0..=15 and the saw register byte is
+    /// `(vol << 1) | ((duty & 1) << 5)` — duty acts as the rate MSB.
+    #[default]
+    Steps16 = 0,
+    /// `SETTING_VOL_64_STEPS` (1): steps are 0..=63 and are written straight to
+    /// `$B000`; the duty sequence is ignored (dn `CSeqInstHandlerSawtooth::IsDutyIgnored`).
+    Steps64 = 1,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
@@ -49,6 +64,13 @@ pub struct Sequence {
     /// Arpeggio mode — only meaningful when this sequence is used as an arpeggio
     /// envelope.  Ignored for all other sequence types.
     pub arp_mode: ArpMode,
+    /// Volume resolution — only meaningful when this sequence is used as a volume
+    /// envelope on the VRC6 sawtooth.  Ignored for all other sequence types.
+    ///
+    /// `#[serde(default)]` keeps saved states written before this field existed
+    /// loadable; they deserialize as [`VolMode::Steps16`].
+    #[serde(default)]
+    pub vol_mode: VolMode,
 }
 
 impl Default for Sequence {
@@ -59,6 +81,7 @@ impl Default for Sequence {
             release_point: None,
             pitch_mode: PitchMode::default(),
             arp_mode: ArpMode::default(),
+            vol_mode: VolMode::default(),
         }
     }
 }
@@ -72,6 +95,7 @@ impl Sequence {
             release_point: None,
             pitch_mode: PitchMode::default(),
             arp_mode: ArpMode::default(),
+            vol_mode: VolMode::default(),
         }
     }
 
@@ -126,6 +150,7 @@ impl Sequence {
             release_point,
             pitch_mode: PitchMode::default(),
             arp_mode: ArpMode::default(),
+            vol_mode: VolMode::default(),
         };
 
         (sequence, normalized_text)
@@ -351,6 +376,33 @@ mod tests {
     // ── SequencePlayer dn-parity tests ──
     // Expected step values below are traced from dnFamiTracker
     // CSeqInstHandler::UpdateInstrument() / ReleaseInstrument().
+
+    #[test]
+    fn sequence_without_vol_mode_deserializes_as_16_steps() {
+        // Saved states written before `vol_mode` existed must still load; dn's own
+        // default for a volume sequence is SETTING_VOL_16_STEPS.
+        let json = r#"{
+            "values": [15, 7, 0],
+            "loop_point": null,
+            "release_point": null,
+            "pitch_mode": "Relative",
+            "arp_mode": "Absolute"
+        }"#;
+
+        let seq: Sequence = serde_json::from_str(json).expect("legacy state must deserialize");
+        assert_eq!(seq.vol_mode, VolMode::Steps16);
+        assert_eq!(seq.values, vec![15, 7, 0]);
+    }
+
+    #[test]
+    fn sequence_vol_mode_round_trips() {
+        let mut seq = Sequence::parse("63 32");
+        seq.vol_mode = VolMode::Steps64;
+
+        let json = serde_json::to_string(&seq).unwrap();
+        let restored: Sequence = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, seq);
+    }
 
     #[test]
     fn player_no_markers_ends_and_holds_last_value() {

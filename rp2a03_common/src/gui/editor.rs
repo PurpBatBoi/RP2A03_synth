@@ -4,7 +4,7 @@
 use super::state::{MAX_SEQUENCES, SequencePlayheads, SharedSequences};
 use super::widgets::{draw_envelope_bar_graph, group_box, repeating_button};
 use crate::ChannelMode;
-use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence};
+use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence, VolMode};
 
 /// Result returned by [`render_editor_ui`] to communicate parameter changes back
 /// to the host plugin wrapper.
@@ -59,10 +59,14 @@ pub fn sanitize_sequence_text(text: &str) -> String {
 /// dnFamiTracker keeps all sequence items as `signed char`; the editor clamps each
 /// envelope type to its documented range. Pitch and hi-pitch share one graph editor
 /// (`CPitchGraphEditor`) clamped to [-128, 127] (GraphEditor.cpp: DrawRange(127, -128)).
-fn sequence_range(tab: usize, channel_mode: ChannelMode) -> (i16, i16) {
+///
+/// `vol_mode` only matters for tab 0 on the VRC6 sawtooth: dn stores the
+/// 16-step/64-step setting per volume sequence (`CSequence::GetSetting`), and the
+/// bar graph max follows it (SequenceEditor.cpp: `0x0F` vs `0x3F`).
+fn sequence_range(tab: usize, channel_mode: ChannelMode, vol_mode: VolMode) -> (i16, i16) {
     match tab {
         0 => {
-            if channel_mode == ChannelMode::Vrc6Saw {
+            if channel_mode == ChannelMode::Vrc6Saw && vol_mode == VolMode::Steps64 {
                 (0, 63)
             } else {
                 (0, 15)
@@ -70,38 +74,41 @@ fn sequence_range(tab: usize, channel_mode: ChannelMode) -> (i16, i16) {
         }
         1 => (-96, 96),
         2 | 3 => (-128, 127),
-        _ => {
-            if channel_mode == ChannelMode::Vrc6Pulse {
-                (0, 7)
-            } else {
-                (0, 3)
-            }
-        }
+        _ => match channel_mode {
+            ChannelMode::Vrc6Pulse => (0, 7),
+            // dn `CVRC6Sawtooth::MAX_DUTY = 0x01` — the saw's duty is a single bit
+            // that becomes bit 5 of the $B000 accumulator rate.
+            ChannelMode::Vrc6Saw => (0, 1),
+            _ => (0, 3),
+        },
     }
 }
 
 /// Sanitizes the selected numbered sequence for an envelope type.
 pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
-    let (sanitized, prev_pitch_mode, prev_arp_mode) = {
+    let (sanitized, prev_pitch_mode, prev_arp_mode, prev_vol_mode) = {
         let (text, sequence) = data.selected_sequence_mut(tab);
         (
             sanitize_sequence_text(text),
             sequence.pitch_mode,
             sequence.arp_mode,
+            sequence.vol_mode,
         )
     };
-    let (min_val, max_val) = sequence_range(tab, data.channel_mode);
+    let (min_val, max_val) = sequence_range(tab, data.channel_mode, prev_vol_mode);
     let (text, sequence) = data.selected_sequence_mut(tab);
 
     if sanitized.trim().is_empty() {
         *sequence = Sequence::default();
         sequence.pitch_mode = prev_pitch_mode;
         sequence.arp_mode = prev_arp_mode;
+        sequence.vol_mode = prev_vol_mode;
         text.clear();
     } else {
         let (mut parsed, normalized) = Sequence::parse_clamped(&sanitized, min_val, max_val);
         parsed.pitch_mode = prev_pitch_mode;
         parsed.arp_mode = prev_arp_mode;
+        parsed.vol_mode = prev_vol_mode;
         let len = parsed.len();
         if parsed.loop_point.is_some_and(|point| point >= len) {
             parsed.loop_point = None;
@@ -235,10 +242,8 @@ fn draw_header(
                             .clicked()
                         {
                             let new_mode = ChannelMode::Vrc6Saw;
-                            if data.selected_tab == 4 {
-                                cleanup_tab_sequence(data, 4);
-                                data.selected_tab = 0;
-                            }
+                            // The saw keeps its Duty tab: in 16-step mode duty bit 0
+                            // is the $B000 rate MSB, so tab 4 stays selectable.
                             data.channel_mode = new_mode;
                             *changed_channel_mode = Some(new_mode);
                         }
@@ -343,7 +348,7 @@ fn draw_instrument_settings_panel(
                     let is_no_duty = is_duty
                         && matches!(
                             data.channel_mode,
-                            ChannelMode::Triangle | ChannelMode::Noise | ChannelMode::Vrc6Saw
+                            ChannelMode::Triangle | ChannelMode::Noise
                         );
                     let is_noise_pitch = matches!(tab, 2 | 3)
                         && data.channel_mode == ChannelMode::Noise;
@@ -488,7 +493,11 @@ fn draw_sequence_editor_panel(
         let graph_height = (ui.available_height() - CONTROLS_HEIGHT).max(150.0);
         let mut auto_enable = false;
 
-        let (min_val, max_val) = sequence_range(tab, data.channel_mode);
+        // Both reads must happen before `selected_sequence_mut` takes the mutable
+        // borrow of `data` below.
+        let channel_mode = data.channel_mode;
+        let vol_mode = data.selected_sequence(tab).vol_mode;
+        let (min_val, max_val) = sequence_range(tab, channel_mode, vol_mode);
 
         {
             let (text, sequence) = data.selected_sequence_mut(tab);
@@ -572,6 +581,35 @@ fn draw_sequence_editor_panel(
                         ui.label(egui::RichText::new("Mode:").weak());
                     });
                 }
+
+                // dn exposes 16-step/64-step as a volume-sequence setting and only
+                // enables it for VRC6 instruments (SequenceSetting.cpp), so the
+                // toggle occupies the same slot as the arpeggio/pitch mode radios.
+                if tab == 0 && channel_mode == ChannelMode::Vrc6Saw {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut is_64 = sequence.vol_mode == VolMode::Steps64;
+
+                        if ui.checkbox(&mut is_64, "64-Step").changed() {
+                            // dn rescales the existing steps when the setting flips
+                            // (SequenceSetting.cpp: `x * 4` / `x / 4`).
+                            let next = if is_64 {
+                                VolMode::Steps64
+                            } else {
+                                VolMode::Steps16
+                            };
+                            let (next_min, next_max) = sequence_range(tab, channel_mode, next);
+
+                            for value in &mut sequence.values {
+                                *value = if is_64 { *value * 4 } else { *value / 4 };
+                                *value = (*value).clamp(next_min, next_max);
+                            }
+
+                            sequence.vol_mode = next;
+                            *text = sequence_to_text(sequence);
+                            auto_enable = true;
+                        }
+                    });
+                }
             });
 
             ui.add_space(6.0);
@@ -587,7 +625,11 @@ fn draw_sequence_editor_panel(
             if edit.changed() {
                 auto_enable = true;
                 let sanitized = sanitize_sequence_text(text);
-                let prev_mode = sequence.pitch_mode;
+                // `parse_clamped` resets every mode field to its default, so all
+                // three have to survive the round trip.
+                let prev_pitch_mode = sequence.pitch_mode;
+                let prev_arp_mode = sequence.arp_mode;
+                let prev_vol_mode = sequence.vol_mode;
 
                 *sequence = if sanitized.trim().is_empty() {
                     Sequence::default()
@@ -595,7 +637,9 @@ fn draw_sequence_editor_panel(
                     Sequence::parse_clamped(&sanitized, min_val, max_val).0
                 };
 
-                sequence.pitch_mode = prev_mode;
+                sequence.pitch_mode = prev_pitch_mode;
+                sequence.arp_mode = prev_arp_mode;
+                sequence.vol_mode = prev_vol_mode;
             }
 
             if enter_pressed || edit.lost_focus() {
@@ -795,8 +839,14 @@ mod tests {
     fn hi_pitch_and_pitch_accept_the_full_dn_signed_char_range() {
         // dnFamiTracker's CPitchGraphEditor serves both tabs with a 127..-128 axis, and
         // both the graph and the text box must agree on it.
-        assert_eq!(sequence_range(2, ChannelMode::Pulse), (-128, 127));
-        assert_eq!(sequence_range(3, ChannelMode::Pulse), (-128, 127));
+        assert_eq!(
+            sequence_range(2, ChannelMode::Pulse, VolMode::Steps16),
+            (-128, 127)
+        );
+        assert_eq!(
+            sequence_range(3, ChannelMode::Pulse, VolMode::Steps16),
+            (-128, 127)
+        );
 
         let mut data = SharedSequences::default();
         data.selected_sequence_mut(3)
@@ -807,5 +857,63 @@ mod tests {
             data.selected_sequence(3).values,
             vec![127, -128, 64, -64, 127, -128]
         );
+    }
+
+    #[test]
+    fn vrc6_saw_volume_range_follows_the_step_mode() {
+        // dn defaults the VRC6 saw volume sequence to SETTING_VOL_16_STEPS; the 6-bit
+        // range is only reachable through SETTING_VOL_64_STEPS.
+        assert_eq!(
+            sequence_range(0, ChannelMode::Vrc6Saw, VolMode::Steps16),
+            (0, 15)
+        );
+        assert_eq!(
+            sequence_range(0, ChannelMode::Vrc6Saw, VolMode::Steps64),
+            (0, 63)
+        );
+
+        // The step mode is saw-only — every other channel stays 4-bit either way.
+        assert_eq!(
+            sequence_range(0, ChannelMode::Pulse, VolMode::Steps64),
+            (0, 15)
+        );
+        assert_eq!(
+            sequence_range(0, ChannelMode::Vrc6Pulse, VolMode::Steps64),
+            (0, 15)
+        );
+    }
+
+    #[test]
+    fn vrc6_saw_duty_range_is_one_bit() {
+        // dn `CVRC6Sawtooth::MAX_DUTY = 0x01` — the saw's duty is the $B000 rate MSB.
+        assert_eq!(
+            sequence_range(4, ChannelMode::Vrc6Saw, VolMode::Steps16),
+            (0, 1)
+        );
+        assert_eq!(
+            sequence_range(4, ChannelMode::Vrc6Pulse, VolMode::Steps16),
+            (0, 7)
+        );
+        assert_eq!(
+            sequence_range(4, ChannelMode::Pulse, VolMode::Steps16),
+            (0, 3)
+        );
+    }
+
+    #[test]
+    fn cleanup_preserves_the_saw_step_mode_and_clamps_to_it() {
+        let mut data = SharedSequences::default();
+        data.channel_mode = ChannelMode::Vrc6Saw;
+        data.selected_sequence_mut(0).1.vol_mode = VolMode::Steps64;
+        data.selected_sequence_mut(0).0.push_str("63 32 0");
+        cleanup_tab_sequence(&mut data, 0);
+        assert_eq!(data.selected_sequence(0).vol_mode, VolMode::Steps64);
+        assert_eq!(data.selected_sequence(0).values, vec![63, 32, 0]);
+
+        // Back to 16-step: the same text now clamps to the 4-bit range.
+        data.selected_sequence_mut(0).1.vol_mode = VolMode::Steps16;
+        cleanup_tab_sequence(&mut data, 0);
+        assert_eq!(data.selected_sequence(0).vol_mode, VolMode::Steps16);
+        assert_eq!(data.selected_sequence(0).values, vec![15, 15, 0]);
     }
 }

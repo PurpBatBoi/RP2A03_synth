@@ -8,7 +8,8 @@ use rp2a03_core::NTSC_CPU_CLOCK;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::apu_noise::Noise;
-use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, Sequence};
+use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, Sequence, VolMode};
+use rp2a03_core::vrc6_saw::Vrc6Saw;
 
 fn default_seqs() -> ActiveSequences {
     ActiveSequences {
@@ -1031,4 +1032,106 @@ fn pitch_slide_range_is_host_adjustable_up_to_two_octaves() {
         ..HostAutomationControls::default()
     });
     assert_eq!(handler.pitch_slide_range, 24);
+}
+
+// ── VRC6 sawtooth: 16-step / 64-step volume ────────────────────────────────
+// dn `CVRC6Sawtooth::CalculateVolume` (ChannelsVRC6.cpp): 16-step packs the 4-bit
+// volume as `(vol << 1) | ((duty & 1) << 5)`, 64-step writes the 6-bit value
+// straight to $B000 and ignores duty entirely.
+
+/// Drive one saw modulation pass with the given volume/duty sequences and return
+/// the resulting $B000 accumulator rate.
+fn saw_rate_for(vol_text: &str, vol_mode: VolMode, duty_text: Option<&str>) -> u8 {
+    let mut vol_seq = Sequence::parse(vol_text);
+    vol_seq.vol_mode = vol_mode;
+
+    let mut seqs = ActiveSequences {
+        vol_seq,
+        vol_enabled: true,
+        ..default_seqs()
+    };
+
+    if let Some(duty_text) = duty_text {
+        seqs.duty_seq = Sequence::parse(duty_text);
+        seqs.duty_enabled = true;
+    }
+
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::Vrc6Saw;
+    handler.hardware_volume = 15;
+
+    let mut saw = Vrc6Saw::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+
+    handler.note_on(60, 127, &mut AnyChannel::Vrc6Saw(&mut saw), &seqs);
+    handler.apply_current_modulation_all(
+        &mut pulse,
+        &mut triangle,
+        None,
+        None,
+        Some(&mut saw),
+        &seqs,
+    );
+
+    saw.rate()
+}
+
+#[test]
+fn saw_16_step_doubles_the_volume_and_folds_duty_into_bit_5() {
+    assert_eq!(saw_rate_for("15", VolMode::Steps16, None), 30);
+    assert_eq!(saw_rate_for("15", VolMode::Steps16, Some("0")), 30);
+    assert_eq!(saw_rate_for("15", VolMode::Steps16, Some("1")), 62);
+    assert_eq!(saw_rate_for("0", VolMode::Steps16, Some("1")), 32);
+
+    // The volume column is 4-bit in this mode, so a 63 authored under 64-step
+    // clamps rather than wrapping through the register mask.
+    assert_eq!(saw_rate_for("63", VolMode::Steps16, None), 30);
+}
+
+#[test]
+fn saw_64_step_writes_the_rate_directly_and_ignores_duty() {
+    assert_eq!(saw_rate_for("63", VolMode::Steps64, None), 63);
+    assert_eq!(saw_rate_for("63", VolMode::Steps64, Some("1")), 63);
+    assert_eq!(saw_rate_for("32", VolMode::Steps64, Some("1")), 32);
+}
+
+#[test]
+fn saw_duty_release_alone_still_clears_the_gate() {
+    // `note_off` keeps the gate alive when the duty sequence has a release point.
+    // With no volume sequence, only the duty release can end the note.
+    let mut seqs = ActiveSequences {
+        duty_seq: Sequence::parse("1 / 0"),
+        duty_enabled: true,
+        ..default_seqs()
+    };
+    seqs.vol_enabled = false;
+
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::Vrc6Saw;
+    handler.hardware_volume = 15;
+
+    let mut saw = Vrc6Saw::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+
+    handler.note_on(60, 127, &mut AnyChannel::Vrc6Saw(&mut saw), &seqs);
+    assert!(handler.gate());
+
+    handler.note_off(60, &mut AnyChannel::Vrc6Saw(&mut saw), &seqs);
+
+    for _ in 0..8 {
+        handler.apply_current_modulation_all(
+            &mut pulse,
+            &mut triangle,
+            None,
+            None,
+            Some(&mut saw),
+            &seqs,
+        );
+        handler.clock_sequences_one_frame(&seqs);
+    }
+
+    assert!(!handler.gate(), "duty release tail must not hang the note");
+    assert_eq!(saw.rate(), 0);
 }
