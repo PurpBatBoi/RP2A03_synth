@@ -449,6 +449,7 @@ pub fn draw_envelope_bar_graph(
 
         if graph_response.drag_stopped_by(egui::PointerButton::Secondary)
             || graph_response.lost_focus()
+            || !graph_response.hovered()
             || !ui.input(|i| i.pointer.secondary_down())
         {
             ui.ctx().data_mut(|d| d.remove_temp::<LineDrawState>(line_draw_id));
