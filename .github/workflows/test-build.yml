@@ -17,12 +17,18 @@ jobs:
         include:
           - os: windows-latest
             platform: Windows
+            bundle_cmd: bundle
+            targets: ""
             features: ""
           - os: ubuntu-22.04
             platform: Linux
+            bundle_cmd: bundle
+            targets: ""
             features: "--no-default-features --features wgpu"
           - os: macos-latest
             platform: Mac
+            bundle_cmd: bundle-universal
+            targets: x86_64-apple-darwin,aarch64-apple-darwin
             features: "--no-default-features --features wgpu"
 
     runs-on: ${{ matrix.os }}
@@ -47,18 +53,42 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.platform }}
 
-      - name: Build plugin
-        run: cargo build -p ${{ env.PACKAGE }} ${{ matrix.features }}
+      - name: Bundle plugin
+        run: cargo xtask ${{ matrix.bundle_cmd }} ${{ env.PACKAGE }} ${{ matrix.features }}
+
+      - name: Build AUv2 (Audio Unit)
+        if: matrix.platform == 'Mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          echo "AU bundle version: $version"
+          cmake -B target/auv2-build -S packaging/auv2 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DRP2A03_VERSION="$version"
+          cmake --build target/auv2-build --config Release
+          component=$(find target/auv2-build -maxdepth 2 -name "*.component" -type d | head -1)
+          if [ -z "$component" ]; then
+            echo "::error::AUv2 build produced no .component bundle"
+            exit 1
+          fi
+          cp -R "$component" target/bundled/
+          codesign -f -s - "target/bundled/$(basename "$component")"
+
+      - name: Archive bundles
+        shell: bash
+        run: tar -czf "bundles-${{ matrix.platform }}.tar.gz" -C target/bundled .
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: build-${{ matrix.platform }}
-          path: target/debug/${{ env.PACKAGE }}*
-          if-no-files-found: ignore
+          name: bundles-${{ matrix.platform }}
+          path: bundles-${{ matrix.platform }}.tar.gz
