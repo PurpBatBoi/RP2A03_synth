@@ -83,6 +83,10 @@ jobs:
 
       - name: Extract annotated tag message as release body
         run: |
+          # actions/checkout flattens the annotated tag into a lightweight ref
+          # pointing straight at the commit, so re-fetch the real tag object
+          # before reading its message.
+          git fetch --force origin "refs/tags/${{ github.ref_name }}:refs/tags/${{ github.ref_name }}"
           git tag -l --format='%(contents)' "${{ github.ref_name }}" > tag-body.md
           cat tag-body.md
 
