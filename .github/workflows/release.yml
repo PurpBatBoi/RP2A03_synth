@@ -46,7 +46,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux GUI/audio dependencies
         if: matrix.platform == 'Linux'
@@ -113,7 +113,7 @@ jobs:
         run: tar -czf "bundles-${{ matrix.platform }}.tar.gz" -C target/bundled .
 
       - name: Upload platform bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bundles-${{ matrix.platform }}
           path: bundles-${{ matrix.platform }}.tar.gz
@@ -123,12 +123,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Download platform bundles
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -147,7 +147,7 @@ jobs:
         run: zip -r -y "$DIST_NAME.zip" "$DIST_NAME"
 
       - name: Upload distributable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.DIST_NAME }}
           path: ${{ env.DIST_NAME }}.zip

@@ -2195,7 +2195,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "rp2a03_common"
-version = "0.0.6-Alpha"
+version = "0.0.7-Alpha"
 dependencies = [
  "egui",
  "egui_extras",
@@ -2207,7 +2207,7 @@ dependencies = [
 
 [[package]]
 name = "rp2a03_core"
-version = "0.0.6-Alpha"
+version = "0.0.7-Alpha"
 dependencies = [
  "serde",
  "serde_json",
@@ -2215,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "rp2a03_niceplug"
-version = "0.0.6-Alpha"
+version = "0.0.7-Alpha"
 dependencies = [
  "egui",
  "egui_extras",
