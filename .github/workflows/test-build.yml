@@ -1,0 +1,64 @@
+name: Test Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE: rp2a03_niceplug
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: Windows
+            features: ""
+          - os: ubuntu-22.04
+            platform: Linux
+            features: "--no-default-features --features wgpu"
+          - os: macos-latest
+            platform: Mac
+            features: "--no-default-features --features wgpu"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux GUI/audio dependencies
+        if: matrix.platform == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}
+
+      - name: Build plugin
+        run: cargo build -p ${{ env.PACKAGE }} ${{ matrix.features }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.platform }}
+          path: target/debug/${{ env.PACKAGE }}*
+          if-no-files-found: ignore
