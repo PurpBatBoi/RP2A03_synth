@@ -59,13 +59,24 @@ pub fn sanitize_sequence_text(text: &str) -> String {
 /// dnFamiTracker keeps all sequence items as `signed char`; the editor clamps each
 /// envelope type to its documented range. Pitch and hi-pitch share one graph editor
 /// (`CPitchGraphEditor`) clamped to [-128, 127] (GraphEditor.cpp: DrawRange(127, -128)).
-/// Arpeggio uses [-96, 96].
-fn sequence_range(tab: usize) -> (i16, i16) {
+fn sequence_range(tab: usize, channel_mode: ChannelMode) -> (i16, i16) {
     match tab {
-        0 => (0, 15),
+        0 => {
+            if channel_mode == ChannelMode::Vrc6Saw {
+                (0, 63)
+            } else {
+                (0, 15)
+            }
+        }
         1 => (-96, 96),
         2 | 3 => (-128, 127),
-        _ => (0, 3),
+        _ => {
+            if channel_mode == ChannelMode::Vrc6Pulse {
+                (0, 7)
+            } else {
+                (0, 3)
+            }
+        }
     }
 }
 
@@ -79,8 +90,9 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
             sequence.arp_mode,
         )
     };
-    let (min_val, max_val) = sequence_range(tab);
+    let (min_val, max_val) = sequence_range(tab, data.channel_mode);
     let (text, sequence) = data.selected_sequence_mut(tab);
+
     if sanitized.trim().is_empty() {
         *sequence = Sequence::default();
         sequence.pitch_mode = prev_pitch_mode;
@@ -171,6 +183,8 @@ fn draw_header(
                         ChannelMode::Pulse => "2A03 | Pulse",
                         ChannelMode::Triangle => "2A03 | Triangle",
                         ChannelMode::Noise => "2A03 | Noise",
+                        ChannelMode::Vrc6Pulse => "VRC6 | Pulse",
+                        ChannelMode::Vrc6Saw => "VRC6 | Saw",
                     })
                     .show_ui(ui, |ui| {
                         if ui
@@ -201,7 +215,28 @@ fn draw_header(
                             let new_mode = ChannelMode::Noise;
                             // Fine pitch is not an NES noise-channel control. Keep the
                             // editor on a supported tab when switching into Noise.
-                            if matches!(data.selected_tab, 2 | 3) {
+                            if matches!(data.selected_tab, 2 | 3 | 4) {
+                                cleanup_tab_sequence(data, data.selected_tab);
+                                data.selected_tab = 0;
+                            }
+                            data.channel_mode = new_mode;
+                            *changed_channel_mode = Some(new_mode);
+                        }
+                        if ui
+                            .selectable_value(&mut waveform_id, 3, "VRC6 | Pulse")
+                            .clicked()
+                        {
+                            let new_mode = ChannelMode::Vrc6Pulse;
+                            data.channel_mode = new_mode;
+                            *changed_channel_mode = Some(new_mode);
+                        }
+                        if ui
+                            .selectable_value(&mut waveform_id, 4, "VRC6 | Saw")
+                            .clicked()
+                        {
+                            let new_mode = ChannelMode::Vrc6Saw;
+                            if data.selected_tab == 4 {
+                                cleanup_tab_sequence(data, 4);
                                 data.selected_tab = 0;
                             }
                             data.channel_mode = new_mode;
@@ -305,15 +340,20 @@ fn draw_instrument_settings_panel(
 
                 for &(name, tab) in seq_types {
                     let is_duty = tab == 4;
-                    let is_triangle = data.channel_mode == ChannelMode::Triangle;
+                    let is_no_duty = is_duty
+                        && matches!(
+                            data.channel_mode,
+                            ChannelMode::Triangle | ChannelMode::Noise | ChannelMode::Vrc6Saw
+                        );
                     let is_noise_pitch = matches!(tab, 2 | 3)
                         && data.channel_mode == ChannelMode::Noise;
-                    let enabled = !(is_duty && is_triangle) && !is_noise_pitch;
+                    let enabled = !is_no_duty && !is_noise_pitch;
 
                     ui.add_enabled(
                         enabled,
                         egui::Checkbox::new(data.sequence_enabled_mut(tab), ""),
                     );
+
 
                     if ui
                         .add_enabled(
@@ -448,7 +488,7 @@ fn draw_sequence_editor_panel(
         let graph_height = (ui.available_height() - CONTROLS_HEIGHT).max(150.0);
         let mut auto_enable = false;
 
-        let (min_val, max_val) = sequence_range(tab);
+        let (min_val, max_val) = sequence_range(tab, data.channel_mode);
 
         {
             let (text, sequence) = data.selected_sequence_mut(tab);
@@ -755,8 +795,8 @@ mod tests {
     fn hi_pitch_and_pitch_accept_the_full_dn_signed_char_range() {
         // dnFamiTracker's CPitchGraphEditor serves both tabs with a 127..-128 axis, and
         // both the graph and the text box must agree on it.
-        assert_eq!(sequence_range(2), (-128, 127));
-        assert_eq!(sequence_range(3), (-128, 127));
+        assert_eq!(sequence_range(2, ChannelMode::Pulse), (-128, 127));
+        assert_eq!(sequence_range(3, ChannelMode::Pulse), (-128, 127));
 
         let mut data = SharedSequences::default();
         data.selected_sequence_mut(3)

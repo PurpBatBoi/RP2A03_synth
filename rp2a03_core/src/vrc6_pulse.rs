@@ -133,6 +133,20 @@ impl Vrc6Pulse {
         self.frequency_shift = shift;
     }
 
+    /// Sets channel enable status without changing duty step or frequency bits.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !self.enabled {
+            self.duty.reset_step();
+        }
+    }
+
+    /// Soft update of frequency high 4 bits without resetting duty phase step.
+    pub fn set_period_hi_soft(&mut self, hi_bits: u8) {
+        self.frequency = (self.frequency & 0x00FF) | (u16::from(hi_bits & 0x0F) << 8);
+    }
+
+
     // ── Clocking ────────────────────────────
 
     /// Clock the pulse divider. When it expires, the duty step advances.

@@ -10,4 +10,8 @@ pub mod apu_triangle;
 pub mod blip_buf;
 pub mod software_lfo;
 pub mod sequencer;
+pub mod vrc6_common;
+pub mod vrc6_pulse;
+pub mod vrc6_saw;
+
 

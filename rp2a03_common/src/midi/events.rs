@@ -8,6 +8,8 @@ use nice_plug::prelude::*;
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
+use rp2a03_core::vrc6_pulse::Vrc6Pulse;
+use rp2a03_core::vrc6_saw::Vrc6Saw;
 use rp2a03_core::sequencer::{ArpMode, PitchMode};
 
 impl MidiHandler {
@@ -30,28 +32,57 @@ impl MidiHandler {
         noise: Option<&mut Noise>,
         seqs: &ActiveSequences,
     ) -> Option<usize> {
-        let mut channel = match self.channel_mode {
-            ChannelMode::Pulse => AnyChannel::Pulse(pulse),
-            ChannelMode::Triangle => AnyChannel::Triangle(triangle),
-            ChannelMode::Noise => AnyChannel::Noise(noise.expect("noise channel is required")),
-        };
+        self.handle_event_all(event, pulse, triangle, noise, None, None, seqs)
+    }
 
-        match event {
+    pub fn handle_event_all<S>(
+        &mut self,
+        event: &NoteEvent<S>,
+        pulse: &mut Pulse,
+        triangle: &mut Triangle,
+        noise: Option<&mut Noise>,
+        vrc6_pulse: Option<&mut Vrc6Pulse>,
+        vrc6_saw: Option<&mut Vrc6Saw>,
+        seqs: &ActiveSequences,
+    ) -> Option<usize> {
+        let mode = self.channel_mode;
+        let dispatch = |handler: &mut MidiHandler, mut channel: AnyChannel| match event {
             NoteEvent::NoteOn { note, velocity, .. } => {
                 let vel_u8 = (velocity * 127.0).clamp(0.0, 127.0) as u8;
-                self.note_on(*note, vel_u8, &mut channel, seqs);
+                handler.note_on(*note, vel_u8, &mut channel, seqs);
+                None
             }
             NoteEvent::NoteOff { note, .. } => {
-                self.note_off(*note, &mut channel, seqs);
+                handler.note_off(*note, &mut channel, seqs);
+                None
             }
-            NoteEvent::MidiCC { .. } => {}
-            NoteEvent::MidiProgramChange { program, .. } => {
-                return Some(*program as usize);
+            NoteEvent::MidiCC { .. } => None,
+            NoteEvent::MidiProgramChange { program, .. } => Some(*program as usize),
+            _ => None,
+        };
+
+        match (mode, noise, vrc6_pulse, vrc6_saw) {
+            (ChannelMode::Pulse, _, _, _) => dispatch(self, AnyChannel::Pulse(pulse)),
+            (ChannelMode::Triangle, _, _, _) => dispatch(self, AnyChannel::Triangle(triangle)),
+            (ChannelMode::Noise, Some(n), _, _) => dispatch(self, AnyChannel::Noise(n)),
+            (ChannelMode::Vrc6Pulse, _, Some(vp), _) => dispatch(self, AnyChannel::Vrc6Pulse(vp)),
+            (ChannelMode::Vrc6Pulse, _, None, _) => {
+                let mut vp = self.vrc6_pulse.clone();
+                let res = dispatch(self, AnyChannel::Vrc6Pulse(&mut vp));
+                self.vrc6_pulse = vp;
+                res
             }
-            _ => {}
+            (ChannelMode::Vrc6Saw, _, _, Some(vs)) => dispatch(self, AnyChannel::Vrc6Saw(vs)),
+            (ChannelMode::Vrc6Saw, _, _, None) => {
+                let mut vs = self.vrc6_saw.clone();
+                let res = dispatch(self, AnyChannel::Vrc6Saw(&mut vs));
+                self.vrc6_saw = vs;
+                res
+            }
+            _ => None,
         }
-        None
     }
+
 
     /// Handle NoteOn event with monophonic last-note priority.
     pub fn note_on(
@@ -72,7 +103,10 @@ impl MidiHandler {
             // Each MIDI-track noise note starts from the same deterministic
             // phase so its metallic timbre remains locked across notes.
             AnyChannel::Noise(_) => true,
+            AnyChannel::Vrc6Pulse(_) => !self.pulse_phase_initialized,
+            AnyChannel::Vrc6Saw(_) => !self.gate,
         };
+
         self.note_stack.retain(|(n, _)| *n != note);
         self.note_stack.push((note, velocity));
 

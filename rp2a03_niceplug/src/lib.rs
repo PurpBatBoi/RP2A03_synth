@@ -13,6 +13,8 @@ use rp2a03_core::NTSC_CPU_CLOCK;
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
+use rp2a03_core::vrc6_pulse::Vrc6Pulse;
+use rp2a03_core::vrc6_saw::Vrc6Saw;
 use rp2a03_core::blip_buf::BlipBuf;
 use rp2a03_core::sequencer::{SeqState, Sequence, SequencePlayer};
 use std::sync::Arc;
@@ -32,6 +34,8 @@ struct Voice {
     pulse: Pulse,
     triangle: Triangle,
     noise: Noise,
+    vrc6_pulse: Vrc6Pulse,
+    vrc6_saw: Vrc6Saw,
     midi_handler: MidiHandler,
     blip: BlipBuf,
     last_output: i32,
@@ -48,12 +52,18 @@ impl Voice {
         triangle.set_enabled(true);
         let mut noise = Noise::new();
         noise.set_enabled(true);
+        let mut vrc6_pulse = Vrc6Pulse::new();
+        vrc6_pulse.set_enabled(true);
+        let mut vrc6_saw = Vrc6Saw::new();
+        vrc6_saw.set_enabled(true);
         let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE);
         blip.set_rates(NTSC_CPU_CLOCK, 44100.0);
         Self {
             pulse,
             triangle,
             noise,
+            vrc6_pulse,
+            vrc6_saw,
             midi_handler: MidiHandler::new(),
             blip,
             last_output: 0,
@@ -71,6 +81,10 @@ impl Voice {
         self.triangle.set_enabled(true);
         self.noise.reset();
         self.noise.set_enabled(true);
+        self.vrc6_pulse.reset();
+        self.vrc6_pulse.set_enabled(true);
+        self.vrc6_saw.reset();
+        self.vrc6_saw.set_enabled(true);
         self.midi_handler.reset();
         self.blip.clear();
         self.last_output = 0;
@@ -92,6 +106,10 @@ impl Voice {
         self.triangle.set_enabled(true);
         self.noise.reset();
         self.noise.set_enabled(true);
+        self.vrc6_pulse.reset();
+        self.vrc6_pulse.set_enabled(true);
+        self.vrc6_saw.reset();
+        self.vrc6_saw.set_enabled(true);
         // A triangle timer/register write does not reset the waveform's 32-step
         // phase. Preserve it when recycling a polyphonic voice so the DAC does
         // not jump from the held release level back to sequence step zero.
@@ -113,6 +131,7 @@ impl Voice {
         }
     }
 }
+
 
 pub struct Rp2a03Plugin {
     params: Arc<Rp2a03Params>,
@@ -223,7 +242,7 @@ impl Default for Rp2a03Params {
                 IntRange::Linear { min: 0, max: 24 },
             ),
             step_time: IntParam::new("Step Time", 60, IntRange::Linear { min: 1, max: 600 }),
-            waveform: IntParam::new("Waveform", 0, IntRange::Linear { min: 0, max: 2 }),
+            waveform: IntParam::new("Waveform", 0, IntRange::Linear { min: 0, max: 4 }),
             polyphony: BoolParam::new("Polyphony", false),
             max_voices: IntParam::new("Max Voices", 8, IntRange::Linear { min: 1, max: 8 }),
             portamento_enabled: BoolParam::new("Portamento", false),
@@ -293,6 +312,22 @@ impl Rp2a03Plugin {
                             }
                         } else {
                             voice.last_triangle_output
+                        }
+                    }
+                    ChannelMode::Vrc6Pulse => {
+                        voice.vrc6_pulse.clock();
+                        if voice.midi_handler.gate() {
+                            voice.vrc6_pulse.volume() as i32 * AMPLITUDE_SCALE
+                        } else {
+                            0
+                        }
+                    }
+                    ChannelMode::Vrc6Saw => {
+                        voice.vrc6_saw.clock();
+                        if voice.midi_handler.gate() {
+                            (voice.vrc6_saw.volume() as i32 * AMPLITUDE_SCALE) / 2
+                        } else {
+                            0
                         }
                     }
                 };
@@ -367,10 +402,12 @@ impl Rp2a03Plugin {
             let mut any_gated = false;
 
             for voice in &mut self.voices[..active_voice_count] {
-                master_gains.push(voice.midi_handler.apply_current_modulation_with_noise(
+                master_gains.push(voice.midi_handler.apply_current_modulation_all(
                     &mut voice.pulse,
                     &mut voice.triangle,
                     Some(&mut voice.noise),
+                    Some(&mut voice.vrc6_pulse),
+                    Some(&mut voice.vrc6_saw),
                     seqs,
                 ));
                 if voice.midi_handler.gate() {
@@ -432,11 +469,13 @@ impl Rp2a03Plugin {
                 let index = self.select_voice();
                 let voice = &mut self.voices[index];
                 voice.begin_triangle_attack_ramp();
-                voice.midi_handler.handle_event_with_noise(
+                voice.midi_handler.handle_event_all(
                     event,
                     &mut voice.pulse,
                     &mut voice.triangle,
                     Some(&mut voice.noise),
+                    Some(&mut voice.vrc6_pulse),
+                    Some(&mut voice.vrc6_saw),
                     seqs,
                 )
             }
@@ -461,11 +500,13 @@ impl Rp2a03Plugin {
 
                 if let Some(index) = index {
                     let voice = &mut self.voices[index];
-                    voice.midi_handler.handle_event_with_noise(
+                    voice.midi_handler.handle_event_all(
                         event,
                         &mut voice.pulse,
                         &mut voice.triangle,
                         Some(&mut voice.noise),
+                        Some(&mut voice.vrc6_pulse),
+                        Some(&mut voice.vrc6_saw),
                         seqs,
                     )
                 } else {
@@ -477,11 +518,13 @@ impl Rp2a03Plugin {
                 for voice in &mut self.voices {
                     program = voice
                         .midi_handler
-                        .handle_event_with_noise(
+                        .handle_event_all(
                             event,
                             &mut voice.pulse,
                             &mut voice.triangle,
                             Some(&mut voice.noise),
+                            Some(&mut voice.vrc6_pulse),
+                            Some(&mut voice.vrc6_saw),
                             seqs,
                         )
                         .or(program);
@@ -490,14 +533,17 @@ impl Rp2a03Plugin {
             }
             NoteEvent::MidiProgramChange { .. } => {
                 let voice = &mut self.voices[0];
-                voice.midi_handler.handle_event_with_noise(
+                voice.midi_handler.handle_event_all(
                     event,
                     &mut voice.pulse,
                     &mut voice.triangle,
                     Some(&mut voice.noise),
+                    Some(&mut voice.vrc6_pulse),
+                    Some(&mut voice.vrc6_saw),
                     seqs,
                 )
             }
+
             _ => None,
         }
     }

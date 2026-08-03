@@ -5,14 +5,15 @@
 
 use super::types::{
     ActiveSequences, ChannelMode, HostAutomationControls, freq_to_period, freq_to_triangle_period,
-    midi_note_to_freq,
-    midi_note_to_noise_period,
+    freq_to_vrc6_saw_period, midi_note_to_freq, midi_note_to_noise_period,
 };
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, SequencePlayer};
 use rp2a03_core::software_lfo::SoftwareLfo;
+use rp2a03_core::vrc6_pulse::Vrc6Pulse;
+use rp2a03_core::vrc6_saw::Vrc6Saw;
 
 // ─────────────────────────────────────────────
 // AnyChannel — zero-cost dispatch shim
@@ -25,6 +26,8 @@ pub enum AnyChannel<'a> {
     Pulse(&'a mut Pulse),
     Triangle(&'a mut Triangle),
     Noise(&'a mut Noise),
+    Vrc6Pulse(&'a mut Vrc6Pulse),
+    Vrc6Saw(&'a mut Vrc6Saw),
 }
 
 impl<'a> AnyChannel<'a> {
@@ -33,6 +36,8 @@ impl<'a> AnyChannel<'a> {
             AnyChannel::Pulse(p) => p.set_enabled(enabled),
             AnyChannel::Triangle(t) => t.set_enabled(enabled),
             AnyChannel::Noise(n) => n.set_enabled(enabled),
+            AnyChannel::Vrc6Pulse(p) => p.set_enabled(enabled),
+            AnyChannel::Vrc6Saw(s) => s.set_enabled(enabled),
         }
     }
 
@@ -41,6 +46,8 @@ impl<'a> AnyChannel<'a> {
             AnyChannel::Pulse(p) => p.write_timer_lo(val),
             AnyChannel::Triangle(t) => t.write_timer_lo(val),
             AnyChannel::Noise(_) => {}
+            AnyChannel::Vrc6Pulse(p) => p.write_freq_lo(val),
+            AnyChannel::Vrc6Saw(s) => s.write_freq_lo(val),
         }
     }
 
@@ -49,6 +56,8 @@ impl<'a> AnyChannel<'a> {
             AnyChannel::Pulse(p) => p.write_timer_hi(val),
             AnyChannel::Triangle(t) => t.write_timer_hi(val),
             AnyChannel::Noise(_) => {}
+            AnyChannel::Vrc6Pulse(p) => p.write_freq_hi(val),
+            AnyChannel::Vrc6Saw(s) => s.write_freq_hi(val),
         }
     }
 
@@ -57,6 +66,8 @@ impl<'a> AnyChannel<'a> {
             AnyChannel::Pulse(p) => p.set_period_hi_soft(hi_bits),
             AnyChannel::Triangle(t) => t.set_period_hi_soft(hi_bits),
             AnyChannel::Noise(_) => {}
+            AnyChannel::Vrc6Pulse(p) => p.set_period_hi_soft(hi_bits),
+            AnyChannel::Vrc6Saw(s) => s.set_period_hi_soft(hi_bits),
         }
     }
 
@@ -78,6 +89,7 @@ impl<'a> AnyChannel<'a> {
         }
     }
 }
+
 
 // ─────────────────────────────────────────────
 // MidiHandler
@@ -178,8 +190,12 @@ pub struct MidiHandler {
     /// This remains true through NoteOff so an adjacent NoteOn does not reset
     /// phase merely because MIDI delivered NoteOff first.
     pub(super) pulse_phase_initialized: bool,
-    /// Active channel mode (Pulse / Triangle / Noise).
+    /// Active channel mode (Pulse / Triangle / Noise / Vrc6Pulse / Vrc6Saw).
     pub channel_mode: ChannelMode,
+    /// Internal VRC6 Pulse channel instance
+    pub vrc6_pulse: Vrc6Pulse,
+    /// Internal VRC6 Saw channel instance
+    pub vrc6_saw: Vrc6Saw,
 }
 
 impl Default for MidiHandler {
@@ -215,16 +231,17 @@ impl Default for MidiHandler {
             reg_channel: None,
             pulse_phase_initialized: false,
             channel_mode: ChannelMode::Pulse,
+            vrc6_pulse: Vrc6Pulse::new(),
+            vrc6_saw: Vrc6Saw::new(),
         }
     }
 }
 
 impl MidiHandler {
     pub(super) fn max_macro_period(&self) -> i32 {
-        if self.channel_mode == ChannelMode::Triangle {
-            0x0FFF
-        } else {
-            0x07FF
+        match self.channel_mode {
+            ChannelMode::Triangle | ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw => 0x0FFF,
+            _ => 0x07FF,
         }
     }
     /// Create a new `MidiHandler`.
@@ -260,6 +277,8 @@ impl MidiHandler {
         self.prev_timer_hi = 0xFF;
         self.reg_channel = None;
         self.pulse_phase_initialized = false;
+        self.vrc6_pulse.reset();
+        self.vrc6_saw.reset();
         // channel_mode is intentionally NOT reset — it's a persistent host parameter.
     }
 
@@ -291,6 +310,12 @@ impl MidiHandler {
                     }
                     n.write_length(0xF8);
                 }
+                AnyChannel::Vrc6Pulse(_) => {
+                    if reset_phase {
+                        self.pulse_phase_initialized = true;
+                    }
+                }
+                AnyChannel::Vrc6Saw(_) => {}
             }
 
             if reset_phase {
@@ -302,6 +327,7 @@ impl MidiHandler {
             }
         }
     }
+
 
     /// Applies changed host parameter values without continuously overriding MIDI CC values.
     pub fn apply_host_automation(&mut self, controls: HostAutomationControls) {
@@ -482,10 +508,10 @@ impl MidiHandler {
     pub(super) fn note_period(&self, arp_semitones: i16) -> i32 {
         let note = (self.active_note as i16 + self.octave_offset as i16 + arp_semitones)
             .clamp(0, 127) as u8;
-        if self.channel_mode == ChannelMode::Triangle {
-            freq_to_triangle_period(midi_note_to_freq(note)) as i32
-        } else {
-            freq_to_period(midi_note_to_freq(note)) as i32
+        match self.channel_mode {
+            ChannelMode::Triangle => freq_to_triangle_period(midi_note_to_freq(note)) as i32,
+            ChannelMode::Vrc6Saw => freq_to_vrc6_saw_period(midi_note_to_freq(note)) as i32,
+            _ => freq_to_period(midi_note_to_freq(note)) as i32,
         }
     }
 
@@ -530,11 +556,13 @@ impl MidiHandler {
         self.apply_current_modulation_with_noise(pulse, triangle, None, seqs)
     }
 
-    pub fn apply_current_modulation_with_noise(
+    pub fn apply_current_modulation_all(
         &mut self,
         pulse: &mut Pulse,
         triangle: &mut Triangle,
         mut noise: Option<&mut Noise>,
+        mut vrc6_pulse: Option<&mut Vrc6Pulse>,
+        mut vrc6_saw: Option<&mut Vrc6Saw>,
         seqs: &ActiveSequences,
     ) -> f32 {
         let master_gain = 1.0;
@@ -548,7 +576,37 @@ impl MidiHandler {
                 }
                 master_gain
             }
+            ChannelMode::Vrc6Pulse => {
+                if let Some(vp) = vrc6_pulse.as_deref_mut() {
+                    self.apply_vrc6_pulse_modulation(vp, seqs, master_gain)
+                } else {
+                    let mut vp = self.vrc6_pulse.clone();
+                    let res = self.apply_vrc6_pulse_modulation(&mut vp, seqs, master_gain);
+                    self.vrc6_pulse = vp;
+                    res
+                }
+            }
+            ChannelMode::Vrc6Saw => {
+                if let Some(vs) = vrc6_saw.as_deref_mut() {
+                    self.apply_vrc6_saw_modulation(vs, seqs, master_gain)
+                } else {
+                    let mut vs = self.vrc6_saw.clone();
+                    let res = self.apply_vrc6_saw_modulation(&mut vs, seqs, master_gain);
+                    self.vrc6_saw = vs;
+                    res
+                }
+            }
         }
+    }
+
+    pub fn apply_current_modulation_with_noise(
+        &mut self,
+        pulse: &mut Pulse,
+        triangle: &mut Triangle,
+        noise: Option<&mut Noise>,
+        seqs: &ActiveSequences,
+    ) -> f32 {
+        self.apply_current_modulation_all(pulse, triangle, noise, None, None, seqs)
     }
 
     fn apply_noise_modulation(&mut self, noise: &mut Noise, seqs: &ActiveSequences) {
@@ -674,43 +732,101 @@ impl MidiHandler {
         master_gain
     }
 
-    /// Shared pitch register write path for both Pulse and Triangle.
-    ///
-    /// Fine pitch and vibrato compose onto `macro_period` at write time,
-    /// like dn's `CalculatePeriod`. Uses `set_period_hi_soft` on sustain
-    /// to avoid the click at period-byte boundaries during LFO modulation.
-    ///
-    /// Two channel adjustments happen here, at the register boundary:
-    ///
-    /// - Triangle octave parity: the triangle sequencer advances once per CPU cycle
-    ///   while the pulse's duty sequencer advances every other cycle
-    ///   (f = CPU/32(p+1) vs f = CPU/16(p+1)), so an uncompensated triangle sounds
-    ///   one octave lower for the same timer value. The composed period is halved
-    ///   for the triangle `p_tri = (p_pulse - 1) / 2`) so both waveforms sound the
-    ///   same pitch for the same note and sequence modulation. `macro_period` stays
-    ///   in the pulse (dn-parity) domain for all sequence math; the halving
-    ///   preserves frequency ratios, so relative modulation (vibrato, pitch
-    ///   sequences, fine pitch) keeps its perceived depth on the triangle.
-    ///
-    /// - Waveform-switch cache invalidation: `prev_timer_lo` / `prev_timer_hi` are
-    ///   handler-level caches, but each APU channel keeps its own register state,
-    ///   so after a `ChannelMode` switch the first write must go through even if
-    ///   the bytes happen to match the cache (which still describes the *other*
-    ///   channel's registers). Otherwise the new channel keeps a stale period
-    ///   until a note with a different low byte forces a write. A switch forces the
-    ///   full attack write `write_timer_hi`, not the soft path) so the new channel
-    ///   also gets its sequencer/envelope/linear-counter reset — a mid-note
-    ///   triangle switch needs that linear-counter reload to sound at all.
+    fn apply_vrc6_pulse_modulation(
+        &mut self,
+        vrc6_pulse: &mut Vrc6Pulse,
+        seqs: &ActiveSequences,
+        master_gain: f32,
+    ) -> f32 {
+        if !self.gate {
+            let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
+                self.duty_seq_player.value().clamp(0, 7) as u8
+            } else {
+                0
+            };
+            let ctrl_byte = duty_val << 4;
+            if ctrl_byte != self.prev_ctrl {
+                vrc6_pulse.write_ctrl(ctrl_byte);
+                self.prev_ctrl = ctrl_byte;
+            }
+            return master_gain;
+        }
+
+        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
+            self.vol_seq_player.value().clamp(0, 15) as u8
+        } else {
+            15
+        };
+
+        let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15) as u32;
+        let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
+        let tremolo_sub = self.lfo.tremolo_volume_delta();
+        let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
+
+        if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
+            if self.vol_seq_player.state == SeqState::End && apu_vol == 0 {
+                self.gate = false;
+            }
+        }
+
+        let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
+            self.duty_seq_player.value().clamp(0, 7) as u8
+        } else {
+            0
+        };
+
+        let ctrl_byte = (duty_val << 4) | apu_vol;
+        if ctrl_byte != self.prev_ctrl {
+            vrc6_pulse.write_ctrl(ctrl_byte);
+            self.prev_ctrl = ctrl_byte;
+        }
+
+        self.apply_pitch_registers(&mut AnyChannel::Vrc6Pulse(vrc6_pulse));
+
+        master_gain
+    }
+
+    fn apply_vrc6_saw_modulation(
+        &mut self,
+        vrc6_saw: &mut Vrc6Saw,
+        seqs: &ActiveSequences,
+        master_gain: f32,
+    ) -> f32 {
+        if !self.gate {
+            vrc6_saw.write_rate(0);
+            return master_gain;
+        }
+
+        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
+            self.vol_seq_player.value().clamp(0, 63) as u8
+        } else {
+            63
+        };
+
+        let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15).min(63) as u32;
+        let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
+        let tremolo_sub = (self.lfo.tremolo_volume_delta() * 4) as u8;
+        let rate_val = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 63);
+
+        if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
+            if self.vol_seq_player.state == SeqState::End && rate_val == 0 {
+                self.gate = false;
+            }
+        }
+
+        vrc6_saw.write_rate(rate_val);
+
+        self.apply_pitch_registers(&mut AnyChannel::Vrc6Saw(vrc6_saw));
+
+        master_gain
+    }
+
+    /// Shared pitch register write path for all channels.
     fn apply_pitch_registers(&mut self, channel: &mut AnyChannel) {
         let fine_pitch_offset = self.fine_pitch as i32;
         let hi_pitch_offset = (self.hi_pitch as i32) << 4;
         let vibrato_delta = self.lfo.vibrato_pitch_delta() as i32;
 
-        // Pitch Slide is deliberately separate from Pitch and Hi-Pitch. Those
-        // controls are raw APU-period offsets used by the existing sequence and
-        // MIDI-CC behavior; this control is a conventional musical pitch bend.
-        // The APU period is proportional to 1/frequency, so apply the bend in
-        // frequency space rather than adding a fixed period offset.
         let bend_semitones =
             self.pitch_slide as f32 / 8192.0 * self.pitch_slide_range as f32;
         let bend_ratio = 2.0_f32.powf(bend_semitones / 12.0);
@@ -720,9 +836,6 @@ impl MidiHandler {
         let final_period = (slide_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta)
             .clamp(0, self.max_macro_period());
 
-        // Triangle octave parity — see fn docs. Halving the composed period keeps
-        // `macro_period` in the pulse domain while the triangle plays the
-        // matching frequency: CPU/32((p-1)/2 + 1) == CPU/16(p+1).
         let final_period = if self.channel_mode == ChannelMode::Triangle {
             (final_period - 1).max(0) / 2
         } else {
@@ -731,15 +844,17 @@ impl MidiHandler {
 
         let final_period = final_period as u16;
 
-        // Force the first write after a waveform switch (or reset) through the
-        // caches — see fn docs.
         let channel_switched = self.reg_channel != Some(self.channel_mode);
         if channel_switched {
             self.reg_channel = Some(self.channel_mode);
         }
 
         let timer_lo = (final_period & 0xFF) as u8;
-        let timer_hi_bits = ((final_period >> 8) & 0x07) as u8;
+        let timer_hi_mask = match self.channel_mode {
+            ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw => 0x0F,
+            _ => 0x07,
+        };
+        let timer_hi_bits = ((final_period >> 8) & timer_hi_mask) as u8;
 
         if channel_switched || timer_lo != self.prev_timer_lo {
             channel.write_timer_lo(timer_lo);
@@ -748,20 +863,17 @@ impl MidiHandler {
 
         if channel_switched || timer_hi_bits != self.prev_timer_hi {
             if channel_switched || self.prev_timer_hi == 0xFF {
-                // Fresh channel / note attack (sentinel set by apply_top_note):
-                // use write_timer_hi so the sequencer and linear counter reset
-                // cleanly for the new note's attack.
-                channel.write_timer_hi(0xF8 | timer_hi_bits);
+                let hi_byte = match self.channel_mode {
+                    ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw => 0x80 | timer_hi_bits,
+                    _ => 0xF8 | timer_hi_bits,
+                };
+                channel.write_timer_hi(hi_byte);
             } else {
-                // Sustain: soft high-period update — skips duty.reset_step() and
-                // envelope.restart()/linear.reload, eliminating the click at period
-                // byte boundaries (e.g. 0x00FF ↔ 0x0100) during vibrato / LFO
-                // modulation. Mirrors Blaarg's smooth vibrato technique used in
-                // FamiStudio.
                 channel.set_period_hi_soft(timer_hi_bits);
             }
             self.prev_timer_hi = timer_hi_bits;
         }
+
     }
 
     /// Update sequence playback, LFO modulation, and write updated parameters to APU channels.

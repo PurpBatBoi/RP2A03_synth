@@ -95,6 +95,21 @@ impl Vrc6Saw {
         self.frequency_shift = shift;
     }
 
+    /// Sets channel enable status without resetting frequency divider.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !self.enabled {
+            self.accumulator = 0;
+            self.step = 0;
+        }
+    }
+
+    /// Soft update of frequency high 4 bits without resetting accumulator phase.
+    pub fn set_period_hi_soft(&mut self, hi_bits: u8) {
+        self.frequency = (self.frequency & 0x00FF) | (u16::from(hi_bits & 0x0F) << 8);
+    }
+
+
     // ── Clocking ────────────────────────────
 
     /// Clock the saw divider. When it expires, the step advances through a

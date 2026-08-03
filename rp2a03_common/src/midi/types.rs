@@ -10,6 +10,8 @@ pub enum ChannelMode {
     Pulse = 0,
     Triangle = 1,
     Noise = 2,
+    Vrc6Pulse = 3,
+    Vrc6Saw = 4,
 }
 
 impl ChannelMode {
@@ -17,6 +19,8 @@ impl ChannelMode {
         match val {
             1 => ChannelMode::Triangle,
             2 => ChannelMode::Noise,
+            3 => ChannelMode::Vrc6Pulse,
+            4 => ChannelMode::Vrc6Saw,
             _ => ChannelMode::Pulse,
         }
     }
@@ -51,6 +55,16 @@ pub fn freq_to_triangle_period(freq: f32) -> u16 {
     let t = (NTSC_CPU_CLOCK as f32 / (16.0 * freq)) - 0.5;
     t.round().clamp(0.0, 4095.0) as u16
 }
+
+/// Converts a frequency in Hz to VRC6 Saw channel period (14-stage accumulator cycle).
+pub fn freq_to_vrc6_saw_period(freq: f32) -> u16 {
+    if freq <= 0.0 {
+        return 4095;
+    }
+    let t = (NTSC_CPU_CLOCK as f32 / (14.0 * freq)) - 0.5;
+    t.round().clamp(0.0, 4095.0) as u16
+}
+
 
 /// Maps a MIDI key to the 4-bit NES noise period used by FamiStudio.
 /// FamiStudio first converts MIDI to its internal C0-based note (`key - 11`),
