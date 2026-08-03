@@ -6,8 +6,8 @@ use nice_plug_egui::{EguiSettings, EguiState, create_egui_editor};
 use parking_lot::Mutex;
 use rp2a03_common::{
     ActiveSequences, ChannelMode, HostAutomationControls, MAX_SEQUENCES, MidiHandler,
-    NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT, SequencePlayheads, SharedSequences, render_editor_ui,
-    style,
+    NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT, SequencePlayheads, SequenceReload, SharedSequences,
+    render_editor_ui, style,
 };
 use rp2a03_core::NTSC_CPU_CLOCK;
 use rp2a03_core::apu_noise::Noise;
@@ -467,6 +467,17 @@ impl Rp2a03Plugin {
             });
 
         self.voices[index].reset_for_allocation();
+        // `reset_for_allocation` clears the handler's `last_host_controls`, and with
+        // it every host-automated control back to its default (full hardware volume,
+        // no vibrato/tremolo, 60 Hz step time, no portamento). `process` only applies
+        // host automation once per block, before the event loop, so without this the
+        // freshly allocated voice would sound the rest of the block on defaults
+        // instead of the automated values — an audible level jump on the attack of
+        // every polyphonic note.
+        let controls = self.host_automation_controls();
+        self.voices[index]
+            .midi_handler
+            .apply_host_automation(controls);
         self.alloc_counter = self.alloc_counter.wrapping_add(1);
         self.voices[index].alloc_id = self.alloc_counter;
         index
@@ -582,6 +593,12 @@ impl Rp2a03Plugin {
     /// reuses each `Vec`'s existing allocation instead of allocating fresh —
     /// this runs on the audio thread, where allocation and long lock hold times
     /// are both real-time-safety hazards.
+    ///
+    /// A refresh caused by a *slot switch* also re-points every voice's sequence
+    /// players at the new envelopes (dn `LoadInstrument`); see
+    /// `MidiHandler::reload_sequences`. A refresh caused only by a revision bump
+    /// is an in-place edit of the slot already playing, which dn does not treat as
+    /// a reload, so the players are left alone.
     fn refresh_active_sequences(&mut self, sequence_index: usize) {
         let mut data = self.params.shared_sequences.lock();
         let revision = data.revision();
@@ -589,6 +606,22 @@ impl Rp2a03Plugin {
             return;
         }
         data.set_all_selected_sequence_indices(sequence_index);
+
+        let slot_changed = self.cached_seq_key.map(|(index, _)| index) != Some(sequence_index);
+        // Compared before the clones below overwrite the outgoing slot's data.
+        // Comparing `Vec<i16>` contents allocates nothing, so this stays RT-safe.
+        let reload = if slot_changed {
+            SequenceReload {
+                vol: self.active_seqs.vol_seq != *data.selected_sequence(0),
+                arp: self.active_seqs.arp_seq != *data.selected_sequence(1),
+                pitch: self.active_seqs.pitch_seq != *data.selected_sequence(2),
+                hipitch: self.active_seqs.hipitch_seq != *data.selected_sequence(3),
+                duty: self.active_seqs.duty_seq != *data.selected_sequence(4),
+            }
+        } else {
+            SequenceReload::default()
+        };
+
         self.active_seqs.vol_seq.clone_from(data.selected_sequence(0));
         self.active_seqs.vol_enabled = data.sequence_enabled(0);
         self.active_seqs.arp_seq.clone_from(data.selected_sequence(1));
@@ -603,6 +636,15 @@ impl Rp2a03Plugin {
         self.active_seqs.duty_enabled = data.sequence_enabled(4);
         drop(data);
         self.cached_seq_key = Some((sequence_index, revision));
+
+        // Called even when `reload` is all-false: an envelope whose content is
+        // identical across the two slots can still have flipped its enable flag,
+        // and dn's `ClearSequence` branch is unconditional on the enable state.
+        if slot_changed {
+            for voice in &mut self.voices {
+                voice.midi_handler.reload_sequences(&self.active_seqs, reload);
+            }
+        }
     }
 
     fn publish_sequence_playheads(&self, seqs: &ActiveSequences) {

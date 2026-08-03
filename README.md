@@ -1,7 +1,7 @@
-![RP2A03 Logo](logo.png)
+![RP2A03 Logo](readme_assets/logo.png)
 ---
 
-**RP2A03 Synth** is a WiP NES synthesizer plugin (CLAP + VST3) for modern DAWs.
+**RP2A03 Synth** is a WiP NES synthesizer plugin for modern DAWs.
 
 The sound engine is not a sample library or an approximated "chiptune" waveform
 generator — it is a register-level emulation of the NES RP2A03 APU, driven
@@ -18,6 +18,8 @@ On top of the emulation core sits a FamiTracker-style sequence engine
 (volume / arpeggio / pitch / hi-pitch / duty sequences with loop and release
 points) plus software vibrato/tremolo LFOs, so the instrument plays and automates
 like a normal synth while the audio math underneath stays somewhat hardware-accurate.
+
+# Synth Showcase
 
 ## Features
 

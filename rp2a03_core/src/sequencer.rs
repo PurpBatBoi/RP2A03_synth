@@ -348,6 +348,19 @@ impl SequencePlayer {
         self.current_value
     }
 
+    /// Point the player at step 0 of a freshly loaded sequence and mark it running.
+    ///
+    /// 1:1 with dn's `CSeqInstHandler::SetupSequence()`, which is what runs when
+    /// `LoadInstrument` hands the handler an envelope it was not already playing.
+    /// Unlike [`trigger`](Self::trigger) this does *not* read step 0 — dn applies
+    /// the new step on the following `UpdateInstrument` tick — and it leaves
+    /// `is_releasing` alone, so a sequence swapped in during a release tail stays
+    /// in its release state.
+    pub fn setup(&mut self) {
+        self.pos = 0;
+        self.state = SeqState::Running;
+    }
+
     /// Get current output value without advancing.
     pub fn value(&self) -> i16 {
         self.current_value

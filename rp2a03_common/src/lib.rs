@@ -11,5 +11,5 @@ pub use gui::{
 };
 pub use midi::{
     freq_to_period, freq_to_triangle_period, midi_note_to_freq, ActiveSequences, ChannelMode, HostAutomationControls,
-    MidiHandler,
+    MidiHandler, SequenceReload,
 };

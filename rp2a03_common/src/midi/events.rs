@@ -45,6 +45,10 @@ impl MidiHandler {
         vrc6_saw: Option<&mut Vrc6Saw>,
         seqs: &ActiveSequences,
     ) -> Option<usize> {
+        // A Waveform switch can land between blocks, so reconcile the period domain
+        // before a note event reads or rewrites `macro_period`.
+        self.sync_channel_mode();
+
         let mode = self.channel_mode;
         let dispatch = |handler: &mut MidiHandler, mut channel: AnyChannel| match event {
             NoteEvent::NoteOn { note, velocity, .. } => {
@@ -251,6 +255,9 @@ impl MidiHandler {
         }
 
         self.macro_period = self.macro_period.clamp(0, self.max_macro_period());
+        // The period was just built from this channel's note table, so this is the
+        // domain a later Waveform switch has to rebase away from.
+        self.period_channel = Some(self.channel_mode);
     }
 
 }

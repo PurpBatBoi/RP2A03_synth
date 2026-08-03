@@ -9,6 +9,7 @@ use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, Sequence, VolMode};
+use rp2a03_core::vrc6_pulse::Vrc6Pulse;
 use rp2a03_core::vrc6_saw::Vrc6Saw;
 
 fn default_seqs() -> ActiveSequences {
@@ -1134,4 +1135,231 @@ fn saw_duty_release_alone_still_clears_the_gate() {
 
     assert!(!handler.gate(), "duty release tail must not hang the note");
     assert_eq!(saw.rate(), 0);
+}
+
+// ── Sequence-slot switching (dn CSeqInstHandler::LoadInstrument parity) ──
+
+/// A constant, non-looping duty envelope — the shape that exposed the bug,
+/// because it reaches `SeqState::End` right after the attack and then processes
+/// nothing further.
+fn duty_slot(text: &str) -> ActiveSequences {
+    ActiveSequences {
+        duty_seq: Sequence::parse(text),
+        duty_enabled: true,
+        ..default_seqs()
+    }
+}
+
+#[test]
+fn switching_slots_applies_the_new_duty_to_a_finished_envelope() {
+    // Regression: switching from a slot with 50% duty (register value 2) to one
+    // with 25% duty (value 1) mid-note kept sounding 50%. Swapping the
+    // `ActiveSequences` data alone never reached the player: it was already in
+    // `SeqState::End`, which `clock_sequences_one_frame` skips, so it held the
+    // outgoing slot's value indefinitely.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+
+    let slot_a = duty_slot("2");
+    handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &slot_a);
+    handler.update_modulation(&mut pulse, &mut triangle, &slot_a, 60.0, 1);
+
+    assert_eq!(handler.duty_seq_player.value(), 2);
+    assert_eq!(handler.duty_seq_player.state, SeqState::End);
+    assert_eq!(handler.prev_ctrl >> 6, 2, "slot A duty reached $4000");
+
+    let slot_b = duty_slot("1");
+    handler.reload_sequences(
+        &slot_b,
+        SequenceReload {
+            duty: true,
+            ..SequenceReload::default()
+        },
+    );
+
+    // dn SetupSequence: running again from step 0, value applied on the next tick.
+    assert_eq!(handler.duty_seq_player.state, SeqState::Running);
+    assert_eq!(handler.duty_seq_player.pos, 0);
+
+    handler.update_modulation(&mut pulse, &mut triangle, &slot_b, 60.0, 1);
+
+    assert_eq!(handler.duty_seq_player.value(), 1);
+    assert_eq!(handler.prev_ctrl >> 6, 1, "slot B duty must reach $4000");
+}
+
+#[test]
+fn switching_slots_leaves_an_unchanged_envelope_running() {
+    // dn only calls SetupSequence when the incoming CSequence differs, so an
+    // instrument that reuses the same envelope does not restart it mid-note.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+
+    let seqs = ActiveSequences {
+        duty_seq: Sequence::parse("0 1 2 3"),
+        duty_enabled: true,
+        ..default_seqs()
+    };
+
+    handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    assert_eq!(handler.duty_seq_player.value(), 1);
+
+    // Same duty envelope in the new slot: `duty` stays false.
+    handler.reload_sequences(&seqs, SequenceReload::default());
+
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    assert_eq!(
+        handler.duty_seq_player.value(),
+        2,
+        "an unchanged envelope must keep its position across a slot switch"
+    );
+}
+
+#[test]
+fn switching_to_a_slot_with_the_envelope_disabled_clears_the_player() {
+    // dn ClearSequence runs on the enable flag alone, regardless of whether the
+    // sequence content changed — otherwise the disabled slot would keep emitting
+    // the previous slot's held value.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+
+    let slot_a = duty_slot("3");
+    handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &slot_a);
+    handler.update_modulation(&mut pulse, &mut triangle, &slot_a, 60.0, 1);
+    assert_eq!(handler.duty_seq_player.value(), 3);
+
+    // Identical content, but the slot has the duty editor switched off.
+    let slot_b = ActiveSequences {
+        duty_enabled: false,
+        ..duty_slot("3")
+    };
+    handler.reload_sequences(&slot_b, SequenceReload::default());
+
+    assert_eq!(handler.duty_seq_player.state, SeqState::Disabled);
+    assert_eq!(handler.duty_seq_player.value(), 0);
+
+    handler.update_modulation(&mut pulse, &mut triangle, &slot_b, 60.0, 1);
+    assert_eq!(
+        handler.prev_ctrl >> 6,
+        0,
+        "a disabled duty envelope falls back to 12.5%, not the old slot's value"
+    );
+}
+
+// ── Waveform parameter switching under a sounding note ──
+
+#[test]
+fn waveform_switch_forces_a_control_byte_that_collides_with_the_cache() {
+    // Pulse packs `(duty << 6) | 0x30 | volume`; VRC6 pulse packs
+    // `(duty << 4) | volume`. Pulse duty 0 at volume 15 and VRC6 duty 3 at volume
+    // 15 are both 0x3F, so a channel-blind byte cache reads the first VRC6 write
+    // as "unchanged" and drops it — the channel stays at its reset volume.
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    let mut vrc6 = Vrc6Pulse::new();
+    vrc6.set_enabled(true);
+
+    // No duty sequence: the pulse falls back to duty 0.
+    let pulse_seqs = default_seqs();
+    handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &pulse_seqs);
+    handler.apply_current_modulation_all(
+        &mut pulse,
+        &mut triangle,
+        None,
+        Some(&mut vrc6),
+        None,
+        &pulse_seqs,
+    );
+    assert_eq!(handler.prev_ctrl, 0x3F, "pulse duty 0 at full volume");
+
+    // The host moves the Waveform parameter under the sounding note.
+    handler.channel_mode = ChannelMode::Vrc6Pulse;
+    let vrc6_seqs = ActiveSequences {
+        duty_seq: Sequence::parse("3"),
+        duty_enabled: true,
+        ..default_seqs()
+    };
+    handler.reload_sequences(
+        &vrc6_seqs,
+        SequenceReload {
+            duty: true,
+            ..SequenceReload::default()
+        },
+    );
+    handler.clock_sequences_one_frame(&vrc6_seqs);
+    handler.apply_current_modulation_all(
+        &mut pulse,
+        &mut triangle,
+        None,
+        Some(&mut vrc6),
+        None,
+        &vrc6_seqs,
+    );
+
+    assert_eq!(handler.prev_ctrl, 0x3F, "the two encodings really do collide");
+    assert_eq!(
+        vrc6.volume(),
+        15,
+        "$9000 must be written on the channel switch despite the identical byte"
+    );
+}
+
+#[test]
+fn waveform_switch_rebases_the_period_onto_the_new_channel_domain() {
+    // The VRC6 sawtooth derives its period from a 14-stage accumulator while every
+    // other channel divides by 16, so a period carried across the switch unchanged
+    // detunes the held note. Only an absolute arpeggio or pitch sequence recomputes
+    // the period from scratch, so with neither the wrong pitch holds until the next
+    // NoteOn.
+    use super::types::freq_to_vrc6_saw_period;
+
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    let mut saw = Vrc6Saw::new();
+    saw.set_enabled(true);
+    let seqs = default_seqs();
+
+    handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    assert_eq!(handler.macro_period, test_base_period());
+
+    // A pitch offset the sequences would have accumulated on top of the note period.
+    handler.macro_period += 10;
+
+    handler.channel_mode = ChannelMode::Vrc6Saw;
+    handler.apply_current_modulation_all(
+        &mut pulse,
+        &mut triangle,
+        None,
+        None,
+        Some(&mut saw),
+        &seqs,
+    );
+
+    let saw_base = freq_to_vrc6_saw_period(midi_note_to_freq(72)) as i32;
+    assert_ne!(saw_base, test_base_period(), "test needs differing domains");
+    assert_eq!(
+        handler.macro_period,
+        saw_base + 10,
+        "period must rebase onto the saw domain and keep the accumulated offset"
+    );
+}
+
+#[test]
+fn reload_wakes_a_disabled_player_even_when_the_content_matches() {
+    // dn's second SetupSequence condition: state == SEQ_STATE_DISABLED. Enabling
+    // an envelope whose content happens to equal the stale copy must still start it.
+    let mut handler = MidiHandler::new();
+
+    let seqs = duty_slot("2");
+    assert_eq!(handler.duty_seq_player.state, SeqState::Disabled);
+
+    handler.reload_sequences(&seqs, SequenceReload::default());
+
+    assert_eq!(handler.duty_seq_player.state, SeqState::Running);
+    assert_eq!(handler.duty_seq_player.pos, 0);
 }

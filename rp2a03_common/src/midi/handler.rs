@@ -4,9 +4,10 @@
 //! NoteOff, CC dispatch) lives in `events.rs`.
 
 use super::types::{
-    ActiveSequences, ChannelMode, HostAutomationControls, freq_to_period, freq_to_triangle_period,
-    freq_to_vrc6_saw_period, midi_note_to_freq, midi_note_to_noise_period,
+    ActiveSequences, ChannelMode, HostAutomationControls, SequenceReload, freq_to_period,
+    freq_to_triangle_period, freq_to_vrc6_saw_period, midi_note_to_freq, midi_note_to_noise_period,
 };
+use rp2a03_core::sequencer::Sequence;
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
@@ -91,6 +92,26 @@ impl<'a> AnyChannel<'a> {
 }
 
 
+/// One envelope's share of [`MidiHandler::reload_sequences`].
+///
+/// An empty sequence counts as disabled here for the same reason it does at every
+/// other `seqs.*_enabled && !seqs.*_seq.values.is_empty()` guard in this file:
+/// there is no step for the player to land on.
+fn reload_player(
+    player: &mut SequencePlayer,
+    enabled: bool,
+    sequence: &Sequence,
+    changed: bool,
+) {
+    if !enabled || sequence.values.is_empty() {
+        // dn ClearSequence
+        player.reset();
+    } else if changed || player.state == SeqState::Disabled {
+        // dn SetupSequence
+        player.setup();
+    }
+}
+
 // ─────────────────────────────────────────────
 // MidiHandler
 // ─────────────────────────────────────────────
@@ -159,11 +180,21 @@ pub struct MidiHandler {
     pub portamento_speed: u8,
     /// Cache of last written control register byte to avoid redundant register writes.
     ///
-    /// Only ever compared against bytes written to the Pulse struct — the triangle
-    /// path drives its volume through `set_volume` instead — so it needs no
-    /// waveform-switch invalidation (unlike `prev_timer_lo` / `prev_timer_hi`,
-    /// which are guarded by `reg_channel`).
+    /// Valid only for the channel recorded in `ctrl_channel`. Pulse and VRC6 pulse
+    /// pack this byte differently — `(duty << 6) | 0x30 | volume` versus
+    /// `(duty << 4) | volume` — and the two encodings collide (pulse duty 0 with
+    /// volume 0 and VRC6 duty 3 with volume 0 are both `0x30`), so without the
+    /// channel guard the first write after a Waveform switch is swallowed as
+    /// "unchanged" and the new channel keeps sounding the old one's duty and
+    /// volume until the computed byte happens to move.
     pub prev_ctrl: u8,
+    /// Channel whose control register the `prev_ctrl` cache describes.
+    ///
+    /// `None` = nothing written yet. Triangle, noise, and the VRC6 sawtooth never
+    /// touch `prev_ctrl` (they drive volume through `set_volume` / `write_rate` /
+    /// an unconditional `write_ctrl`), so passing through those modes leaves the
+    /// cache and its owner untouched and still valid.
+    ctrl_channel: Option<ChannelMode>,
     /// Cache of last written timer low byte to avoid redundant register writes.
     ///
     /// Handler-level cache over *per-channel* register state: only valid for the
@@ -186,6 +217,12 @@ pub struct MidiHandler {
     /// `None` = nothing written yet (first gated write always forced, which also
     /// covers `reset()`, since the APU channel structs are reset alongside).
     reg_channel: Option<ChannelMode>,
+    /// Channel `macro_period` is currently expressed in, so a Waveform switch under
+    /// a sounding note can rebase it. See `sync_channel_mode`. Seeded wherever the
+    /// period is computed from scratch (`recalculate_macro_period`), not just on the
+    /// first modulation pass, so a note triggered through any entry point records the
+    /// domain it was built in.
+    pub(super) period_channel: Option<ChannelMode>,
     /// Whether the pulse duty sequencer has received its initial attack setup.
     /// This remains true through NoteOff so an adjacent NoteOn does not reset
     /// phase merely because MIDI delivered NoteOff first.
@@ -226,9 +263,11 @@ impl Default for MidiHandler {
             portamento_enabled: false,
             portamento_speed: 0,
             prev_ctrl: 0xFF,
+            ctrl_channel: None,
             prev_timer_lo: 0xFF,
             prev_timer_hi: 0xFF,
             reg_channel: None,
+            period_channel: None,
             pulse_phase_initialized: false,
             channel_mode: ChannelMode::Pulse,
             vrc6_pulse: Vrc6Pulse::new(),
@@ -273,9 +312,11 @@ impl MidiHandler {
         self.portamento_enabled = false;
         self.portamento_speed = 0;
         self.prev_ctrl = 0xFF;
+        self.ctrl_channel = None;
         self.prev_timer_lo = 0xFF;
         self.prev_timer_hi = 0xFF;
         self.reg_channel = None;
+        self.period_channel = None;
         self.pulse_phase_initialized = false;
         self.vrc6_pulse.reset();
         self.vrc6_saw.reset();
@@ -386,6 +427,112 @@ impl MidiHandler {
         }
 
         self.last_host_controls = Some(controls);
+    }
+
+    /// Whether a control-register byte has to be written, updating the cache.
+    ///
+    /// Returns true when the byte differs from the cached one *or* when the cached
+    /// one belongs to a different channel — see `prev_ctrl` for why the channel has
+    /// to be part of the comparison. A forced write is harmless: `write_ctrl` only
+    /// latches duty mode, the length-counter halt bit, and the envelope's constant
+    /// volume, none of which reset the duty sequencer's phase.
+    fn ctrl_needs_write(&mut self, ctrl_byte: u8) -> bool {
+        let channel_switched = self.ctrl_channel != Some(self.channel_mode);
+        self.ctrl_channel = Some(self.channel_mode);
+        if channel_switched || ctrl_byte != self.prev_ctrl {
+            self.prev_ctrl = ctrl_byte;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Rebase `macro_period` when the host's Waveform parameter moves the handler to
+    /// a channel that measures periods differently.
+    ///
+    /// `channel_mode` is assigned straight from the host parameter every block, so a
+    /// switch can land under a sounding note. Periods are channel-specific: the VRC6
+    /// sawtooth divides by its 14-stage accumulator while every other channel divides
+    /// by 16, so a period carried over unchanged detunes the held note by roughly two
+    /// semitones. Nothing corrects it either — only an *absolute* arpeggio or pitch
+    /// sequence recomputes the period from scratch, so with a relative or absent
+    /// sequence the wrong pitch holds until the next NoteOn.
+    ///
+    /// The offset the sequences have accumulated on top of the note period is carried
+    /// across the rebase rather than discarded, so vibrato-style pitch envelopes keep
+    /// their shape through the switch.
+    pub(super) fn sync_channel_mode(&mut self) {
+        let Some(previous) = self.period_channel.replace(self.channel_mode) else {
+            return;
+        };
+        if previous == self.channel_mode {
+            return;
+        }
+
+        let previous_base = self.note_period_in(previous, 0);
+        let new_base = self.note_period(0);
+        if previous_base == new_base {
+            return;
+        }
+
+        let max = self.max_macro_period();
+        self.macro_period = (new_base + (self.macro_period - previous_base)).clamp(0, max);
+        self.portamento_target_period =
+            (new_base + (self.portamento_target_period - previous_base)).clamp(0, max);
+    }
+
+    /// Re-point the sequence players at a newly selected sequence slot.
+    ///
+    /// dn `CSeqInstHandler::LoadInstrument` parity. Without this, switching the
+    /// active slot only swaps the *data* in [`ActiveSequences`] — each
+    /// `SequencePlayer` keeps the position and last emitted value it had under the
+    /// previous slot. A player that already reached `SeqState::End` (any sequence
+    /// without a loop point, including the single-step constant envelopes that are
+    /// the common case for duty) processes nothing further, so
+    /// `clock_sequences_one_frame` never reads the new slot and the old value is
+    /// held forever: slot A's duty keeps sounding after a switch to slot B.
+    ///
+    /// Per envelope, following dn exactly:
+    /// - disabled → `ClearSequence`: the player is reset to `Disabled`.
+    /// - enabled and either changed or currently `Disabled` → `SetupSequence`:
+    ///   position 0, `Running`, new step applied on the next 60 Hz tick.
+    /// - enabled and unchanged → left running untouched, so switching to a slot
+    ///   that reuses the same envelope does not restart it.
+    ///
+    /// Call this only when the *slot* changes. In-place edits to the sequence
+    /// currently being played keep dn's behavior of not restarting the envelope
+    /// (dn mutates the same `CSequence` object, so its pointer comparison fails).
+    pub fn reload_sequences(&mut self, seqs: &ActiveSequences, reload: SequenceReload) {
+        reload_player(
+            &mut self.vol_seq_player,
+            seqs.vol_enabled,
+            &seqs.vol_seq,
+            reload.vol,
+        );
+        reload_player(
+            &mut self.arp_seq_player,
+            seqs.arp_enabled,
+            &seqs.arp_seq,
+            reload.arp,
+        );
+        reload_player(
+            &mut self.pitch_seq_player,
+            seqs.pitch_enabled,
+            &seqs.pitch_seq,
+            reload.pitch,
+        );
+        reload_player(
+            &mut self.hipitch_seq_player,
+            seqs.hipitch_enabled,
+            &seqs.hipitch_seq,
+            reload.hipitch,
+        );
+        reload_player(
+            &mut self.duty_seq_player,
+            seqs.duty_enabled,
+            &seqs.duty_seq,
+            reload.duty,
+        );
     }
 
     /// Ticks all sequence players forward by one 60 Hz engine frame and updates the
@@ -506,9 +653,15 @@ impl MidiHandler {
     ///
     /// `pub(super)` because it's also called from `note_on` in `events.rs`.
     pub(super) fn note_period(&self, arp_semitones: i16) -> i32 {
+        self.note_period_in(self.channel_mode, arp_semitones)
+    }
+
+    /// `note_period` for an arbitrary channel, so `sync_channel_mode` can express the
+    /// same note in the channel the period is being moved away from.
+    fn note_period_in(&self, mode: ChannelMode, arp_semitones: i16) -> i32 {
         let note = (self.active_note as i16 + self.octave_offset as i16 + arp_semitones)
             .clamp(0, 127) as u8;
-        match self.channel_mode {
+        match mode {
             ChannelMode::Triangle => freq_to_triangle_period(midi_note_to_freq(note)) as i32,
             ChannelMode::Vrc6Saw => freq_to_vrc6_saw_period(midi_note_to_freq(note)) as i32,
             _ => freq_to_period(midi_note_to_freq(note)) as i32,
@@ -566,6 +719,9 @@ impl MidiHandler {
         seqs: &ActiveSequences,
     ) -> f32 {
         let master_gain = 1.0;
+
+        // The host may have moved the Waveform parameter since the last block.
+        self.sync_channel_mode();
 
         match self.channel_mode {
             ChannelMode::Pulse => self.apply_pulse_modulation(pulse, seqs, master_gain),
@@ -648,9 +804,8 @@ impl MidiHandler {
                 0
             };
             let ctrl_byte = (duty_val << 6) | 0x30;
-            if ctrl_byte != self.prev_ctrl {
+            if self.ctrl_needs_write(ctrl_byte) {
                 pulse.write_ctrl(ctrl_byte);
-                self.prev_ctrl = ctrl_byte;
             }
             return master_gain;
         }
@@ -682,9 +837,8 @@ impl MidiHandler {
         };
 
         let ctrl_byte = (duty_val << 6) | 0x30 | apu_vol;
-        if ctrl_byte != self.prev_ctrl {
+        if self.ctrl_needs_write(ctrl_byte) {
             pulse.write_ctrl(ctrl_byte);
-            self.prev_ctrl = ctrl_byte;
         }
 
         // 3. Pitch application.
@@ -745,9 +899,8 @@ impl MidiHandler {
                 0
             };
             let ctrl_byte = duty_val << 4;
-            if ctrl_byte != self.prev_ctrl {
+            if self.ctrl_needs_write(ctrl_byte) {
                 vrc6_pulse.write_ctrl(ctrl_byte);
-                self.prev_ctrl = ctrl_byte;
             }
             return master_gain;
         }
@@ -776,9 +929,8 @@ impl MidiHandler {
         };
 
         let ctrl_byte = (duty_val << 4) | apu_vol;
-        if ctrl_byte != self.prev_ctrl {
+        if self.ctrl_needs_write(ctrl_byte) {
             vrc6_pulse.write_ctrl(ctrl_byte);
-            self.prev_ctrl = ctrl_byte;
         }
 
         self.apply_pitch_registers(&mut AnyChannel::Vrc6Pulse(vrc6_pulse));

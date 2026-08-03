@@ -112,6 +112,40 @@ pub struct ActiveSequences {
     pub duty_enabled: bool,
 }
 
+/// Which of the five envelope slots actually changed when the active sequence
+/// slot was switched.
+///
+/// dn `CSeqInstHandler::LoadInstrument` compares the incoming `CSequence*`
+/// against the one the handler already holds and only calls `SetupSequence` when
+/// they differ, so switching to an instrument that reuses the same envelope
+/// leaves that envelope running untouched. Content equality is this plugin's
+/// analog of dn's pointer identity — `ActiveSequences` owns its copies, so there
+/// is no stable pointer to compare.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SequenceReload {
+    pub vol: bool,
+    pub arp: bool,
+    pub pitch: bool,
+    pub hipitch: bool,
+    pub duty: bool,
+}
+
+impl SequenceReload {
+    /// Every envelope changed — used when the caller cannot diff (e.g. tests) or
+    /// when the whole slot is known to be new.
+    pub const ALL: Self = Self {
+        vol: true,
+        arp: true,
+        pitch: true,
+        hipitch: true,
+        duty: true,
+    };
+
+    pub fn any(&self) -> bool {
+        self.vol || self.arp || self.pitch || self.hipitch || self.duty
+    }
+}
+
 /// Host-automatable controls that mirror the corresponding MIDI CC functions.
 ///
 /// They are synchronized only when their parameter value changes, allowing MIDI
