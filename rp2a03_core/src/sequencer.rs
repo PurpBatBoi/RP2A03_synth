@@ -48,7 +48,7 @@ pub enum VolMode {
     Steps64 = 1,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
     ///
@@ -83,6 +83,31 @@ impl Default for Sequence {
             arp_mode: ArpMode::default(),
             vol_mode: VolMode::default(),
         }
+    }
+}
+
+impl Clone for Sequence {
+    fn clone(&self) -> Self {
+        Self {
+            values: self.values.clone(),
+            loop_point: self.loop_point,
+            release_point: self.release_point,
+            pitch_mode: self.pitch_mode,
+            arp_mode: self.arp_mode,
+            vol_mode: self.vol_mode,
+        }
+    }
+
+    // Reuses `values`'s existing allocation instead of allocating a fresh Vec —
+    // called on the audio thread each time the active sequence data is refreshed,
+    // where a fresh allocation would be a real-time-safety violation.
+    fn clone_from(&mut self, source: &Self) {
+        self.values.clone_from(&source.values);
+        self.loop_point = source.loop_point;
+        self.release_point = source.release_point;
+        self.pitch_mode = source.pitch_mode;
+        self.arp_mode = source.arp_mode;
+        self.vol_mode = source.vol_mode;
     }
 }
 

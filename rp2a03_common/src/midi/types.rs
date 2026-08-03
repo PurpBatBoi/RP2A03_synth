@@ -98,7 +98,7 @@ mod noise_mapping_tests {
 }
 
 /// Container holding owned copies of all 5 active sequences and their enable statuses.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ActiveSequences {
     pub vol_seq: Sequence,
     pub vol_enabled: bool,

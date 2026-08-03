@@ -144,6 +144,13 @@ pub struct Rp2a03Plugin {
     midi_program_index: Option<usize>,
     last_sequence_parameter: i32,
     sequence_playheads: Arc<[AtomicUsize; SEQUENCE_TYPE_COUNT]>,
+    /// Audio-thread-owned scratch buffer for the currently active sequences.
+    /// Reused in place (see `refresh_active_sequences`) so a normal `process()`
+    /// call — where nothing changed since the last block — never locks
+    /// `shared_sequences` for a clone or allocates.
+    active_seqs: ActiveSequences,
+    /// (sequence_index, shared_sequences revision) as of the last refresh.
+    cached_seq_key: Option<(usize, u64)>,
 }
 
 #[derive(Params)]
@@ -204,6 +211,8 @@ impl Default for Rp2a03Plugin {
             sequence_playheads: Arc::new(std::array::from_fn(|_| {
                 AtomicUsize::new(NO_PLAYHEAD_STEP)
             })),
+            active_seqs: ActiveSequences::default(),
+            cached_seq_key: None,
         }
     }
 }
@@ -565,21 +574,35 @@ impl Rp2a03Plugin {
         }
     }
 
-    fn active_sequences(&self, sequence_index: usize) -> ActiveSequences {
+    /// Refreshes `self.active_seqs` for `sequence_index` if needed.
+    ///
+    /// Locks `shared_sequences` only long enough to read its revision counter;
+    /// if `(sequence_index, revision)` matches the last refresh, returns
+    /// immediately without cloning. On an actual change, `Sequence::clone_from`
+    /// reuses each `Vec`'s existing allocation instead of allocating fresh —
+    /// this runs on the audio thread, where allocation and long lock hold times
+    /// are both real-time-safety hazards.
+    fn refresh_active_sequences(&mut self, sequence_index: usize) {
         let mut data = self.params.shared_sequences.lock();
-        data.set_all_selected_sequence_indices(sequence_index);
-        ActiveSequences {
-            vol_seq: data.selected_sequence(0).clone(),
-            vol_enabled: data.sequence_enabled(0),
-            arp_seq: data.selected_sequence(1).clone(),
-            arp_enabled: data.sequence_enabled(1),
-            pitch_seq: data.selected_sequence(2).clone(),
-            pitch_enabled: data.sequence_enabled(2),
-            hipitch_seq: data.selected_sequence(3).clone(),
-            hipitch_enabled: data.sequence_enabled(3),
-            duty_seq: data.selected_sequence(4).clone(),
-            duty_enabled: data.sequence_enabled(4),
+        let revision = data.revision();
+        if self.cached_seq_key == Some((sequence_index, revision)) {
+            return;
         }
+        data.set_all_selected_sequence_indices(sequence_index);
+        self.active_seqs.vol_seq.clone_from(data.selected_sequence(0));
+        self.active_seqs.vol_enabled = data.sequence_enabled(0);
+        self.active_seqs.arp_seq.clone_from(data.selected_sequence(1));
+        self.active_seqs.arp_enabled = data.sequence_enabled(1);
+        self.active_seqs.pitch_seq.clone_from(data.selected_sequence(2));
+        self.active_seqs.pitch_enabled = data.sequence_enabled(2);
+        self.active_seqs
+            .hipitch_seq
+            .clone_from(data.selected_sequence(3));
+        self.active_seqs.hipitch_enabled = data.sequence_enabled(3);
+        self.active_seqs.duty_seq.clone_from(data.selected_sequence(4));
+        self.active_seqs.duty_enabled = data.sequence_enabled(4);
+        drop(data);
+        self.cached_seq_key = Some((sequence_index, revision));
     }
 
     fn publish_sequence_playheads(&self, seqs: &ActiveSequences) {
@@ -828,7 +851,7 @@ impl Plugin for Rp2a03Plugin {
             .midi_program_index
             .unwrap_or(sequence_parameter as usize)
             .min(MAX_SEQUENCES - 1);
-        let mut active_seqs = self.active_sequences(sequence_index);
+        self.refresh_active_sequences(sequence_index);
 
         loop {
             let chunk_end = if let Some(ref event) = next_event {
@@ -838,7 +861,9 @@ impl Plugin for Rp2a03Plugin {
             };
 
             if chunk_end > sample_pos {
-                self.generate_samples(&mut mono_buf[sample_pos..chunk_end], &active_seqs);
+                let seqs = std::mem::take(&mut self.active_seqs);
+                self.generate_samples(&mut mono_buf[sample_pos..chunk_end], &seqs);
+                self.active_seqs = seqs;
                 sample_pos = chunk_end;
             }
 
@@ -851,21 +876,26 @@ impl Plugin for Rp2a03Plugin {
                     next_event = Some(event);
                     break;
                 }
-                if let Some(program_index) = self.handle_event(&event, &active_seqs) {
+                let seqs = std::mem::take(&mut self.active_seqs);
+                let program_index = self.handle_event(&event, &seqs);
+                self.active_seqs = seqs;
+                if let Some(program_index) = program_index {
                     sequence_index = program_index.min(MAX_SEQUENCES - 1);
                     self.midi_program_index = Some(sequence_index);
-                    active_seqs = self.active_sequences(sequence_index);
+                    self.refresh_active_sequences(sequence_index);
                 }
                 next_event = context.next_event();
             }
 
             if next_event.is_none() && sample_pos < num_samples {
-                self.generate_samples(&mut mono_buf[sample_pos..num_samples], &active_seqs);
+                let seqs = std::mem::take(&mut self.active_seqs);
+                self.generate_samples(&mut mono_buf[sample_pos..num_samples], &seqs);
+                self.active_seqs = seqs;
                 break;
             }
         }
 
-        self.publish_sequence_playheads(&active_seqs);
+        self.publish_sequence_playheads(&self.active_seqs);
 
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
             for out_sample in channel_samples {

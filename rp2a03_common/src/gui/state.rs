@@ -93,6 +93,13 @@ pub struct SharedSequences {
     pub portamento_speed: i32,
     sequence_indices: [usize; SEQUENCE_TYPE_COUNT],
     sequence_banks: [SequenceBank; SEQUENCE_TYPE_COUNT],
+    /// Bumped whenever sequence content is mutated (see `selected_sequence_mut`
+    /// and `sequence_enabled_mut`). The audio thread compares this against a
+    /// cached value to avoid re-locking and re-cloning sequence data on every
+    /// `process()` call when nothing has actually changed. Not persisted —
+    /// callers only ever compare it within one plugin instance's lifetime.
+    #[serde(skip)]
+    revision: u64,
 }
 
 impl Default for SharedSequences {
@@ -106,6 +113,7 @@ impl Default for SharedSequences {
             portamento_speed: 0,
             sequence_indices: [0; SEQUENCE_TYPE_COUNT],
             sequence_banks: std::array::from_fn(|_| SequenceBank::default()),
+            revision: 0,
         }
     }
 }
@@ -141,6 +149,7 @@ impl SharedSequences {
     pub fn selected_sequence_mut(&mut self, tab: usize) -> (&mut String, &mut Sequence) {
         let tab = Self::tab_index(tab);
         let index = self.sequence_indices[tab];
+        self.revision += 1;
         let slot = self.sequence_banks[tab].slot_mut(index);
         (&mut slot.text, &mut slot.sequence)
     }
@@ -155,7 +164,14 @@ impl SharedSequences {
     pub fn sequence_enabled_mut(&mut self, tab: usize) -> &mut bool {
         let tab = Self::tab_index(tab);
         let index = self.sequence_indices[tab];
+        self.revision += 1;
         &mut self.sequence_banks[tab].slot_mut(index).enabled
+    }
+
+    /// Monotonic counter bumped on every content mutation. Used by the audio
+    /// thread to detect whether cached sequence data is stale.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
