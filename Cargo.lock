@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "rp2a03_common"
-version = "0.1.0"
+version = "0.0.6-Alpha"
 dependencies = [
  "egui",
  "egui_extras",
@@ -1889,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "rp2a03_core"
-version = "0.1.0"
+version = "0.0.6-Alpha"
 dependencies = [
  "serde",
  "serde_json",
@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "rp2a03_niceplug"
-version = "0.1.0"
+version = "0.0.6-Alpha"
 dependencies = [
  "egui",
  "egui_extras",
