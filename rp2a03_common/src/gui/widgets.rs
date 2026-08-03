@@ -19,6 +19,12 @@ struct MarkerDragState {
     was_existing: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+struct LineDrawState {
+    start: Pos2,
+    last: Pos2,
+}
+
 /// Renders a FamiTracker-style envelope bar graph and handles interactive mouse editing.
 /// Returns `true` when step values or markers change so text representation can be synchronized.
 pub fn draw_envelope_bar_graph(
@@ -319,6 +325,7 @@ pub fn draw_envelope_bar_graph(
     if num_steps > 0 {
         let step_width = graph_rect.width() / num_steps as f32;
         let draw_drag_id = ui.make_persistent_id("envelope_draw_last_pos");
+        let line_draw_id = ui.make_persistent_id("envelope_line_draw_state");
 
         if graph_response.dragged_by(egui::PointerButton::Primary)
             || graph_response.clicked_by(egui::PointerButton::Primary)
@@ -369,6 +376,82 @@ pub fn draw_envelope_bar_graph(
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(draw_drag_id, pointer_pos));
             }
+        }
+
+        if graph_response.drag_started_by(egui::PointerButton::Secondary) {
+            if let Some(pointer_pos) = graph_response.interact_pointer_pos() {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        line_draw_id,
+                        LineDrawState {
+                            start: pointer_pos,
+                            last: pointer_pos,
+                        },
+                    );
+                });
+            }
+        }
+
+        if graph_response.dragged_by(egui::PointerButton::Secondary) {
+            if let Some(pointer_pos) = graph_response.interact_pointer_pos() {
+                let mut should_update = false;
+                let line_state: Option<LineDrawState> = ui.ctx().data_mut(|d| d.get_temp(line_draw_id));
+
+                if let Some(mut state) = line_state {
+                    state.last = pointer_pos;
+                    should_update = true;
+                    ui.ctx().data_mut(|d| d.insert_temp(line_draw_id, state));
+                }
+
+                if should_update {
+                    let state: LineDrawState = ui.ctx().data_mut(|d| d.get_temp(line_draw_id)).unwrap();
+                    let p0 = state.start;
+                    let p1 = state.last;
+
+                    let step_of = |x: f32| -> usize {
+                        let rel_x = (x - graph_rect.min.x).clamp(0.0, (graph_rect.width() - 0.001).max(0.0));
+                        (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize
+                    };
+
+                    let step0 = step_of(p0.x);
+                    let step1 = step_of(p1.x);
+                    let min_step = step0.min(step1);
+                    let max_step = step0.max(step1);
+                    let dx = p1.x - p0.x;
+
+                    for s in min_step..=max_step {
+                        let target_y = if dx.abs() < 1e-4 {
+                            p1.y
+                        } else {
+                            let s_x = graph_rect.min.x + (s as f32 + 0.5) * step_width;
+                            let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
+                            p0.y + t * (p1.y - p0.y)
+                        };
+
+                        let clamped_val = pos_y_to_val(
+                            target_y,
+                            graph_rect,
+                            is_arpeggio,
+                            vis_min,
+                            vis_max,
+                            min_val,
+                            max_val,
+                        );
+
+                        if seq.values[s] != clamped_val {
+                            seq.values[s] = clamped_val;
+                            text_needs_sync = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if graph_response.drag_stopped_by(egui::PointerButton::Secondary)
+            || graph_response.lost_focus()
+            || !ui.input(|i| i.pointer.secondary_down())
+        {
+            ui.ctx().data_mut(|d| d.remove_temp::<LineDrawState>(line_draw_id));
         }
 
         if graph_response.drag_stopped_by(egui::PointerButton::Primary)
@@ -601,6 +684,13 @@ pub fn draw_envelope_bar_graph(
             Pos2::new(bar_x_max, graph_rect.max.y),
         );
         draw_playhead_rect(&painter, col_rect);
+    }
+
+    if let Some(state) = ui.ctx().data(|d| d.get_temp::<LineDrawState>(ui.make_persistent_id("envelope_line_draw_state"))) {
+        painter.line_segment(
+            [state.start, state.last],
+            Stroke::new(4.0f32, Color32::from_rgba_unmultiplied(255, 255, 255, 200)),
+        );
     }
 
     // Render loop/release region headers
