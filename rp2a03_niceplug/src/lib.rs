@@ -24,9 +24,13 @@ use std::time::Duration;
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
 const TRIANGLE_AMPLITUDE_SCALE: i32 = 3000;
-// Nominal synth-instance output calibration: 20*log10(0.7943282) = -2 dBFS.
+// Nominal synth-instance output calibration: 20*log10(0.1584893) = -16 dBFS.
 // This trims the final bus without changing per-voice, polyphony, or MIDI gain.
-const MASTER_OUTPUT_GAIN: f32 = 0.794_328_2;
+// Voices sum freely, so this is the headroom budget for the whole mix: a single
+// voice at max velocity peaks near -10 dBFS raw, and MAX_VOICES of those summing
+// in phase reach ~2.53, so -16 dBFS keeps a full chord well under the output clamp
+// while landing a single test note at a comfortable -26 dBFS.
+const MASTER_OUTPUT_GAIN: f32 = 0.158_489_3;
 const MAX_VOICES: usize = 8;
 const ALLOCATION_RAMP_CLOCKS: u32 = 2048;
 
@@ -377,15 +381,6 @@ impl Rp2a03Plugin {
 
         self.sample_scratch.resize(output.len(), 0);
         output.fill(0.0);
-        // Normalize mono and polyphonic operation against the same configured
-        // voice capacity. This keeps a single note at the same level when the
-        // Polyphony switch is toggled.
-        let mix_voice_count = if self.params.polyphony.value() {
-            active_voice_count
-        } else {
-            (self.params.max_voices.value() as usize).clamp(1, MAX_VOICES)
-        };
-        let mix_gain = 1.0 / mix_voice_count as f32;
         for voice in &mut self.voices[..active_voice_count] {
             self.sample_scratch.fill(0);
             let samples_read = voice.blip.read_samples(&mut self.sample_scratch, false);
@@ -393,7 +388,7 @@ impl Rp2a03Plugin {
                 .iter_mut()
                 .zip(self.sample_scratch[..samples_read].iter())
             {
-                *out += (*sample as f32 / 32768.0) * mix_gain;
+                *out += *sample as f32 / 32768.0;
             }
         }
         for sample in output.iter_mut() {
