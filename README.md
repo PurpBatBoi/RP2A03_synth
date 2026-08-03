@@ -126,7 +126,9 @@ isolation from the plugin framework and the UI.
 
 ## Building
 
-**Prerequisites**: Rust toolchain (stable, 2024 edition support).
+**Prerequisites**: Rust toolchain (stable, 2024 edition support). There is no
+C/C++ toolchain, CMake step, or vendored native dependency — the whole tree is
+pure Rust and builds identically on all three platforms.
 
 Build the whole workspace (release):
 
@@ -147,14 +149,132 @@ cargo xtask bundle rp2a03_niceplug --release
 ```
 
 Raw build output lands in `target/release/`; the packaged `.clap` / `.vst3`
-bundles land in `target/bundled/`. Copy those into your system plugin folders
-(e.g. `%COMMONPROGRAMFILES%\VST3` and `%COMMONPROGRAMFILES%\CLAP` on Windows).
+bundles land in `target/bundled/`.
 
 Run the tests:
 
 ```bash
 cargo test --workspace
 ```
+
+### Rendering backend
+
+The editor is drawn by `egui` through one of two backends, selected by a Cargo
+feature on `rp2a03_niceplug`:
+
+| Feature | Backend | Official builds |
+|---|---|---|
+| `opengl` (default) | OpenGL via `egui_glow` | Windows |
+| `wgpu` | Metal / Vulkan / DX12 via `wgpu` | macOS, Linux |
+
+macOS deprecated OpenGL, so `wgpu` (which runs on Metal there) is the supported
+path on Apple hardware, and Linux uses it for the same Vulkan-first reasons.
+
+Select it with:
+
+```bash
+cargo xtask bundle rp2a03_niceplug --release --no-default-features --features wgpu
+```
+
+`--no-default-features` matters. `wgpu` takes priority over `opengl` when both
+are on, so plain `--features wgpu` still *works* — it just also compiles
+`egui_glow` for nothing.
+
+> **`wgpu` does not currently build on Windows.** `wgpu-hal 29.0.4` builds
+> against `windows 0.62` while its own `gpu-allocator 0.28` is still on
+> `windows 0.61`, so the D3D12 types come from two different crates and the
+> trait bounds don't line up. This is an upstream issue; use the default
+> `opengl` backend on Windows.
+
+### Windows
+
+No extra setup. Use the MSVC toolchain (`stable-x86_64-pc-windows-msvc`, the
+rustup default). Windows builds use the default `opengl` backend.
+
+```powershell
+cargo xtask bundle rp2a03_niceplug --release
+```
+
+Install by copying from `target/bundled/`:
+
+| Format | Destination |
+|---|---|
+| `.vst3` | `%COMMONPROGRAMFILES%\VST3\` |
+| `.clap` | `%COMMONPROGRAMFILES%\CLAP\` |
+
+### Linux
+
+Windowing goes through X11, so the development headers must be present:
+
+```bash
+sudo apt-get install -y \
+  libasound2-dev libgl1-mesa-dev libx11-dev libxcursor-dev \
+  libxrandr-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+```
+
+Official Linux builds use the `wgpu` backend, which reaches the GPU through
+Vulkan — end users need working Vulkan drivers (`mesa-vulkan-drivers` or a
+vendor driver):
+
+```bash
+cargo xtask bundle rp2a03_niceplug --release --no-default-features --features wgpu
+```
+
+On Windows, WSL2 is a workable way to produce Linux bundles.
+
+Install by copying from `target/bundled/`:
+
+| Format | Destination |
+|---|---|
+| `.vst3` | `~/.vst3/` |
+| `.clap` | `~/.clap/` |
+
+> Release builds are produced on Ubuntu 22.04 (glibc 2.35). Building locally on
+> a newer distro is fine, but binaries built there will not load on older ones.
+
+### macOS
+
+Add both Darwin targets once, then use `bundle-universal` — it builds x86_64 and
+aarch64 and `lipo`s them into one fat bundle that runs on both Intel and Apple
+Silicon:
+
+```bash
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+cargo xtask bundle-universal rp2a03_niceplug --release --no-default-features --features wgpu
+```
+
+For a single-architecture build, `cargo xtask bundle rp2a03_niceplug --release
+--no-default-features --features wgpu` works too. `xtask` ad-hoc signs
+(`codesign -s -`) every macOS bundle it produces.
+
+Install by copying from `target/bundled/`:
+
+| Format | Destination |
+|---|---|
+| `.vst3` | `/Library/Audio/Plug-Ins/VST3/` or `~/Library/Audio/Plug-Ins/VST3/` |
+| `.clap` | `/Library/Audio/Plug-Ins/CLAP/` or `~/Library/Audio/Plug-Ins/CLAP/` |
+
+Because the plugin is ad-hoc signed rather than notarized, macOS quarantines it
+when it arrives via a downloaded release archive. Strip the flag after copying:
+
+```bash
+xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/rp2a03_niceplug.vst3"
+```
+
+### Release packaging
+
+Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which builds all three platforms and publishes a single `RP2A03_synth.zip`:
+
+```
+RP2A03_synth/
+├── Windows/    # x86_64, OpenGL            .clap + .vst3
+├── Linux/      # x86_64, wgpu (Vulkan)     .clap + .vst3
+└── Mac/        # universal x86_64 + arm64, wgpu (Metal)   .clap + .vst3
+```
+
+The workflow can also be run manually from the Actions tab; a manual run
+produces the same zip as a build artifact but does not create a release.
 
 ## Feature status
 

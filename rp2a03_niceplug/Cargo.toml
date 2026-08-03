@@ -6,6 +6,17 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib", "lib"]
 
+# Editor rendering backend. Exactly one should be active; `wgpu` takes priority
+# if both are, but that still compiles egui_glow for nothing, so prefer
+# `--no-default-features --features wgpu` over plain `--features wgpu`.
+#
+# Official builds: opengl on Windows, wgpu on Linux and macOS (macOS deprecated
+# OpenGL, so wgpu goes through Metal there).
+[features]
+default = ["opengl"]
+opengl = ["nice-plug-egui/opengl"]
+wgpu = ["nice-plug-egui/wgpu"]
+
 [dependencies]
 rp2a03_core = { workspace = true }
 rp2a03_common = { workspace = true }

@@ -27,7 +27,9 @@ image = { version = "0.25", features = ["png"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 nice-plug = "0.1.10"
-nice-plug-egui = "0.1.5"
+# The rendering backend is selected by rp2a03_niceplug's own opengl/wgpu
+# features, so no default backend is pulled in here.
+nice-plug-egui = { version = "0.1.5", default-features = false }
 parking_lot = "0.12"
 rp2a03_core = { path = "rp2a03_core" }
 rp2a03_common = { path = "rp2a03_common" }
