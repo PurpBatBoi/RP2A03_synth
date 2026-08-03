@@ -1,46 +1,134 @@
 ![RP2A03 Logo](logo.png)
 ---
 
-RP2A03 Synth is a WiP NES VST3/CLAP plugin for modern DAWs. The goal is to create a modernized, high-performance synthesizer partially focusing on faithful, hardware-accurate RP2A03 APU behavior, ease of use, and future support for NES expansion audio chips.
+**RP2A03 Synth** is a WiP NES synthesizer plugin (CLAP + VST3) for modern DAWs.
+
+The sound engine is not a sample library or an approximated "chiptune" waveform
+generator — it is a register-level emulation of the NES RP2A03 APU, driven
+directly by MIDI and host automation. Envelope, sweep, frame counter, length
+counter, and timer behavior are modeled the way an emulator models them, so the
+plugin reproduces the actual quirks of the hardware (4-bit volume steps,
+duty-cycle phase-reset behavior, real timer-derived pitch resolution) instead of
+approximating them — though some deliberate liberties were taken for the sake of
+flexibility, see [Accuracy & Creative Liberties](#accuracy--creative-liberties).
+
+Beyond the stock 2A03 channels (two pulse, triangle, noise), the plugin also
+emulates the Konami **VRC6** (More soon!)
+On top of the emulation core sits a FamiTracker-style sequence engine
+(volume / arpeggio / pitch / hi-pitch / duty sequences with loop and release
+points) plus software vibrato/tremolo LFOs, so the instrument plays and automates
+like a normal synth while the audio math underneath stays somewhat hardware-accurate.
+
+## Features
+
+- **Register-level 2A03 emulation** — pulse 1/2, triangle, noise, with real
+  envelope, sweep, length counter, linear counter, and frame-counter behavior.
+- **VRC6 expansion audio** — VRC6 pulse (8 duty settings plus the DDA/PCM
+  "ignore duty" mode) and VRC6 sawtooth.
+- **Band-limited output** — Blargg-style `blip_buf` synthesis resamples from the
+  APU clock down to the host sample rate without aliasing.
+- **FamiTracker-style sequencer** — 5 sequence types × 128 slots, with loop (`|`)
+  and release (`/`) markers, `ArpMode` (absolute/fixed/relative), `PitchMode`,
+  and `VolMode` step handling. Adjustable step rate (1–600 Hz, default 60).
+- **Optional polyphony, up to 8 voices** (monophonic by default) with voice
+  stealing and a short allocation ramp so recycling a voice mid-release doesn't
+  click.
+- **Software vibrato / tremolo LFOs** (the real 2A03 has none of its own) and
+  portamento.
+- **Host automation** for vibrato/tremolo depth+speed, hardware volume, fine and
+  hi pitch, pitch slide (+ range), step time, waveform, polyphony, max voices,
+  and portamento (+ speed).
+
+## Accuracy & Creative Liberties
+
+**This is not a 100% hardware-accurate emulation, and it isn't trying to be.**
+The per-channel building blocks — timers, envelopes, sweep, length/linear
+counters, the frame counter, the duty sequencers — are modeled at the register
+level. But this is a *synthesizer*, not an emulator, so a number of deliberate
+liberties were taken where strict accuracy would just make the instrument
+annoying to play:
+
+- **Voice count.** Real hardware gives you exactly two pulse channels, one
+  triangle, and one noise. Here every voice owns its own full set of channel
+  units and picks one via `ChannelMode`, so you can stack up to 8 voices of
+  *any* waveform — eight triangles, if you want.
+- **Triangle volume.** The real 2A03 triangle has no volume control at all; it's
+  on or off at fixed amplitude. This one responds to the volume parameter and to
+  volume sequences.
+- **Mixing.** Voices are summed linearly with per-channel amplitude scaling and a
+  master gain, rather than through the APU's real non-linear pulse/TND mixer
+  lookup tables. Channel balance here is a mix decision, not a hardware
+  measurement.
+- **Software LFOs and portamento.** Neither exists on the 2A03 in any form. Both
+  are layered on top of the emulation as ordinary synth features.
+- **Sequencer rate.** Tracker sequences on hardware advance at the 60 Hz frame
+  rate. Here the step rate is a parameter, adjustable from 1–600 Hz.
+- **Anti-click ramping.** Voice reallocation applies a short amplitude ramp, and
+  triangle phase is deliberately preserved across reallocation — the hardware
+  would happily click.
+- **Pitch.** Fine-pitch and hi-pitch offsets extend beyond what a period-register
+  write alone would give you on hardware.
+
+The intent is that anything sounding like the NES sounds *right*, while none of
+the hardware's arbitrary limits stop you from writing music. If you need
+bit-exact hardware behavior for verification work, use [FamiStudio](https://famistudio.org/), [Furnace Tracker](https://tildearrow.org/furnace/) or [dnFamiTracker](https://github.com/Dn-Programming-Core-Management/Dn-FamiTracker)!
 
 ## Workspace Structure
 
 ```
 RP2A03-SYNTH/
-├── rp2a03_core/
-|   ├── apu.rs
-│   ├── apu_pulse.rs
-│   ├── apu_triangle.rs
-│   ├── apu_noise.rs
-│   ├── software_lfo.rs
-│   ├── blip_buf.rs
-│   ├── sequencer.rs
-|   └── lib.rs
-├── rp2a03_common
-│   ├── gui/
-│   │   ├── mod.rs
-│   │   ├── state.rs
-│   │   ├── editor.rs
-│   │   ├── theme.rs
-│   │   └── widgets.rs
-│   ├── midi/
-│   │   ├── mod.rs
-│   │   ├── handler.rs
-│   │   ├── events.rs
-│   │   ├── types.rs
-│   │   └── tests.rs
-│   └── lib.rs
-├── rp2a03_niceplug/
-│   └── lib.rs
-└── rp2a03_fl/ - Soon!
-    └── lib.rs
+├── rp2a03_core/           # emulation core — no plugin/UI dependencies
+│   └── src/
+│       ├── apu.rs             # envelope, frame_counter, length_counter, timer
+│       ├── apu_pulse.rs       # Pulse, Sweep, DutySequencer
+│       ├── apu_triangle.rs    # Triangle, LinearCounter
+│       ├── apu_noise.rs       # Noise, ShiftMode
+│       ├── vrc6_common.rs     # Divider
+│       ├── vrc6_pulse.rs      # Vrc6Pulse
+│       ├── vrc6_saw.rs        # Vrc6Saw
+│       ├── sequencer.rs       # Sequence / SequencePlayer, PitchMode/ArpMode/VolMode
+│       ├── software_lfo.rs    # SoftwareLfo (vibrato / tremolo)
+│       ├── blip_buf.rs        # band-limited resampling
+│       └── lib.rs             # NTSC_CPU_CLOCK
+├── rp2a03_common/         # MIDI + GUI logic shared by any plugin wrapper
+│   └── src/
+│       ├── gui/
+│       │   ├── mod.rs
+│       │   ├── state.rs       # SharedSequences, SequenceBank, SequenceSlot
+│       │   ├── editor.rs      # render_editor_ui
+│       │   ├── theme.rs
+│       │   └── widgets.rs
+│       ├── midi/
+│       │   ├── mod.rs
+│       │   ├── handler.rs     # MidiHandler
+│       │   ├── events.rs
+│       │   ├── types.rs       # ChannelMode, note→period conversion
+│       │   └── tests.rs
+│       └── lib.rs
+├── rp2a03_niceplug/       # the plugin itself — CLAP + VST3 exports
+│   └── src/lib.rs             # Voice, Rp2a03Plugin, Rp2a03Params
+└── xtask/                 # packaging / bundling tooling (nice-plug-xtask)
+    └── src/main.rs
 ```
+
+`rp2a03_core` depends only on `serde`, so it can be tested and reasoned about in
+isolation from the plugin framework and the UI.
+
+## Tech Stack
+
+- **Rust**, 2024-edition workspace.
+- **[nice-plug](https://crates.io/crates/nice-plug) / nice-plug-egui** — the
+  CLAP+VST3 plugin framework (an `nih-plug`-lineage API) and its egui editor
+  windowing helper.
+- **egui / egui_extras** — the custom sequence-editor UI.
+- **parking_lot** — the shared-state boundary between the UI and audio threads.
+- **serde** — parameter and sequence persistence.
 
 ## Building
 
-**Prerequisites**: Rust toolchain (stable, 2021 edition).
+**Prerequisites**: Rust toolchain (stable, 2024 edition support).
 
-Build the entire workspace (release):
+Build the whole workspace (release):
 
 ```bash
 cargo build --release
@@ -52,19 +140,51 @@ Build only the plugin crate:
 cargo build --release -p rp2a03_niceplug
 ```
 
-Release artifacts and bundled plugin outputs will be located in `target/bundled/` and `target/release/`.
+Produce installable CLAP and VST3 bundles:
+
+```bash
+cargo xtask bundle rp2a03_niceplug --release
+```
+
+Raw build output lands in `target/release/`; the packaged `.clap` / `.vst3`
+bundles land in `target/bundled/`. Copy those into your system plugin folders
+(e.g. `%COMMONPROGRAMFILES%\VST3` and `%COMMONPROGRAMFILES%\CLAP` on Windows).
+
+Run the tests:
+
+```bash
+cargo test --workspace
+```
+
+## Feature status
+
+| Component | Status | Location |
+|---|---|---|
+| Pulse 1 & 2 | done | `rp2a03_core/src/apu_pulse.rs` |
+| Triangle | done | `rp2a03_core/src/apu_triangle.rs` |
+| Noise | done | `rp2a03_core/src/apu_noise.rs` |
+| VRC6 pulse | done | `rp2a03_core/src/vrc6_pulse.rs` |
+| VRC6 sawtooth | done | `rp2a03_core/src/vrc6_saw.rs` |
+| FDS wavetable | planned | — |
+| Namco 163 | planned | — |
+| Sunsoft 5B (SSG) | planned | — |
 
 ---
 
 ## Credits & Attribution
 
-This synthesizer relies on foundational open-source code and deep research into NES APU behavior, emulation, and tracker design. We gratefully acknowledge the authors and projects below:
+This synthesizer relies on foundational open-source code and deep research into
+NES APU behavior, emulation, and tracker design. We gratefully acknowledge the
+authors and projects below:
 
 ### APU Architecture & DSP Reference
 
 * **[TetaNES](https://github.com/lukexor/tetanes)** (License: **MIT / Apache 2.0**)
   * *Author*: Luke Petherbridge
   * *Contribution*: The core APU channel structure, pulse timer, envelope, and frame counter implementations in `rp2a03_core` were adapted and referenced from TetaNES's core APU module.
+* **[MesenCE](https://github.com/nesdev-org/MesenCE)** (License: **GPL-3.0-or-later**)
+  * *Author*: SourMesen
+  * *Contribution*: The original C++ VRC6 Pulse and Saw Wave implementations
 
 ---
 
@@ -107,4 +227,5 @@ Code adapted from upstream open-source projects continues to retain and respect 
 
 ## AI Disclosure
 
-OpenAI's Codex and Google Antigravity AI agents were used in the development of this plugin.
+OpenAI's Codex, Google Antigravity, and Anthropic's Claude Code AI agents were
+used in the development of this plugin.
