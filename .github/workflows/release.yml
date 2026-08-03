@@ -76,6 +76,29 @@ jobs:
       - name: Bundle plugin
         run: cargo xtask ${{ matrix.bundle_cmd }} ${{ env.PACKAGE }} --release ${{ matrix.features }}
 
+      # clap-wrapper turns the .clap we just built into an AUv2 .component, and
+      # embeds the .clap inside it, so the AU is self-contained.
+      - name: Build AUv2 (Audio Unit)
+        if: matrix.platform == 'Mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # AU bundle versions must be numeric — drop any "-Alpha" style suffix.
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          echo "AU bundle version: $version"
+          cmake -B target/auv2-build -S packaging/auv2 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DRP2A03_VERSION="$version"
+          cmake --build target/auv2-build --config Release
+          component=$(find target/auv2-build -maxdepth 2 -name "*.component" -type d | head -1)
+          if [ -z "$component" ]; then
+            echo "::error::AUv2 build produced no .component bundle"
+            exit 1
+          fi
+          cp -R "$component" target/bundled/
+          # Match the ad-hoc signing xtask applies to the .clap and .vst3.
+          codesign -f -s - "target/bundled/$(basename "$component")"
+
       # tar, not upload-artifact's own zipping: artifact zips drop the
       # executable bit and flatten symlinks, which breaks the macOS .vst3 /
       # .clap bundle layout and its ad-hoc code signature.
