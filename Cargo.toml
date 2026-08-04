@@ -19,9 +19,11 @@ resolver = "2"
 
 [workspace.package]
 version = "0.0.7-Alpha"
-# Let-chains in the 2024 edition (used throughout the GUI/MIDI code) and
-# `u32::is_multiple_of` (voice.rs allocation ramp) are the floor.
-rust-version = "1.88"
+# This project tracks current stable rather than supporting older toolchains,
+# so the floor is whatever stable was when it was last raised — not the oldest
+# release the code happens to compile on. Raise it freely alongside stable; the
+# `msrv` CI job is what keeps this honest once stable moves past it.
+rust-version = "1.97.1"
 
 # Lints are configured once here and inherited by every member via
 # `[lints] workspace = true`, so a warning cannot be enabled in one crate and

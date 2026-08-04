@@ -70,9 +70,14 @@ jobs:
             libxcursor-dev libxkbcommon-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev
 
-      # Kept in step with `rust-version` in the workspace Cargo.toml.
+      # Pinned to `rust-version` in the workspace Cargo.toml, not to `stable`.
+      # The two are the same on the day the floor is raised and diverge as
+      # stable moves on — which is the point: this job is what catches code
+      # that quietly needs a newer compiler than the manifest promises.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
