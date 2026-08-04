@@ -108,13 +108,22 @@ pub fn draw_envelope_bar_graph(
     // An empty envelope has no step columns to draw into. Start it with a
     // small, useful canvas when the user begins drawing directly on the graph.
     const MIN_DRAW_STEPS: usize = 5;
-    if num_steps == 0
-        && (graph_response.clicked_by(egui::PointerButton::Primary)
+    // Right-click line drawing needs at least two distinct steps to form a
+    // visible envelope shape, so give it a larger starting canvas.
+    const MIN_LINE_DRAW_STEPS: usize = 10;
+    if num_steps == 0 {
+        if graph_response.clicked_by(egui::PointerButton::Primary)
             || graph_response.drag_started_by(egui::PointerButton::Primary)
-            || graph_response.dragged_by(egui::PointerButton::Primary))
-    {
-        seq.values.resize(MIN_DRAW_STEPS, 0);
-        num_steps = MIN_DRAW_STEPS;
+            || graph_response.dragged_by(egui::PointerButton::Primary)
+        {
+            seq.values.resize(MIN_DRAW_STEPS, 0);
+            num_steps = MIN_DRAW_STEPS;
+        } else if graph_response.drag_started_by(egui::PointerButton::Secondary)
+            || graph_response.dragged_by(egui::PointerButton::Secondary)
+        {
+            seq.values.resize(MIN_LINE_DRAW_STEPS, 0);
+            num_steps = MIN_LINE_DRAW_STEPS;
+        }
     }
 
     // Handle mouse wheel scrolling for Arpeggio
