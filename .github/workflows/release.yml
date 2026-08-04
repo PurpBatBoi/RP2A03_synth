@@ -82,46 +82,14 @@ jobs:
       - name: Bundle plugin
         run: cargo xtask ${{ matrix.bundle_cmd }} ${{ env.PACKAGE }} --release ${{ matrix.features }}
 
-      # clap-wrapper turns the .clap we just built into an AUv3 app extension,
-      # embedding the .clap inside it so the AU is self-contained. AUv3 ships as
-      # a container .app (the .appex rides inside it at Contents/PlugIns/) —
-      # macOS only registers the plugin once that app has been run.
-      - name: Build AUv3 (Audio Unit)
-        if: matrix.platform == 'Mac'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # AU bundle versions must be numeric — drop any "-Alpha" style suffix.
-          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
-          echo "AU bundle version: $version"
-          # -G Xcode is mandatory, not a preference: the .appex must be linked as
-          # an app-extension product and signed by Xcode, which Ninja/Makefiles
-          # cannot do. CODE_SIGN_IDENTITY "-" is the ad-hoc identity, matching
-          # what xtask applies to the .clap and .vst3 — an unsigned appex will
-          # not load.
-          cmake -B target/auv3-build -S packaging/auv3 -G Xcode \
-            -DRP2A03_VERSION="$version" \
-            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="-" \
-            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=YES \
-            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=YES
-          cmake --build target/auv3-build --config Release
-          # The container .app is the shipped artifact. -prune keeps find from
-          # descending into it and matching nested bundles.
-          app=$(find target/auv3-build -name "*.app" -type d -prune | head -1)
-          if [ -z "$app" ]; then
-            echo "::error::AUv3 build produced no .app container"
-            exit 1
-          fi
-          echo "AUv3 container: $app"
-          # No codesign here: Xcode already signed the app and the .appex nested
-          # inside it during the build. Re-signing the outer bundle after the
-          # fact would invalidate the inner extension's signature.
-          cp -R "$app" target/bundled/
-
       # clap-wrapper turns the .clap we just built into a VST3 .vst3 bundle, and
       # embeds the .clap inside it, so the VST3 is self-contained and stable.
       # This replaces niceplug's own VST3 output, which has had unresolved
       # issues on macOS.
+      #
+      # Ordered before the AU on purpose: this is the newer, less-proven of the
+      # two clap-wrapper builds, so if it breaks we find out without the AU step
+      # masking it.
       - name: Build VST3 (macOS via clap-wrapper)
         if: matrix.platform == 'Mac'
         shell: bash
@@ -145,6 +113,41 @@ jobs:
           cp -R "$vst3" target/bundled/
           # Match the ad-hoc signing xtask applies to the .clap.
           codesign -f -s - "target/bundled/$(basename "$vst3")"
+
+      # clap-wrapper turns the .clap we just built into an AUv2 .component, and
+      # embeds the .clap inside it, so the AU is self-contained.
+      #
+      # AUv2 rather than AUv3, despite Apple deprecating AUv2: clap-wrapper's
+      # AUv3 container app does not compile on current Xcode. Its
+      # AUv3HostAppDelegate.mm leaves the AVAuthorizationStatusNotDetermined
+      # case body unbraced, so the completion block it creates is still in scope
+      # at the next `default:` label — which Objective-C++ rejects outright
+      # ("cannot jump from switch statement to this case label"). The .appex
+      # itself builds and embeds the .clap correctly; only the container fails,
+      # and a container is mandatory because macOS registers an app extension
+      # solely through the app that carries it. The bug is in v0.15.1 and still
+      # on upstream main, so there is no newer tag to move to. Revisit when
+      # upstream fixes it; AUv2 loads in every current major DAW meanwhile.
+      - name: Build AUv2 (Audio Unit)
+        if: matrix.platform == 'Mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # AU bundle versions must be numeric — drop any "-Alpha" style suffix.
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          echo "AU bundle version: $version"
+          cmake -B target/auv2-build -S packaging/auv2 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DRP2A03_VERSION="$version"
+          cmake --build target/auv2-build --config Release
+          component=$(find target/auv2-build -maxdepth 2 -name "*.component" -type d | head -1)
+          if [ -z "$component" ]; then
+            echo "::error::AUv2 build produced no .component bundle"
+            exit 1
+          fi
+          cp -R "$component" target/bundled/
+          # Match the ad-hoc signing xtask applies to the .clap and .vst3.
+          codesign -f -s - "target/bundled/$(basename "$component")"
 
       # tar, not upload-artifact's own zipping: artifact zips drop the
       # executable bit and flatten symlinks, which breaks the macOS .vst3 /
