@@ -2,6 +2,10 @@
 name = "rp2a03_core"
 version.workspace = true
 edition = "2024"
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 serde = { workspace = true }

@@ -65,7 +65,6 @@ pub fn freq_to_vrc6_saw_period(freq: f32) -> u16 {
     t.round().clamp(0.0, 4095.0) as u16
 }
 
-
 /// Maps a MIDI key to the 4-bit NES noise period used by FamiStudio.
 /// FamiStudio first converts MIDI to its internal C0-based note (`key - 11`),
 /// then masks and inverts the low nibble at the `$400E` register boundary.

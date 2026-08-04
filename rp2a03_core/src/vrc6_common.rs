@@ -16,6 +16,12 @@ pub struct Divider {
     counter: i32,
 }
 
+impl Default for Divider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Divider {
     pub fn new() -> Self {
         Self { counter: 1 }

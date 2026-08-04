@@ -44,6 +44,12 @@ pub struct Vrc6Saw {
     divider: Divider,
 }
 
+impl Default for Vrc6Saw {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Vrc6Saw {
     pub fn new() -> Self {
         Self {
@@ -113,7 +119,6 @@ impl Vrc6Saw {
     pub fn set_period_hi_soft(&mut self, hi_bits: u8) {
         self.frequency = (self.frequency & 0x00FF) | (u16::from(hi_bits & 0x0F) << 8);
     }
-
 
     // ── Clocking ────────────────────────────
 
@@ -187,7 +192,7 @@ mod tests {
 
         // step 0 (after 1st clock): accumulator reset to 0.
         saw.clock();
-        assert_eq!(saw.step, 1 % 14);
+        assert_eq!(saw.step, 1);
         // step 1 is odd -> no accrual on step 1 (only even, non-zero steps accrue).
         assert_eq!(saw.accumulator, 0);
 
@@ -265,7 +270,10 @@ mod tests {
         assert_eq!(saw.frequency, 5);
 
         saw.write_freq_hi(0x80); // enabled, high bits = 0
-        assert_eq!(saw.frequency, 5, "write_freq_hi must not clobber the low byte");
+        assert_eq!(
+            saw.frequency, 5,
+            "write_freq_hi must not clobber the low byte"
+        );
         assert!(saw.enabled);
     }
 

@@ -6,12 +6,12 @@
 //! waveform switch does not have to rebuild anything mid-block.
 
 use nice_plug::prelude::*;
-use rp2a03_common::{ActiveSequences, ChannelMode, MidiHandler};
+use rp2a03_common::{ActiveSequences, AnyChannel, ChannelMode, MidiHandler};
 use rp2a03_core::NTSC_CPU_CLOCK;
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
-use rp2a03_core::blip_buf::BlipBuf;
+use rp2a03_core::blip_buf::{BlipBuf, InvalidRates};
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
 use rp2a03_core::vrc6_saw::Vrc6Saw;
 
@@ -52,7 +52,8 @@ impl Voice {
         let mut vrc6_saw = Vrc6Saw::new();
         vrc6_saw.set_enabled(true);
         let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE);
-        blip.set_rates(NTSC_CPU_CLOCK, DEFAULT_SAMPLE_RATE as f64);
+        blip.set_rates(NTSC_CPU_CLOCK, f64::from(DEFAULT_SAMPLE_RATE))
+            .expect("the NTSC clock at the default sample rate is a valid rate pair");
         Self {
             midi_handler: MidiHandler::new(),
             blip,
@@ -68,8 +69,20 @@ impl Voice {
         }
     }
 
-    pub(crate) fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.blip.set_rates(NTSC_CPU_CLOCK, sample_rate as f64);
+    /// Retunes the resampler for a new host sample rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidRates`] if the host reports a rate the band-limited
+    /// resampler cannot represent. The voice keeps its previous rate, and the
+    /// caller is expected to refuse activation rather than render garbage.
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: f32) -> Result<(), InvalidRates> {
+        self.blip.set_rates(NTSC_CPU_CLOCK, f64::from(sample_rate))
+    }
+
+    /// Largest block this voice can resample in a single BlipBuf frame.
+    pub(crate) fn frame_capacity(&self) -> usize {
+        self.blip.capacity() as usize
     }
 
     /// Re-enable every channel after a reset. The channels are always enabled;
@@ -135,35 +148,59 @@ impl Voice {
             .any(|(held_note, _)| *held_note == note)
     }
 
-    /// Routes a MIDI event to every channel this voice owns, returning a
-    /// Program Change sequence index when the event carried one.
+    /// Routes a MIDI event to this voice's selected channel, returning a Program
+    /// Change sequence index when the event carried one.
     pub(crate) fn handle_event(
         &mut self,
         event: &NoteEvent<()>,
         seqs: &ActiveSequences,
     ) -> Option<usize> {
-        self.midi_handler.handle_event_all(
-            event,
-            &mut self.pulse,
-            &mut self.triangle,
-            Some(&mut self.noise),
-            Some(&mut self.vrc6_pulse),
-            Some(&mut self.vrc6_saw),
-            seqs,
-        )
+        // Destructured so the borrow of the selected channel stays disjoint from
+        // the borrow of `midi_handler` that drives it.
+        let Self {
+            midi_handler,
+            pulse,
+            triangle,
+            noise,
+            vrc6_pulse,
+            vrc6_saw,
+            ..
+        } = self;
+        // `handle_event` calls `sync_channel_mode`, but that only rebases the
+        // period — it never moves `channel_mode` — so the channel picked here
+        // stays the right one for the whole call.
+        let mut channel = select_channel(
+            midi_handler.channel_mode,
+            pulse,
+            triangle,
+            noise,
+            vrc6_pulse,
+            vrc6_saw,
+        );
+        midi_handler.handle_event(event, &mut channel, seqs)
     }
 
     /// Folds the current envelope/LFO state into the channel registers and
     /// returns the master gain to apply to this voice for the coming segment.
     pub(crate) fn apply_current_modulation(&mut self, seqs: &ActiveSequences) -> f32 {
-        self.midi_handler.apply_current_modulation_all(
-            &mut self.pulse,
-            &mut self.triangle,
-            Some(&mut self.noise),
-            Some(&mut self.vrc6_pulse),
-            Some(&mut self.vrc6_saw),
-            seqs,
-        )
+        let Self {
+            midi_handler,
+            pulse,
+            triangle,
+            noise,
+            vrc6_pulse,
+            vrc6_saw,
+            ..
+        } = self;
+        let mut channel = select_channel(
+            midi_handler.channel_mode,
+            pulse,
+            triangle,
+            noise,
+            vrc6_pulse,
+            vrc6_saw,
+        );
+        midi_handler.apply_current_modulation(&mut channel, seqs)
     }
 
     /// Advances the currently selected channel by one APU clock and returns its
@@ -257,5 +294,26 @@ impl Voice {
         }
 
         self.last_output - previous_output
+    }
+}
+
+/// Borrows the one channel `mode` selects out of a voice's channel set.
+///
+/// A free function taking the fields rather than a `&mut self` method, so the
+/// caller can hold a disjoint mutable borrow of `MidiHandler` at the same time.
+fn select_channel<'a>(
+    mode: ChannelMode,
+    pulse: &'a mut Pulse,
+    triangle: &'a mut Triangle,
+    noise: &'a mut Noise,
+    vrc6_pulse: &'a mut Vrc6Pulse,
+    vrc6_saw: &'a mut Vrc6Saw,
+) -> AnyChannel<'a> {
+    match mode {
+        ChannelMode::Pulse => AnyChannel::Pulse(pulse),
+        ChannelMode::Triangle => AnyChannel::Triangle(triangle),
+        ChannelMode::Noise => AnyChannel::Noise(noise),
+        ChannelMode::Vrc6Pulse => AnyChannel::Vrc6Pulse(vrc6_pulse),
+        ChannelMode::Vrc6Saw => AnyChannel::Vrc6Saw(vrc6_saw),
     }
 }

@@ -26,8 +26,15 @@ impl SequenceCache {
     /// `Some(reload)` when the *slot* changed and the voices' sequence players
     /// must be re-pointed at the new envelopes.
     ///
-    /// Locks `shared` only long enough to read its revision counter; if
-    /// `(sequence_index, revision)` matches the last refresh, returns
+    /// Uses `try_lock` and returns `None` when the editor already holds the
+    /// mutex: it keeps that lock for the whole egui frame it spends drawing, so
+    /// blocking here would stall the audio thread behind a UI repaint. Skipping
+    /// costs one block of staleness — the cached envelopes stay valid and the
+    /// next `process` retries, because `self.key` is only advanced on a
+    /// successful refresh.
+    ///
+    /// On a successful lock it reads the revision counter first; if
+    /// `(sequence_index, revision)` matches the last refresh, it returns
     /// immediately without cloning. On an actual change, `Sequence::clone_from`
     /// reuses each `Vec`'s existing allocation instead of allocating fresh —
     /// this runs on the audio thread, where allocation and long lock hold times
@@ -42,7 +49,9 @@ impl SequenceCache {
         shared: &Mutex<SharedSequences>,
         sequence_index: usize,
     ) -> Option<SequenceReload> {
-        let mut data = shared.lock();
+        // Contended: the editor is mid-repaint. Keep the cached envelopes and
+        // retry next block rather than block the audio thread.
+        let mut data = shared.try_lock()?;
         let revision = data.revision();
         if self.key == Some((sequence_index, revision)) {
             return None;
@@ -70,7 +79,9 @@ impl SequenceCache {
         self.active.arp_enabled = data.sequence_enabled(1);
         self.active.pitch_seq.clone_from(data.selected_sequence(2));
         self.active.pitch_enabled = data.sequence_enabled(2);
-        self.active.hipitch_seq.clone_from(data.selected_sequence(3));
+        self.active
+            .hipitch_seq
+            .clone_from(data.selected_sequence(3));
         self.active.hipitch_enabled = data.sequence_enabled(3);
         self.active.duty_seq.clone_from(data.selected_sequence(4));
         self.active.duty_enabled = data.sequence_enabled(4);
@@ -113,7 +124,11 @@ impl PlayheadPublisher {
         let positions = [
             play_step(&handler.vol_seq_player, &seqs.vol_seq, seqs.vol_enabled),
             play_step(&handler.arp_seq_player, &seqs.arp_seq, seqs.arp_enabled),
-            play_step(&handler.pitch_seq_player, &seqs.pitch_seq, seqs.pitch_enabled),
+            play_step(
+                &handler.pitch_seq_player,
+                &seqs.pitch_seq,
+                seqs.pitch_enabled,
+            ),
             play_step(
                 &handler.hipitch_seq_player,
                 &seqs.hipitch_seq,

@@ -58,10 +58,7 @@ pub fn draw_envelope_bar_graph(
     let max_center = (max_val - visible_span).max(0);
 
     let scroll_id = ui.make_persistent_id("arpeggio_scroll_center");
-    let mut scroll_center: i16 = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(scroll_id))
-        .unwrap_or(0i16);
+    let mut scroll_center: i16 = ui.ctx().data_mut(|d| d.get_temp(scroll_id)).unwrap_or(0i16);
     if is_arpeggio {
         scroll_center = scroll_center.clamp(min_center, max_center);
     }
@@ -126,11 +123,7 @@ pub fn draw_envelope_bar_graph(
         if scroll_delta.abs() > 0.0f32 {
             let change = (scroll_delta / 8.0f32).round() as i16;
             let step_change = if change == 0 {
-                if scroll_delta > 0.0f32 {
-                    1
-                } else {
-                    -1
-                }
+                if scroll_delta > 0.0f32 { 1 } else { -1 }
             } else {
                 change
             };
@@ -154,32 +147,32 @@ pub fn draw_envelope_bar_graph(
             Pos2::new(scrollbar_rect.max.x, scrollbar_rect.max.y - button_h),
         );
 
-        if scrollbar_response.clicked() {
-            if let Some(pos) = scrollbar_response.interact_pointer_pos() {
-                if top_btn_rect.contains(pos) {
-                    scroll_center = (scroll_center + 1).clamp(min_center, max_center);
-                } else if bot_btn_rect.contains(pos) {
-                    scroll_center = (scroll_center - 1).clamp(min_center, max_center);
-                }
+        if scrollbar_response.clicked()
+            && let Some(pos) = scrollbar_response.interact_pointer_pos()
+        {
+            if top_btn_rect.contains(pos) {
+                scroll_center = (scroll_center + 1).clamp(min_center, max_center);
+            } else if bot_btn_rect.contains(pos) {
+                scroll_center = (scroll_center - 1).clamp(min_center, max_center);
             }
         }
 
-        if scrollbar_response.dragged() || scrollbar_response.clicked() {
-            if let Some(pos) = scrollbar_response.interact_pointer_pos() {
-                if !top_btn_rect.contains(pos) && !bot_btn_rect.contains(pos) {
-                    let visible_rows = (2 * visible_span + 1) as f32;
-                    let total_rows = (max_val - min_val + 1) as f32;
-                    let thumb_h = (track_rect.height() * (visible_rows / total_rows))
-                        .clamp(16.0f32, track_rect.height());
-                    let travel_h = track_rect.height() - thumb_h;
-                    if travel_h > 0.0f32 {
-                        let rel_y = pos.y - track_rect.min.y - thumb_h / 2.0f32;
-                        let norm = (rel_y / travel_h).clamp(0.0f32, 1.0f32);
-                        let center_range = (max_center - min_center) as f32;
-                        scroll_center = (max_center as f32 - norm * center_range).round() as i16;
-                        scroll_center = scroll_center.clamp(min_center, max_center);
-                    }
-                }
+        if (scrollbar_response.dragged() || scrollbar_response.clicked())
+            && let Some(pos) = scrollbar_response.interact_pointer_pos()
+            && !top_btn_rect.contains(pos)
+            && !bot_btn_rect.contains(pos)
+        {
+            let visible_rows = (2 * visible_span + 1) as f32;
+            let total_rows = (max_val - min_val + 1) as f32;
+            let thumb_h = (track_rect.height() * (visible_rows / total_rows))
+                .clamp(16.0f32, track_rect.height());
+            let travel_h = track_rect.height() - thumb_h;
+            if travel_h > 0.0f32 {
+                let rel_y = pos.y - track_rect.min.y - thumb_h / 2.0f32;
+                let norm = (rel_y / travel_h).clamp(0.0f32, 1.0f32);
+                let center_range = (max_center - min_center) as f32;
+                scroll_center = (max_center as f32 - norm * center_range).round() as i16;
+                scroll_center = scroll_center.clamp(min_center, max_center);
             }
         }
     }
@@ -234,13 +227,12 @@ pub fn draw_envelope_bar_graph(
             } else if header_response.dragged_by(egui::PointerButton::Primary) {
                 let state: Option<MarkerDragState> =
                     ui.ctx().data_mut(|d| d.get_temp(loop_drag_id));
-                if let Some(st) = state {
-                    if current_step != st.start_step || !st.was_existing {
-                        if seq.loop_point != Some(current_step) {
-                            seq.loop_point = Some(current_step);
-                            text_needs_sync = true;
-                        }
-                    }
+                if let Some(st) = state
+                    && (current_step != st.start_step || !st.was_existing)
+                    && seq.loop_point != Some(current_step)
+                {
+                    seq.loop_point = Some(current_step);
+                    text_needs_sync = true;
                 }
             }
 
@@ -285,13 +277,12 @@ pub fn draw_envelope_bar_graph(
                 }
             } else if header_response.dragged_by(egui::PointerButton::Secondary) {
                 let state: Option<MarkerDragState> = ui.ctx().data_mut(|d| d.get_temp(rel_drag_id));
-                if let Some(st) = state {
-                    if current_step != st.start_step || !st.was_existing {
-                        if seq.release_point != Some(current_step) {
-                            seq.release_point = Some(current_step);
-                            text_needs_sync = true;
-                        }
-                    }
+                if let Some(st) = state
+                    && (current_step != st.start_step || !st.was_existing)
+                    && seq.release_point != Some(current_step)
+                {
+                    seq.release_point = Some(current_step);
+                    text_needs_sync = true;
                 }
             }
 
@@ -327,122 +318,117 @@ pub fn draw_envelope_bar_graph(
         let draw_drag_id = ui.make_persistent_id("envelope_draw_last_pos");
         let line_draw_id = ui.make_persistent_id("envelope_line_draw_state");
 
-        if graph_response.dragged_by(egui::PointerButton::Primary)
-            || graph_response.clicked_by(egui::PointerButton::Primary)
+        if (graph_response.dragged_by(egui::PointerButton::Primary)
+            || graph_response.clicked_by(egui::PointerButton::Primary))
+            && let Some(pointer_pos) = graph_response.interact_pointer_pos()
         {
-            if let Some(pointer_pos) = graph_response.interact_pointer_pos() {
-                let last_pos: Option<Pos2> = ui.ctx().data_mut(|d| d.get_temp(draw_drag_id));
+            let last_pos: Option<Pos2> = ui.ctx().data_mut(|d| d.get_temp(draw_drag_id));
 
-                let p0 = last_pos.unwrap_or(pointer_pos);
-                let p1 = pointer_pos;
+            let p0 = last_pos.unwrap_or(pointer_pos);
+            let p1 = pointer_pos;
 
-                let step_of = |x: f32| -> usize {
-                    let rel_x = (x - graph_rect.min.x).clamp(0.0, (graph_rect.width() - 0.001).max(0.0));
-                    (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize
+            let step_of = |x: f32| -> usize {
+                let rel_x =
+                    (x - graph_rect.min.x).clamp(0.0, (graph_rect.width() - 0.001).max(0.0));
+                (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize
+            };
+
+            let step0 = step_of(p0.x);
+            let step1 = step_of(p1.x);
+            let min_step = step0.min(step1);
+            let max_step = step0.max(step1);
+
+            let dx = p1.x - p0.x;
+
+            for s in min_step..=max_step {
+                let target_y = if dx.abs() < 1e-4 {
+                    p1.y
+                } else {
+                    let s_x = graph_rect.min.x + (s as f32 + 0.5) * step_width;
+                    let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
+                    p0.y + t * (p1.y - p0.y)
                 };
 
-                let step0 = step_of(p0.x);
-                let step1 = step_of(p1.x);
-                let min_step = step0.min(step1);
-                let max_step = step0.max(step1);
+                let clamped_val = pos_y_to_val(
+                    target_y,
+                    graph_rect,
+                    is_arpeggio,
+                    vis_min,
+                    vis_max,
+                    min_val,
+                    max_val,
+                );
 
-                let dx = p1.x - p0.x;
-
-                for s in min_step..=max_step {
-                    let target_y = if dx.abs() < 1e-4 {
-                        p1.y
-                    } else {
-                        let s_x = graph_rect.min.x + (s as f32 + 0.5) * step_width;
-                        let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
-                        p0.y + t * (p1.y - p0.y)
-                    };
-
-                    let clamped_val = pos_y_to_val(
-                        target_y,
-                        graph_rect,
-                        is_arpeggio,
-                        vis_min,
-                        vis_max,
-                        min_val,
-                        max_val,
-                    );
-
-                    if seq.values[s] != clamped_val {
-                        seq.values[s] = clamped_val;
-                        text_needs_sync = true;
-                    }
+                if seq.values[s] != clamped_val {
+                    seq.values[s] = clamped_val;
+                    text_needs_sync = true;
                 }
-
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(draw_drag_id, pointer_pos));
             }
+
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(draw_drag_id, pointer_pos));
         }
 
-        if graph_response.drag_started_by(egui::PointerButton::Secondary) {
-            if let Some(pointer_pos) = graph_response.interact_pointer_pos() {
-                ui.ctx().data_mut(|d| {
-                    d.insert_temp(
-                        line_draw_id,
-                        LineDrawState {
-                            start: pointer_pos,
-                            last: pointer_pos,
-                        },
-                    );
-                });
-            }
+        if graph_response.drag_started_by(egui::PointerButton::Secondary)
+            && let Some(pointer_pos) = graph_response.interact_pointer_pos()
+        {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(
+                    line_draw_id,
+                    LineDrawState {
+                        start: pointer_pos,
+                        last: pointer_pos,
+                    },
+                );
+            });
         }
 
-        if graph_response.dragged_by(egui::PointerButton::Secondary) {
-            if let Some(pointer_pos) = graph_response.interact_pointer_pos() {
-                let mut should_update = false;
-                let line_state: Option<LineDrawState> = ui.ctx().data_mut(|d| d.get_temp(line_draw_id));
+        if graph_response.dragged_by(egui::PointerButton::Secondary)
+            && let Some(pointer_pos) = graph_response.interact_pointer_pos()
+            && let Some(mut state) = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<LineDrawState>(line_draw_id))
+        {
+            state.last = pointer_pos;
+            ui.ctx().data_mut(|d| d.insert_temp(line_draw_id, state));
 
-                if let Some(mut state) = line_state {
-                    state.last = pointer_pos;
-                    should_update = true;
-                    ui.ctx().data_mut(|d| d.insert_temp(line_draw_id, state));
-                }
+            let p0 = state.start;
+            let p1 = state.last;
 
-                if should_update {
-                    let state: LineDrawState = ui.ctx().data_mut(|d| d.get_temp(line_draw_id)).unwrap();
-                    let p0 = state.start;
-                    let p1 = state.last;
+            let step_of = |x: f32| -> usize {
+                let rel_x =
+                    (x - graph_rect.min.x).clamp(0.0, (graph_rect.width() - 0.001).max(0.0));
+                (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize
+            };
 
-                    let step_of = |x: f32| -> usize {
-                        let rel_x = (x - graph_rect.min.x).clamp(0.0, (graph_rect.width() - 0.001).max(0.0));
-                        (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize
-                    };
+            let step0 = step_of(p0.x);
+            let step1 = step_of(p1.x);
+            let min_step = step0.min(step1);
+            let max_step = step0.max(step1);
+            let dx = p1.x - p0.x;
 
-                    let step0 = step_of(p0.x);
-                    let step1 = step_of(p1.x);
-                    let min_step = step0.min(step1);
-                    let max_step = step0.max(step1);
-                    let dx = p1.x - p0.x;
+            for s in min_step..=max_step {
+                let target_y = if dx.abs() < 1e-4 {
+                    p1.y
+                } else {
+                    let s_x = graph_rect.min.x + (s as f32 + 0.5) * step_width;
+                    let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
+                    p0.y + t * (p1.y - p0.y)
+                };
 
-                    for s in min_step..=max_step {
-                        let target_y = if dx.abs() < 1e-4 {
-                            p1.y
-                        } else {
-                            let s_x = graph_rect.min.x + (s as f32 + 0.5) * step_width;
-                            let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
-                            p0.y + t * (p1.y - p0.y)
-                        };
+                let clamped_val = pos_y_to_val(
+                    target_y,
+                    graph_rect,
+                    is_arpeggio,
+                    vis_min,
+                    vis_max,
+                    min_val,
+                    max_val,
+                );
 
-                        let clamped_val = pos_y_to_val(
-                            target_y,
-                            graph_rect,
-                            is_arpeggio,
-                            vis_min,
-                            vis_max,
-                            min_val,
-                            max_val,
-                        );
-
-                        if seq.values[s] != clamped_val {
-                            seq.values[s] = clamped_val;
-                            text_needs_sync = true;
-                        }
-                    }
+                if seq.values[s] != clamped_val {
+                    seq.values[s] = clamped_val;
+                    text_needs_sync = true;
                 }
             }
         }
@@ -452,7 +438,8 @@ pub fn draw_envelope_bar_graph(
             || !graph_response.hovered()
             || !ui.input(|i| i.pointer.secondary_down())
         {
-            ui.ctx().data_mut(|d| d.remove_temp::<LineDrawState>(line_draw_id));
+            ui.ctx()
+                .data_mut(|d| d.remove_temp::<LineDrawState>(line_draw_id));
         }
 
         if graph_response.drag_stopped_by(egui::PointerButton::Primary)
@@ -687,7 +674,10 @@ pub fn draw_envelope_bar_graph(
         draw_playhead_rect(&painter, col_rect);
     }
 
-    if let Some(state) = ui.ctx().data(|d| d.get_temp::<LineDrawState>(ui.make_persistent_id("envelope_line_draw_state"))) {
+    if let Some(state) = ui
+        .ctx()
+        .data(|d| d.get_temp::<LineDrawState>(ui.make_persistent_id("envelope_line_draw_state")))
+    {
         painter.line_segment(
             [state.start, state.last],
             Stroke::new(4.0f32, Color32::from_rgba_unmultiplied(255, 255, 255, 200)),

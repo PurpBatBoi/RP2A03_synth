@@ -22,6 +22,12 @@ pub mod envelope {
         loops: bool,
     }
 
+    impl Default for Envelope {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl Envelope {
         pub fn new() -> Self {
             Self {
@@ -138,7 +144,7 @@ pub mod envelope {
         #[test]
         fn looping_wraps_counter_from_zero_to_15() {
             let mut env = Envelope::new();
-            env.write_ctrl(0x20 | 0x00); // loops = true, volume/period = 0
+            env.write_ctrl(0x20); // loops = true, volume/period = 0
             env.restart();
             env.clock(); // start: counter=15, divider=0
 
@@ -209,6 +215,12 @@ pub mod frame_counter {
         cycle: u32,
         inhibit_irq: bool,
         irq_pending: bool,
+    }
+
+    impl Default for FrameCounter {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl FrameCounter {
@@ -475,6 +487,12 @@ pub mod length_counter {
         counter: u8,
         previous_counter: u8,
         reload: u8,
+    }
+
+    impl Default for LengthCounter {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl LengthCounter {

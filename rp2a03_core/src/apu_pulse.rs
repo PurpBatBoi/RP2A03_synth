@@ -47,6 +47,12 @@ pub struct DutySequencer {
     current_step: u8,
 }
 
+impl Default for DutySequencer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DutySequencer {
     pub fn new() -> Self {
         Self {
@@ -101,6 +107,12 @@ pub struct Sweep {
     divider: u8,
     period: u8,
     target_period: u16,
+}
+
+impl Default for Sweep {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Sweep {

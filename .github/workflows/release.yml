@@ -73,11 +73,11 @@ jobs:
         with:
           key: ${{ matrix.platform }}
 
-      # Only the two backend-agnostic crates: rp2a03_niceplug's tests would drag
-      # the editor's rendering backend into feature resolution for no gain, and
-      # every test lives in core/common anyway.
+      # The whole workspace, with this platform's editor backend. rp2a03_niceplug
+      # owns the rendered-audio fingerprint tests and the block-size regressions,
+      # so leaving it out let a DSP change ship untested.
       - name: Run tests
-        run: cargo test -p rp2a03_core -p rp2a03_common --release
+        run: cargo test --workspace --release ${{ matrix.features }}
 
       - name: Bundle plugin
         run: cargo xtask ${{ matrix.bundle_cmd }} ${{ env.PACKAGE }} --release ${{ matrix.features }}

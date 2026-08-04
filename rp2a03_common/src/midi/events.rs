@@ -5,13 +5,8 @@
 use super::handler::{
     AnyChannel, MAX_PITCH_SLIDE_RANGE, MidiHandler, RPN_NULL, RPN_PITCH_BEND_SENSITIVITY,
 };
-use super::types::{ActiveSequences, ChannelMode};
+use super::types::ActiveSequences;
 use nice_plug::prelude::*;
-use rp2a03_core::apu_noise::Noise;
-use rp2a03_core::apu_pulse::Pulse;
-use rp2a03_core::apu_triangle::Triangle;
-use rp2a03_core::vrc6_pulse::Vrc6Pulse;
-use rp2a03_core::vrc6_saw::Vrc6Saw;
 use rp2a03_core::sequencer::{ArpMode, PitchMode};
 
 /// Raw 14-bit pitch-bend value at the wheel's rest position.
@@ -22,36 +17,17 @@ const PITCH_BEND_CENTER: i32 = 1 << 13;
 const PITCH_BEND_MAX: f32 = ((1u32 << 14) - 1) as f32;
 
 impl MidiHandler {
-    /// Process an incoming MIDI / Note event.
+    /// Process an incoming MIDI / Note event, returning a Program Change
+    /// sequence index when the event carried one.
+    ///
+    /// The handler only ever touches the one channel [`MidiHandler::channel_mode`]
+    /// selects, so the caller — which owns all of them and already knows the
+    /// mode — hands in that channel rather than the whole set. `channel` must
+    /// match `channel_mode`; a debug assertion checks it.
     pub fn handle_event<S>(
         &mut self,
         event: &NoteEvent<S>,
-        pulse: &mut Pulse,
-        triangle: &mut Triangle,
-        seqs: &ActiveSequences,
-    ) -> Option<usize> {
-        self.handle_event_with_noise(event, pulse, triangle, None, seqs)
-    }
-
-    pub fn handle_event_with_noise<S>(
-        &mut self,
-        event: &NoteEvent<S>,
-        pulse: &mut Pulse,
-        triangle: &mut Triangle,
-        noise: Option<&mut Noise>,
-        seqs: &ActiveSequences,
-    ) -> Option<usize> {
-        self.handle_event_all(event, pulse, triangle, noise, None, None, seqs)
-    }
-
-    pub fn handle_event_all<S>(
-        &mut self,
-        event: &NoteEvent<S>,
-        pulse: &mut Pulse,
-        triangle: &mut Triangle,
-        noise: Option<&mut Noise>,
-        vrc6_pulse: Option<&mut Vrc6Pulse>,
-        vrc6_saw: Option<&mut Vrc6Saw>,
+        channel: &mut AnyChannel,
         seqs: &ActiveSequences,
     ) -> Option<usize> {
         // A Waveform switch can land between blocks, so reconcile the period domain
@@ -60,7 +36,7 @@ impl MidiHandler {
 
         // Channel-wide controllers touch no APU register directly — they only move
         // handler state that the next modulation pass folds into the period — so
-        // they are taken before a channel is selected below.
+        // they are taken before the channel is used below.
         match event {
             NoteEvent::MidiPitchBend { value, .. } => {
                 self.pitch_bend(*value);
@@ -73,43 +49,26 @@ impl MidiHandler {
             _ => {}
         }
 
-        let mode = self.channel_mode;
-        let dispatch = |handler: &mut MidiHandler, mut channel: AnyChannel| match event {
+        debug_assert_eq!(
+            channel.mode(),
+            self.channel_mode,
+            "the channel handed in must match the selected waveform"
+        );
+
+        match event {
             NoteEvent::NoteOn { note, velocity, .. } => {
                 let vel_u8 = (velocity * 127.0).clamp(0.0, 127.0) as u8;
-                handler.note_on(*note, vel_u8, &mut channel, seqs);
+                self.note_on(*note, vel_u8, channel, seqs);
                 None
             }
             NoteEvent::NoteOff { note, .. } => {
-                handler.note_off(*note, &mut channel, seqs);
+                self.note_off(*note, channel, seqs);
                 None
             }
             NoteEvent::MidiProgramChange { program, .. } => Some(*program as usize),
             _ => None,
-        };
-
-        match (mode, noise, vrc6_pulse, vrc6_saw) {
-            (ChannelMode::Pulse, _, _, _) => dispatch(self, AnyChannel::Pulse(pulse)),
-            (ChannelMode::Triangle, _, _, _) => dispatch(self, AnyChannel::Triangle(triangle)),
-            (ChannelMode::Noise, Some(n), _, _) => dispatch(self, AnyChannel::Noise(n)),
-            (ChannelMode::Vrc6Pulse, _, Some(vp), _) => dispatch(self, AnyChannel::Vrc6Pulse(vp)),
-            (ChannelMode::Vrc6Pulse, _, None, _) => {
-                let mut vp = self.vrc6_pulse.clone();
-                let res = dispatch(self, AnyChannel::Vrc6Pulse(&mut vp));
-                self.vrc6_pulse = vp;
-                res
-            }
-            (ChannelMode::Vrc6Saw, _, _, Some(vs)) => dispatch(self, AnyChannel::Vrc6Saw(vs)),
-            (ChannelMode::Vrc6Saw, _, _, None) => {
-                let mut vs = self.vrc6_saw.clone();
-                let res = dispatch(self, AnyChannel::Vrc6Saw(&mut vs));
-                self.vrc6_saw = vs;
-                res
-            }
-            _ => None,
         }
     }
-
 
     /// Drive `pitch_slide` from the controller's pitch wheel.
     ///
@@ -338,5 +297,4 @@ impl MidiHandler {
         // domain a later Waveform switch has to rebase away from.
         self.period_channel = Some(self.channel_mode);
     }
-
 }

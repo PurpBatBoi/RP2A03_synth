@@ -1,0 +1,81 @@
+name: CI
+
+# The release workflow only fires on tags, so nothing gated day-to-day work.
+# This runs the same checks on every push and pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are the gate; without this clippy exits 0 no matter what it found.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # egui/nice-plug pull in X11, Wayland and ALSA at link time.
+      - name: Install Linux GUI/audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libgl1-mesa-dev libjack-jackd2-dev \
+            libx11-xcb-dev libxcb-dri2-0-dev libxcb-icccm4-dev \
+            libxcursor-dev libxkbcommon-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # --all-targets so tests and benches are linted too, not just the libs.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+      # The whole workspace, including rp2a03_niceplug: its rendered-audio
+      # fingerprint tests are the only thing that catches a DSP regression.
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      # `--all-targets` skips doctests; the core crate documents its APIs with
+      # runnable examples, so run them separately.
+      - name: Doctests
+        run: cargo test --workspace --doc
+
+  msrv:
+    name: minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux GUI/audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libgl1-mesa-dev libjack-jackd2-dev \
+            libx11-xcb-dev libxcb-dri2-0-dev libxcb-icccm4-dev \
+            libxcursor-dev libxkbcommon-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      # Kept in step with `rust-version` in the workspace Cargo.toml.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo check --workspace --all-targets

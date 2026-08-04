@@ -329,7 +329,12 @@ mod tests {
         let expected_step_delta = 7.0 / 15.0;
         for i in 0..15 {
             let delta = outputs[i] - outputs[i + 1];
-            assert!((delta - expected_step_delta).abs() < 1e-6, "Step delta should be smooth linear delta {}, got {}", expected_step_delta, delta);
+            assert!(
+                (delta - expected_step_delta).abs() < 1e-6,
+                "Step delta should be smooth linear delta {}, got {}",
+                expected_step_delta,
+                delta
+            );
         }
     }
 

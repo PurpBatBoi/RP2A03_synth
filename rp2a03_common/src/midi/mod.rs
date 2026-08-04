@@ -3,9 +3,12 @@
 
 mod events;
 mod handler;
-mod types;
 #[cfg(test)]
 mod tests;
+mod types;
 
-pub use handler::MidiHandler;
-pub use types::{freq_to_period, freq_to_triangle_period, midi_note_to_freq, ActiveSequences, ChannelMode, HostAutomationControls, SequenceReload};
+pub use handler::{AnyChannel, MidiHandler};
+pub use types::{
+    ActiveSequences, ChannelMode, HostAutomationControls, SequenceReload, freq_to_period,
+    freq_to_triangle_period, midi_note_to_freq,
+};

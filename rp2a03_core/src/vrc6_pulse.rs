@@ -28,6 +28,12 @@ pub struct DutySequencer {
     current_step: u8,
 }
 
+impl Default for DutySequencer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DutySequencer {
     pub fn new() -> Self {
         Self {
@@ -84,6 +90,12 @@ pub struct Vrc6Pulse {
     frequency_shift: u8,
     enabled: bool,
     divider: Divider,
+}
+
+impl Default for Vrc6Pulse {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Vrc6Pulse {
@@ -145,7 +157,6 @@ impl Vrc6Pulse {
     pub fn set_period_hi_soft(&mut self, hi_bits: u8) {
         self.frequency = (self.frequency & 0x00FF) | (u16::from(hi_bits & 0x0F) << 8);
     }
-
 
     // ── Clocking ────────────────────────────
 

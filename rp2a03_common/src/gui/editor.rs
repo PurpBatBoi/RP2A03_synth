@@ -160,13 +160,7 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
     }
 }
 
-fn draw_header(
-    ui: &mut egui::Ui,
-    data: &mut SharedSequences,
-    changed_channel_mode: &mut Option<ChannelMode>,
-    changed_polyphony: &mut Option<bool>,
-    changed_portamento_enabled: &mut Option<bool>,
-) {
+fn draw_header(ui: &mut egui::Ui, data: &mut SharedSequences, result: &mut EditorResult) {
     let mut portamento = data.portamento_enabled;
 
     const HEADER_H: f32 = 92.0;
@@ -239,7 +233,7 @@ fn draw_header(
                         {
                             let new_mode = ChannelMode::Pulse;
                             data.channel_mode = new_mode;
-                            *changed_channel_mode = Some(new_mode);
+                            result.new_channel_mode = Some(new_mode);
                         }
                         if ui
                             .selectable_value(&mut waveform_id, 1, "2A03 | Triangle")
@@ -252,7 +246,7 @@ fn draw_header(
                                 data.selected_tab = 0;
                             }
                             data.channel_mode = new_mode;
-                            *changed_channel_mode = Some(new_mode);
+                            result.new_channel_mode = Some(new_mode);
                         }
                         if ui
                             .selectable_value(&mut waveform_id, 2, "2A03 | Noise")
@@ -261,12 +255,12 @@ fn draw_header(
                             let new_mode = ChannelMode::Noise;
                             // Fine pitch is not an NES noise-channel control. Keep the
                             // editor on a supported tab when switching into Noise.
-                            if matches!(data.selected_tab, 2 | 3 | 4) {
+                            if matches!(data.selected_tab, 2..=4) {
                                 cleanup_tab_sequence(data, data.selected_tab);
                                 data.selected_tab = 0;
                             }
                             data.channel_mode = new_mode;
-                            *changed_channel_mode = Some(new_mode);
+                            result.new_channel_mode = Some(new_mode);
                         }
                         if ui
                             .selectable_value(&mut waveform_id, 3, "VRC6 | Pulse")
@@ -274,7 +268,7 @@ fn draw_header(
                         {
                             let new_mode = ChannelMode::Vrc6Pulse;
                             data.channel_mode = new_mode;
-                            *changed_channel_mode = Some(new_mode);
+                            result.new_channel_mode = Some(new_mode);
                         }
                         if ui
                             .selectable_value(&mut waveform_id, 4, "VRC6 | Saw")
@@ -284,7 +278,7 @@ fn draw_header(
                             // The saw keeps its Duty tab: in 16-step mode duty bit 0
                             // is the $B000 rate MSB, so tab 4 stays selectable.
                             data.channel_mode = new_mode;
-                            *changed_channel_mode = Some(new_mode);
+                            result.new_channel_mode = Some(new_mode);
                         }
                     });
             },
@@ -305,12 +299,12 @@ fn draw_header(
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!data.portamento_enabled, |ui| {
                         if ui.checkbox(&mut data.polyphony, "Polyphony").changed() {
-                            *changed_polyphony = Some(data.polyphony);
+                            result.new_polyphony = Some(data.polyphony);
                         }
                     });
                     if ui.checkbox(&mut portamento, "Portamento").changed() {
                         data.portamento_enabled = portamento;
-                        *changed_portamento_enabled = Some(portamento);
+                        result.new_portamento_enabled = Some(portamento);
                     }
                 })
                 .response
@@ -337,11 +331,8 @@ fn draw_instrument_settings_panel(
     ui: &mut egui::Ui,
     data: &mut SharedSequences,
     shared_sequence_index: usize,
-    changed_sequence_index: &mut Option<usize>,
     step_time_hz: u32,
-    changed_step_time_hz: &mut Option<i32>,
-    changed_max_voices: &mut Option<i32>,
-    changed_portamento_speed: &mut Option<i32>,
+    result: &mut EditorResult,
 ) {
     // "Duty / Noise" tab is disabled for Triangle mode.
     let seq_types: &[(&str, usize)] = &[
@@ -389,8 +380,8 @@ fn draw_instrument_settings_panel(
                             data.channel_mode,
                             ChannelMode::Triangle | ChannelMode::Noise
                         );
-                    let is_noise_pitch = matches!(tab, 2 | 3)
-                        && data.channel_mode == ChannelMode::Noise;
+                    let is_noise_pitch =
+                        matches!(tab, 2 | 3) && data.channel_mode == ChannelMode::Noise;
                     let enabled = !is_no_duty && !is_noise_pitch;
 
                     ui.add_enabled(
@@ -398,19 +389,17 @@ fn draw_instrument_settings_panel(
                         egui::Checkbox::new(data.sequence_enabled_mut(tab), ""),
                     );
 
-
                     if ui
                         .add_enabled(
                             enabled,
                             egui::Button::new(name).selected(data.selected_tab == tab),
                         )
                         .clicked()
+                        && data.selected_tab != tab
                     {
-                        if data.selected_tab != tab {
-                            cleanup_tab_sequence(data, data.selected_tab);
-                            data.selected_tab = tab;
-                            cleanup_tab_sequence(data, tab);
-                        }
+                        cleanup_tab_sequence(data, data.selected_tab);
+                        data.selected_tab = tab;
+                        cleanup_tab_sequence(data, tab);
                     }
 
                     ui.end_row();
@@ -431,7 +420,7 @@ fn draw_instrument_settings_panel(
                 .add(egui::DragValue::new(&mut index).range(0..=MAX_SEQUENCES - 1))
                 .changed()
             {
-                *changed_sequence_index = Some(index);
+                result.new_sequence_index = Some(index);
             }
         });
     });
@@ -472,7 +461,7 @@ fn draw_instrument_settings_panel(
                         .add(egui::DragValue::new(&mut hz).range(1..=600).suffix(" Hz"))
                         .changed()
                     {
-                        *changed_step_time_hz = Some(hz);
+                        result.new_step_time_hz = Some(hz);
                     }
                 });
             });
@@ -489,7 +478,7 @@ fn draw_instrument_settings_panel(
                             )
                             .changed()
                         {
-                            *changed_max_voices = Some(data.max_voices);
+                            result.new_max_voices = Some(data.max_voices);
                         }
                     });
                 });
@@ -502,7 +491,7 @@ fn draw_instrument_settings_panel(
                         .add(egui::DragValue::new(&mut data.portamento_speed).range(0..=127))
                         .changed()
                     {
-                        *changed_portamento_speed = Some(data.portamento_speed);
+                        result.new_portamento_speed = Some(data.portamento_speed);
                     }
                 });
             });
@@ -686,12 +675,9 @@ fn draw_main_content(
     ui: &mut egui::Ui,
     data: &mut SharedSequences,
     shared_sequence_index: usize,
-    changed_sequence_index: &mut Option<usize>,
     playheads: &SequencePlayheads,
     step_time_hz: u32,
-    changed_step_time_hz: &mut Option<i32>,
-    changed_max_voices: &mut Option<i32>,
-    changed_portamento_speed: &mut Option<i32>,
+    result: &mut EditorResult,
 ) {
     const LEFT_W: f32 = 180.0;
     const GAP: f32 = 8.0;
@@ -713,16 +699,7 @@ fn draw_main_content(
     );
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
-        draw_instrument_settings_panel(
-            ui,
-            data,
-            shared_sequence_index,
-            changed_sequence_index,
-            step_time_hz,
-            changed_step_time_hz,
-            changed_max_voices,
-            changed_portamento_speed,
-        );
+        draw_instrument_settings_panel(ui, data, shared_sequence_index, step_time_hz, result);
     });
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
@@ -768,21 +745,11 @@ pub fn render_editor_ui(
     // 64-step volume is saw-only; drop back to the 4-bit range on every other channel.
     sync_volume_step_mode_to_channel(data);
 
-    let mut changed_sequence_index = None;
-    let mut changed_step_time_hz = None;
-    let mut changed_channel_mode = None;
-    let mut changed_polyphony = None;
-    let mut changed_max_voices = None;
-    let mut changed_portamento_enabled = None;
-    let mut changed_portamento_speed = None;
+    // Each panel records what the user touched straight into this, so the change
+    // set travels as one value instead of a fan of `&mut Option<_>` out-params.
+    let mut result = EditorResult::default();
 
-    draw_header(
-        ui,
-        data,
-        &mut changed_channel_mode,
-        &mut changed_polyphony,
-        &mut changed_portamento_enabled,
-    );
+    draw_header(ui, data, &mut result);
     draw_chip_tabs(ui, data);
 
     // Reserve footer space at the bottom of the window with spacing gap
@@ -808,12 +775,9 @@ pub fn render_editor_ui(
             ui,
             data,
             shared_sequence_index,
-            &mut changed_sequence_index,
             playheads,
             step_time_hz,
-            &mut changed_step_time_hz,
-            &mut changed_max_voices,
-            &mut changed_portamento_speed,
+            &mut result,
         );
     });
 
@@ -822,15 +786,7 @@ pub fn render_editor_ui(
         draw_footer(ui);
     });
 
-    EditorResult {
-        new_sequence_index: changed_sequence_index,
-        new_step_time_hz: changed_step_time_hz,
-        new_channel_mode: changed_channel_mode,
-        new_polyphony: changed_polyphony,
-        new_max_voices: changed_max_voices,
-        new_portamento_enabled: changed_portamento_enabled,
-        new_portamento_speed: changed_portamento_speed,
-    }
+    result
 }
 
 #[cfg(test)]
@@ -839,10 +795,12 @@ mod tests {
 
     #[test]
     fn sequence_text_round_trips_markers() {
-        let mut sequence = Sequence::default();
-        sequence.values = vec![15, 12, 10];
-        sequence.loop_point = Some(1);
-        sequence.release_point = Some(1);
+        let sequence = Sequence {
+            values: vec![15, 12, 10],
+            loop_point: Some(1),
+            release_point: Some(1),
+            ..Sequence::default()
+        };
 
         let text = sequence_to_text(&sequence);
         assert_eq!(text, "15 | / 12 10");

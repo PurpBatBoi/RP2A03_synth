@@ -73,8 +73,13 @@ impl Harness {
     /// Mirrors `Plugin::initialize` at the default sample rate.
     fn boot(&mut self) {
         self.plugin.sample_rate = DEFAULT_SAMPLE_RATE;
-        self.plugin.voices.set_sample_rate(DEFAULT_SAMPLE_RATE);
-        self.plugin.voices.reset_all(self.plugin.params.channel_mode());
+        self.plugin
+            .voices
+            .set_sample_rate(DEFAULT_SAMPLE_RATE)
+            .expect("the default sample rate is representable");
+        self.plugin
+            .voices
+            .reset_all(self.plugin.params.channel_mode());
         self.plugin.playheads.clear();
     }
 
@@ -84,8 +89,10 @@ impl Harness {
         self.plugin.voices.apply_host_automation(host_controls);
         let channel_mode = self.plugin.params.channel_mode();
         self.plugin.voices.set_channel_mode(channel_mode);
-        {
-            let mut data = self.plugin.params.shared_sequences.lock();
+        // `try_lock`, matching `process` — the audio thread never blocks on the
+        // editor's mutex, and a harness that used `lock()` here would not be
+        // able to exercise that.
+        if let Some(mut data) = self.plugin.params.shared_sequences.try_lock() {
             self.plugin.params.publish_to_gui(&mut data, channel_mode);
         }
 
@@ -93,12 +100,8 @@ impl Harness {
         self.plugin.voices.retire_above(active_voice_count);
 
         let mut stream = events.iter().cloned();
-        self.plugin.render_block(
-            num_samples,
-            &mut stream,
-            active_voice_count,
-            host_controls,
-        );
+        self.plugin
+            .render_block(num_samples, &mut stream, active_voice_count, host_controls);
 
         self.rendered
             .extend_from_slice(&self.plugin.mono_buf()[..num_samples]);
@@ -185,7 +188,11 @@ fn polyphonic_chord_render_matches_golden_output() {
     let mut harness = Harness::new(0, true, 4);
     harness
         .block(
-            &[note_on(0, 60, 1.0), note_on(0, 64, 0.8), note_on(0, 67, 0.6)],
+            &[
+                note_on(0, 60, 1.0),
+                note_on(0, 64, 0.8),
+                note_on(0, 67, 0.6),
+            ],
             512,
         )
         .block(&[], 1024)
@@ -509,4 +516,111 @@ fn switching_slots_reports_a_reload() {
         .expect("a slot switch must report a reload");
     assert!(reload.vol, "the changed envelope must be flagged");
     assert!(!reload.arp, "an identical envelope must not be flagged");
+}
+
+// ---------------------------------------------------------------------------
+// Block-size safety
+// ---------------------------------------------------------------------------
+//
+// `BlipBuf` can only resample `BlipBuf::capacity()` samples per frame, and
+// nothing about the host's block size is bounded by that. These pin the two
+// paths that used to hand a whole oversized block straight to `clocks_needed`
+// and panic on the audio thread.
+
+/// Blocks past one blip frame, at every size a host might realistically pick.
+const OVERSIZED_BLOCKS: [usize; 3] = [4096, 8192, 16384];
+
+#[test]
+fn an_idle_oversized_block_renders_without_panicking() {
+    // No gated voice: `render` takes the whole remaining block in one segment.
+    for block in OVERSIZED_BLOCKS {
+        let mut harness = Harness::new(0, false, 1);
+        harness.block(&[], block);
+        assert_eq!(harness.rendered.len(), block);
+    }
+}
+
+#[test]
+fn a_gated_oversized_block_renders_without_panicking() {
+    for block in OVERSIZED_BLOCKS {
+        let mut harness = Harness::new(0, false, 1);
+        harness.block(&[note_on(0, 60, 1.0)], block);
+        assert_eq!(harness.rendered.len(), block);
+    }
+}
+
+#[test]
+fn the_slowest_step_time_does_not_defeat_the_block_clamp() {
+    // Step Time 1 Hz puts the next envelope frame 44100 samples away, so the
+    // sequence-frame split alone leaves the block whole.
+    for block in OVERSIZED_BLOCKS {
+        let mut harness = Harness::new(0, false, 1);
+        set_int(&harness.plugin.params.step_time, 1);
+        harness.block(&[note_on(0, 60, 1.0)], block);
+        assert_eq!(harness.rendered.len(), block);
+    }
+}
+
+#[test]
+fn an_oversized_polyphonic_block_renders_without_panicking() {
+    let mut harness = Harness::new(0, true, MAX_VOICES as i32);
+    set_int(&harness.plugin.params.step_time, 1);
+    harness.block(
+        &[
+            note_on(0, 60, 1.0),
+            note_on(0, 64, 1.0),
+            note_on(0, 67, 1.0),
+        ],
+        8192,
+    );
+    assert_eq!(harness.rendered.len(), 8192);
+}
+
+#[test]
+fn a_split_block_matches_the_same_audio_rendered_in_one_call() {
+    // Segmenting is an internal detail: 4096 samples as one block must equal
+    // 4096 samples as eight 512-sample blocks.
+    let mut whole = Harness::new(0, false, 1);
+    whole.block(&[note_on(0, 60, 1.0)], 4096);
+
+    let mut split = Harness::new(0, false, 1);
+    split.block(&[note_on(0, 60, 1.0)], 512);
+    for _ in 0..7 {
+        split.block(&[], 512);
+    }
+
+    assert_eq!(whole.rendered.len(), split.rendered.len());
+    assert_eq!(whole.fingerprint(), split.fingerprint());
+}
+
+// ---------------------------------------------------------------------------
+// Real-time lock discipline
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_block_rendered_while_the_editor_holds_the_lock_keeps_its_cached_envelopes() {
+    let mut harness = Harness::new(0, false, 1);
+    let shared = harness.plugin.params.shared_sequences.clone();
+
+    // Load an envelope and let the audio thread cache it.
+    {
+        let mut data = shared.lock();
+        *data.sequence_enabled_mut(0) = true;
+        data.selected_sequence_mut(0).1.values.push(9);
+    }
+    harness.block(&[note_on(0, 60, 1.0)], 512);
+    assert_eq!(harness.plugin.sequences.active.vol_seq.values, vec![9]);
+
+    // Now hold the lock the way the editor does for a whole repaint. The audio
+    // thread must render through it rather than block.
+    let held = shared.lock();
+    harness.block(&[], 512);
+    drop(held);
+
+    assert_eq!(
+        harness.plugin.sequences.active.vol_seq.values,
+        vec![9],
+        "a skipped refresh must leave the cached envelope intact"
+    );
+    assert_eq!(harness.rendered.len(), 1024, "rendering must still happen");
 }

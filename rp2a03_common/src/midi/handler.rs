@@ -7,10 +7,10 @@ use super::types::{
     ActiveSequences, ChannelMode, HostAutomationControls, SequenceReload, freq_to_period,
     freq_to_triangle_period, freq_to_vrc6_saw_period, midi_note_to_freq, midi_note_to_noise_period,
 };
-use rp2a03_core::sequencer::Sequence;
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
+use rp2a03_core::sequencer::Sequence;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, SequencePlayer, VolMode};
 use rp2a03_core::software_lfo::SoftwareLfo;
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
@@ -32,6 +32,18 @@ pub enum AnyChannel<'a> {
 }
 
 impl<'a> AnyChannel<'a> {
+    /// The [`ChannelMode`] this channel implements, so a caller's selection can
+    /// be checked against the handler's.
+    pub fn mode(&self) -> ChannelMode {
+        match self {
+            AnyChannel::Pulse(_) => ChannelMode::Pulse,
+            AnyChannel::Triangle(_) => ChannelMode::Triangle,
+            AnyChannel::Noise(_) => ChannelMode::Noise,
+            AnyChannel::Vrc6Pulse(_) => ChannelMode::Vrc6Pulse,
+            AnyChannel::Vrc6Saw(_) => ChannelMode::Vrc6Saw,
+        }
+    }
+
     pub fn set_enabled(&mut self, enabled: bool) {
         match self {
             AnyChannel::Pulse(p) => p.set_enabled(enabled),
@@ -91,18 +103,12 @@ impl<'a> AnyChannel<'a> {
     }
 }
 
-
 /// One envelope's share of [`MidiHandler::reload_sequences`].
 ///
 /// An empty sequence counts as disabled here for the same reason it does at every
 /// other `seqs.*_enabled && !seqs.*_seq.values.is_empty()` guard in this file:
 /// there is no step for the player to land on.
-fn reload_player(
-    player: &mut SequencePlayer,
-    enabled: bool,
-    sequence: &Sequence,
-    changed: bool,
-) {
+fn reload_player(player: &mut SequencePlayer, enabled: bool, sequence: &Sequence, changed: bool) {
     if !enabled || sequence.values.is_empty() {
         // dn ClearSequence
         player.reset();
@@ -260,10 +266,6 @@ pub struct MidiHandler {
     pub(super) pulse_phase_initialized: bool,
     /// Active channel mode (Pulse / Triangle / Noise / Vrc6Pulse / Vrc6Saw).
     pub channel_mode: ChannelMode,
-    /// Internal VRC6 Pulse channel instance
-    pub vrc6_pulse: Vrc6Pulse,
-    /// Internal VRC6 Saw channel instance
-    pub vrc6_saw: Vrc6Saw,
 }
 
 impl Default for MidiHandler {
@@ -304,8 +306,6 @@ impl Default for MidiHandler {
             period_channel: None,
             pulse_phase_initialized: false,
             channel_mode: ChannelMode::Pulse,
-            vrc6_pulse: Vrc6Pulse::new(),
-            vrc6_saw: Vrc6Saw::new(),
         }
     }
 }
@@ -352,8 +352,6 @@ impl MidiHandler {
         self.reg_channel = None;
         self.period_channel = None;
         self.pulse_phase_initialized = false;
-        self.vrc6_pulse.reset();
-        self.vrc6_saw.reset();
         // channel_mode is intentionally NOT reset — it's a persistent host parameter.
         // Neither are the pitch-wheel/RPN fields: those describe the state of a
         // *channel-wide* MIDI controller that every voice is sounding, and this
@@ -406,7 +404,6 @@ impl MidiHandler {
             }
         }
     }
-
 
     /// Applies changed host parameter values without continuously overriding MIDI CC values.
     pub fn apply_host_automation(&mut self, controls: HostAutomationControls) {
@@ -760,69 +757,40 @@ impl MidiHandler {
 
     /// Write the current sequence/LFO state to the active APU channel.
     /// Returns master gain multiplier (CC11 Expression).
+    ///
+    /// `channel` must be the one [`Self::channel_mode`] selects — see
+    /// [`Self::handle_event`] for why the caller does the selecting.
     pub fn apply_current_modulation(
         &mut self,
-        pulse: &mut Pulse,
-        triangle: &mut Triangle,
-        seqs: &ActiveSequences,
-    ) -> f32 {
-        self.apply_current_modulation_with_noise(pulse, triangle, None, seqs)
-    }
-
-    pub fn apply_current_modulation_all(
-        &mut self,
-        pulse: &mut Pulse,
-        triangle: &mut Triangle,
-        mut noise: Option<&mut Noise>,
-        mut vrc6_pulse: Option<&mut Vrc6Pulse>,
-        mut vrc6_saw: Option<&mut Vrc6Saw>,
+        channel: &mut AnyChannel,
         seqs: &ActiveSequences,
     ) -> f32 {
         let master_gain = 1.0;
 
         // The host may have moved the Waveform parameter since the last block.
         self.sync_channel_mode();
+        debug_assert_eq!(
+            channel.mode(),
+            self.channel_mode,
+            "the channel handed in must match the selected waveform"
+        );
 
-        match self.channel_mode {
-            ChannelMode::Pulse => self.apply_pulse_modulation(pulse, seqs, master_gain),
-            ChannelMode::Triangle => self.apply_triangle_modulation(triangle, seqs, master_gain),
-            ChannelMode::Noise => {
-                if let Some(noise) = noise.as_deref_mut() {
-                    self.apply_noise_modulation(noise, seqs);
-                }
+        match channel {
+            AnyChannel::Pulse(pulse) => self.apply_pulse_modulation(pulse, seqs, master_gain),
+            AnyChannel::Triangle(triangle) => {
+                self.apply_triangle_modulation(triangle, seqs, master_gain)
+            }
+            AnyChannel::Noise(noise) => {
+                self.apply_noise_modulation(noise, seqs);
                 master_gain
             }
-            ChannelMode::Vrc6Pulse => {
-                if let Some(vp) = vrc6_pulse.as_deref_mut() {
-                    self.apply_vrc6_pulse_modulation(vp, seqs, master_gain)
-                } else {
-                    let mut vp = self.vrc6_pulse.clone();
-                    let res = self.apply_vrc6_pulse_modulation(&mut vp, seqs, master_gain);
-                    self.vrc6_pulse = vp;
-                    res
-                }
+            AnyChannel::Vrc6Pulse(vrc6_pulse) => {
+                self.apply_vrc6_pulse_modulation(vrc6_pulse, seqs, master_gain)
             }
-            ChannelMode::Vrc6Saw => {
-                if let Some(vs) = vrc6_saw.as_deref_mut() {
-                    self.apply_vrc6_saw_modulation(vs, seqs, master_gain)
-                } else {
-                    let mut vs = self.vrc6_saw.clone();
-                    let res = self.apply_vrc6_saw_modulation(&mut vs, seqs, master_gain);
-                    self.vrc6_saw = vs;
-                    res
-                }
+            AnyChannel::Vrc6Saw(vrc6_saw) => {
+                self.apply_vrc6_saw_modulation(vrc6_saw, seqs, master_gain)
             }
         }
-    }
-
-    pub fn apply_current_modulation_with_noise(
-        &mut self,
-        pulse: &mut Pulse,
-        triangle: &mut Triangle,
-        noise: Option<&mut Noise>,
-        seqs: &ActiveSequences,
-    ) -> f32 {
-        self.apply_current_modulation_all(pulse, triangle, noise, None, None, seqs)
     }
 
     fn apply_noise_modulation(&mut self, noise: &mut Noise, seqs: &ActiveSequences) {
@@ -845,7 +813,7 @@ impl MidiHandler {
 
     fn current_noise_arpeggio(&self, seqs: &ActiveSequences) -> i16 {
         if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
-            self.arp_seq_player.value() as i16
+            self.arp_seq_player.value()
         } else {
             0
         }
@@ -877,16 +845,18 @@ impl MidiHandler {
             15
         };
 
-        let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15) as u32;
+        let hardware_scaled = vol_val as u32 * self.hardware_volume as u32 / 15;
         let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
         let tremolo_sub = self.lfo.tremolo_volume_delta();
         let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
 
         // Turn off gate when release tail completes and volume reaches 0
-        if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
-            if self.vol_seq_player.state == SeqState::End && apu_vol == 0 {
-                self.gate = false;
-            }
+        if self.note_stack.is_empty()
+            && self.vol_seq_player.is_releasing
+            && self.vol_seq_player.state == SeqState::End
+            && apu_vol == 0
+        {
+            self.gate = false;
         }
 
         // 2. Duty Sequence (Fallback to 0 [12.5% square] if sequence is empty)
@@ -932,10 +902,12 @@ impl MidiHandler {
         let apu_vol = (vel_scaled_vol - tremolo_sub).clamp(0.0, 15.0);
 
         // Turn off gate when release tail completes and volume reaches 0
-        if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
-            if self.vol_seq_player.state == SeqState::End && apu_vol <= 0.0 {
-                self.gate = false;
-            }
+        if self.note_stack.is_empty()
+            && self.vol_seq_player.is_releasing
+            && self.vol_seq_player.state == SeqState::End
+            && apu_vol <= 0.0
+        {
+            self.gate = false;
         }
 
         triangle.set_volume_target(apu_vol);
@@ -971,15 +943,17 @@ impl MidiHandler {
             15
         };
 
-        let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15) as u32;
+        let hardware_scaled = vol_val as u32 * self.hardware_volume as u32 / 15;
         let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
         let tremolo_sub = self.lfo.tremolo_volume_delta();
         let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
 
-        if self.note_stack.is_empty() && self.vol_seq_player.is_releasing {
-            if self.vol_seq_player.state == SeqState::End && apu_vol == 0 {
-                self.gate = false;
-            }
+        if self.note_stack.is_empty()
+            && self.vol_seq_player.is_releasing
+            && self.vol_seq_player.state == SeqState::End
+            && apu_vol == 0
+        {
+            self.gate = false;
         }
 
         let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
@@ -1028,8 +1002,7 @@ impl MidiHandler {
                 63
             };
 
-            let hardware_scaled =
-                (vol_val as u32 * self.hardware_volume as u32 / 15).min(63) as u32;
+            let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15).min(63);
             let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
             let tremolo_sub = self.lfo.tremolo_volume_delta() * 4;
             let level = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 63);
@@ -1089,11 +1062,9 @@ impl MidiHandler {
         let hi_pitch_offset = (self.hi_pitch as i32) << 4;
         let vibrato_delta = self.lfo.vibrato_pitch_delta() as i32;
 
-        let bend_semitones =
-            self.pitch_slide as f32 / 8192.0 * self.pitch_slide_range as f32;
+        let bend_semitones = self.pitch_slide as f32 / 8192.0 * self.pitch_slide_range as f32;
         let bend_ratio = 2.0_f32.powf(bend_semitones / 12.0);
-        let slide_period = (((self.macro_period as f32 + 0.5) / bend_ratio) - 0.5).round()
-            as i32;
+        let slide_period = (((self.macro_period as f32 + 0.5) / bend_ratio) - 0.5).round() as i32;
 
         let final_period = (slide_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta)
             .clamp(0, self.max_macro_period());
@@ -1135,7 +1106,6 @@ impl MidiHandler {
             }
             self.prev_timer_hi = timer_hi_bits;
         }
-
     }
 
     /// Update sequence playback, LFO modulation, and write updated parameters to APU channels.
@@ -1143,14 +1113,13 @@ impl MidiHandler {
     #[cfg(test)]
     pub fn update_modulation(
         &mut self,
-        pulse: &mut Pulse,
-        triangle: &mut Triangle,
+        channel: &mut AnyChannel,
         seqs: &ActiveSequences,
         sample_rate: f32,
         num_samples: usize,
     ) -> f32 {
         self.advance_frame_samples(seqs, sample_rate, num_samples);
-        self.apply_current_modulation(pulse, triangle, seqs)
+        self.apply_current_modulation(channel, seqs)
     }
 
     /// Check if gate is currently active.

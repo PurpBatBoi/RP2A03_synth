@@ -48,7 +48,7 @@ pub enum VolMode {
     Steps64 = 1,
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
     ///
@@ -71,19 +71,6 @@ pub struct Sequence {
     /// loadable; they deserialize as [`VolMode::Steps16`].
     #[serde(default)]
     pub vol_mode: VolMode,
-}
-
-impl Default for Sequence {
-    fn default() -> Self {
-        Self {
-            values: Vec::new(),
-            loop_point: None,
-            release_point: None,
-            pitch_mode: PitchMode::default(),
-            arp_mode: ArpMode::default(),
-            vol_mode: VolMode::default(),
-        }
-    }
 }
 
 impl Clone for Sequence {
@@ -288,13 +275,12 @@ impl SequencePlayer {
     /// `UpdateInstrument`, so this does not call `clock_tick`.
     pub fn release(&mut self, seq: &Sequence) {
         self.is_releasing = true;
-        if matches!(self.state, SeqState::Running | SeqState::End) {
-            if let Some(rel) = seq.release_point {
-                if rel < seq.len() {
-                    self.pos = rel;
-                    self.state = SeqState::Running;
-                }
-            }
+        if matches!(self.state, SeqState::Running | SeqState::End)
+            && let Some(rel) = seq.release_point
+            && rel < seq.len()
+        {
+            self.pos = rel;
+            self.state = SeqState::Running;
         }
     }
 

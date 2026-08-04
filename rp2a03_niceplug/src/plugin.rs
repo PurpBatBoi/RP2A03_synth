@@ -188,8 +188,13 @@ impl Plugin for Rp2a03Plugin {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        if let Err(error) = self.voices.set_sample_rate(buffer_config.sample_rate) {
+            // Refusing activation is the only honest answer: rendering with a
+            // stale resampler factor would detune every voice silently.
+            nice_error!("cannot activate at this sample rate: {error}");
+            return false;
+        }
         self.sample_rate = buffer_config.sample_rate;
-        self.voices.set_sample_rate(buffer_config.sample_rate);
         // Sized here so `process` only ever resizes within existing capacity.
         self.mono_buf
             .resize(buffer_config.max_buffer_size as usize, 0.0);
@@ -214,8 +219,13 @@ impl Plugin for Rp2a03Plugin {
         let channel_mode = self.params.channel_mode();
         self.voices.set_channel_mode(channel_mode);
         // Sync editor-visible state so the GUI widgets reflect the current values.
-        {
-            let mut data = self.params.shared_sequences.lock();
+        //
+        // `try_lock`, never `lock`: the editor holds this same mutex for the
+        // whole egui frame it spends drawing the sequence editor, so blocking
+        // here would stall the audio thread behind a UI repaint. Skipping is
+        // free — this is a one-way mirror of parameters the GUI re-reads every
+        // repaint anyway, so the next block publishes the same values.
+        if let Some(mut data) = self.params.shared_sequences.try_lock() {
             self.params.publish_to_gui(&mut data, channel_mode);
         }
 
@@ -224,12 +234,7 @@ impl Plugin for Rp2a03Plugin {
         self.voices.retire_above(active_voice_count);
 
         let mut events = std::iter::from_fn(|| context.next_event());
-        self.render_block(
-            num_samples,
-            &mut events,
-            active_voice_count,
-            host_controls,
-        );
+        self.render_block(num_samples, &mut events, active_voice_count, host_controls);
 
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
             for out_sample in channel_samples {

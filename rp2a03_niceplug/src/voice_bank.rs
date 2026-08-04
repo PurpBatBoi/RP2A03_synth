@@ -7,6 +7,7 @@
 
 use nice_plug::prelude::*;
 use rp2a03_common::{ActiveSequences, ChannelMode, HostAutomationControls, SequenceReload};
+use rp2a03_core::blip_buf::InvalidRates;
 
 use crate::voice::Voice;
 
@@ -46,10 +47,26 @@ impl VoiceBank {
         &self.voices[0]
     }
 
-    pub(crate) fn set_sample_rate(&mut self, sample_rate: f32) {
+    /// Retunes every voice's resampler.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidRates`] if the host's sample rate is not representable.
+    /// Voices retuned before the failure keep the new rate; the caller is
+    /// expected to refuse activation, so the bank is not left in use.
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: f32) -> Result<(), InvalidRates> {
         for voice in &mut self.voices {
-            voice.set_sample_rate(sample_rate);
+            voice.set_sample_rate(sample_rate)?;
         }
+        Ok(())
+    }
+
+    /// Largest block one `render_segment` call may cover.
+    ///
+    /// Every voice shares the same resampler configuration, so voice 0 speaks
+    /// for the bank — the same voice `render_segment` reads `clocks_needed` from.
+    fn frame_capacity(&self) -> usize {
+        self.voices[0].frame_capacity()
     }
 
     /// Full reset of every voice, as performed by `initialize` and `reset`.
@@ -165,7 +182,9 @@ impl VoiceBank {
                 .and_then(|index| self.voices[index].handle_event(event, seqs)),
             // Pitch bend and CC are channel-wide, so every voice gets them —
             // otherwise a chord would bend one note at a time.
-            NoteEvent::Choke { .. } | NoteEvent::MidiCC { .. } | NoteEvent::MidiPitchBend { .. } => {
+            NoteEvent::Choke { .. }
+            | NoteEvent::MidiCC { .. }
+            | NoteEvent::MidiPitchBend { .. } => {
                 let mut program = None;
                 for voice in &mut self.voices {
                     program = voice.handle_event(event, seqs).or(program);
@@ -197,14 +216,23 @@ impl VoiceBank {
                 self.master_gains.push(voice.apply_current_modulation(seqs));
                 if voice.gate() {
                     any_gated = true;
-                    segment_len = segment_len
-                        .min(voice.midi_handler.samples_until_next_frame(sample_rate));
+                    segment_len =
+                        segment_len.min(voice.midi_handler.samples_until_next_frame(sample_rate));
                 }
             }
 
             if !any_gated {
                 segment_len = output.len() - rendered;
             }
+
+            // A BlipBuf frame is capped by `BlipBuf::capacity()`, and nothing
+            // above bounds the segment by it: an idle bank takes the whole
+            // block, and a low Step Time makes even a gated voice's frame
+            // interval longer than any realistic buffer. Hosts are free to hand
+            // us blocks past that cap (8192 is a normal ASIO size, and offline
+            // bounces go higher), so clamp last — this is what kept
+            // `clocks_needed` from asserting on the audio thread.
+            segment_len = segment_len.min(self.frame_capacity());
 
             self.render_segment(
                 &mut output[rendered..rendered + segment_len],
@@ -230,20 +258,20 @@ impl VoiceBank {
 
         let clocks_needed = self.voices[0].blip.clocks_needed(sample_count);
 
-        for clock in 0..clocks_needed {
-            for (voice, gain) in self.voices[..active_voice_count]
-                .iter_mut()
-                .zip(self.master_gains.iter().copied())
-            {
+        // Voice-major, not clock-major: voices never interact within a segment,
+        // so this is bit-identical output while keeping one voice's channel
+        // state and BlipBuf resident instead of cycling all eight per clock.
+        for (voice, gain) in self.voices[..active_voice_count]
+            .iter_mut()
+            .zip(self.master_gains.iter().copied())
+        {
+            for clock in 0..clocks_needed {
                 let channel_output = voice.clock_channel_output();
                 let delta = voice.advance_output(channel_output, gain);
                 if delta != 0 {
                     voice.blip.add_delta(clock, delta);
                 }
             }
-        }
-
-        for voice in &mut self.voices[..active_voice_count] {
             voice.blip.end_frame(clocks_needed);
         }
 

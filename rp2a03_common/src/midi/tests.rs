@@ -5,9 +5,9 @@ use super::handler::AnyChannel;
 use super::*;
 use nice_plug::prelude::*;
 use rp2a03_core::NTSC_CPU_CLOCK;
+use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
-use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, Sequence, VolMode};
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
 use rp2a03_core::vrc6_saw::Vrc6Saw;
@@ -119,12 +119,11 @@ fn portamento_moves_in_the_correct_direction() {
 fn triangle_channel_produces_non_zero_output_on_note_on() {
     let mut handler = MidiHandler::new();
     handler.channel_mode = ChannelMode::Triangle;
-    let mut pulse = Pulse::new(PulseChannel::One);
     let mut triangle = Triangle::new();
     let seqs = default_seqs();
 
     handler.note_on(60, 127, &mut AnyChannel::Triangle(&mut triangle), &seqs);
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Triangle(&mut triangle), &seqs, 44100.0, 1);
 
     // Length counter reload occurs on triangle.clock()
     triangle.clock();
@@ -151,7 +150,6 @@ fn triangle_channel_produces_non_zero_output_on_note_on() {
 fn triangle_custom_volume_steps_are_slewed_at_the_apu_clock_rate() {
     let mut handler = MidiHandler::new();
     handler.channel_mode = ChannelMode::Triangle;
-    let mut pulse = Pulse::new(PulseChannel::One);
     let mut triangle = Triangle::new();
     let seqs = ActiveSequences {
         vol_seq: Sequence::parse("15 15 15 14 11 4 1"),
@@ -160,13 +158,13 @@ fn triangle_custom_volume_steps_are_slewed_at_the_apu_clock_rate() {
     };
 
     handler.note_on(60, 127, &mut AnyChannel::Triangle(&mut triangle), &seqs);
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44_100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Triangle(&mut triangle), &seqs, 44_100.0, 1);
     triangle.clock();
 
     // Advance through the three initial envelope frames until the target
     // changes from 15 to 14. The audible volume must not jump at that frame.
     handler.advance_frame_samples(&seqs, 44_100.0, 735 * 3);
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44_100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Triangle(&mut triangle), &seqs, 44_100.0, 1);
     let volume_at_boundary = triangle.volume();
     assert_eq!(volume_at_boundary, 15.0);
 
@@ -179,7 +177,6 @@ fn triangle_custom_volume_steps_are_slewed_at_the_apu_clock_rate() {
 fn program_change_returns_its_sequence_index() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
     let sequences = default_seqs();
 
     let index = handler.handle_event(
@@ -188,8 +185,7 @@ fn program_change_returns_its_sequence_index() {
             channel: 0,
             program: 42,
         },
-        &mut pulse,
-        &mut triangle,
+        &mut AnyChannel::Pulse(&mut pulse),
         &sequences,
     );
 
@@ -200,7 +196,6 @@ fn program_change_returns_its_sequence_index() {
 fn test_relative_and_absolute_pitch_modes() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let base = test_base_period();
 
@@ -218,14 +213,14 @@ fn test_relative_and_absolute_pitch_modes() {
     assert_eq!(handler.macro_period, base + 1);
 
     // dn SETTING_PITCH_RELATIVE: SetPeriod(GetPeriod() + Value) per tick
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs_rel, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs_rel, 60.0, 1);
     assert_eq!(handler.macro_period, base + 3); // +2
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs_rel, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs_rel, 60.0, 1);
     assert_eq!(handler.macro_period, base + 6); // +3
 
     // Sequence ended: dn END/HALT states process nothing, so it must hold
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs_rel, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs_rel, 60.0, 1);
     assert_eq!(handler.macro_period, base + 6);
 
     pitch_seq.pitch_mode = PitchMode::Absolute;
@@ -239,13 +234,13 @@ fn test_relative_and_absolute_pitch_modes() {
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs_abs);
     assert_eq!(handler.macro_period, base + 1);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs_abs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs_abs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 2);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs_abs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs_abs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 3);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs_abs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs_abs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 3); // ended: sticky
 }
 
@@ -253,7 +248,6 @@ fn test_relative_and_absolute_pitch_modes() {
 fn hipitch_always_accumulates_regardless_of_pitch_mode() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let base = test_base_period();
 
@@ -268,13 +262,13 @@ fn hipitch_always_accumulates_regardless_of_pitch_mode() {
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     assert_eq!(handler.macro_period, base + 16); // step 0: 1 << 4
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 16 + 32); // step 1: 2 << 4
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 48 + 48); // step 2: 3 << 4
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 96); // ended: sticky
 }
 
@@ -282,7 +276,6 @@ fn hipitch_always_accumulates_regardless_of_pitch_mode() {
 fn absolute_pitch_replaces_arp_and_prior_accumulation_each_tick() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let base = test_base_period();
 
@@ -308,12 +301,12 @@ fn absolute_pitch_replaces_arp_and_prior_accumulation_each_tick() {
     // replaces with base + 0, then hi-pitch adds 16.
     assert_eq!(handler.macro_period, base + 16);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     // tick: arp replaces with period(76), absolute pitch replaces with base + 0,
     // hi-pitch adds 2 << 4
     assert_eq!(handler.macro_period, base + 32);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     // hi-pitch sequence ended (2 items): keeps accumulating nothing; absolute pitch
     // still rewrites the period to base + 0 each tick
     assert_eq!(handler.macro_period, base);
@@ -323,7 +316,6 @@ fn absolute_pitch_replaces_arp_and_prior_accumulation_each_tick() {
 fn macro_period_clamps_to_0x7ff_on_every_tick_like_dn_setperiod() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let base = test_base_period();
     assert!(
@@ -342,17 +334,17 @@ fn macro_period_clamps_to_0x7ff_on_every_tick_like_dn_setperiod() {
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs); // base + 2032 -> clamped
     assert_eq!(handler.macro_period, 0x7FF);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1); // +2032 again -> clamped
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1); // +2032 again -> clamped
     assert_eq!(handler.macro_period, 0x7FF);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1); // -2032
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1); // -2032
     assert_eq!(handler.macro_period, 0x7FF - 2032);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1); // -2032 again -> clamped at 0
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1); // -2032 again -> clamped at 0
     assert_eq!(handler.macro_period, 0);
 
     // Ended: holds the clamped value rather than unwinding back toward `base`
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, 0);
 }
 
@@ -360,7 +352,6 @@ fn macro_period_clamps_to_0x7ff_on_every_tick_like_dn_setperiod() {
 fn arpeggio_replaces_working_period_each_tick_wiping_relative_pitch_accumulation() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     // dn quirk preserved for 1:1: while an absolute arpeggio sequence runs, its
     // per-tick SetPeriod discards the relative pitch accumulation every frame.
@@ -378,11 +369,11 @@ fn arpeggio_replaces_working_period_each_tick_wiping_relative_pitch_accumulation
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     assert_eq!(handler.macro_period, test_base_period() + 1); // arp 0, pitch +1
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     let period_arp4 = freq_to_period(midi_note_to_freq(76)) as i32;
     assert_eq!(handler.macro_period, period_arp4 + 2); // arp replaces, then +2
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     let period_arp7 = freq_to_period(midi_note_to_freq(79)) as i32;
     assert_eq!(handler.macro_period, period_arp7 + 3); // NOT accumulating across ticks
 }
@@ -391,7 +382,6 @@ fn arpeggio_replaces_working_period_each_tick_wiping_relative_pitch_accumulation
 fn arpeggio_relative_mode_mutates_active_note_accumulating() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let mut arp_seq = Sequence::parse("2 3"); // +2 semitones, then +3 semitones
     arp_seq.arp_mode = ArpMode::Relative;
@@ -407,7 +397,7 @@ fn arpeggio_relative_mode_mutates_active_note_accumulating() {
     assert_eq!(handler.active_note, 62);
 
     // Tick 1: step 1 is +3 -> active_note becomes 65.
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.active_note, 65);
 }
 
@@ -439,7 +429,6 @@ fn test_famitracker_reference_key_pitch_frequencies() {
 fn test_all_envelope_editor_timings_1to1_famitracker() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let vol_seq = Sequence::parse("15 10 5");
     let arp_seq = Sequence::parse("0 4 7");
@@ -474,7 +463,7 @@ fn test_all_envelope_editor_timings_1to1_famitracker() {
     assert_eq!(handler.macro_period, test_base_period() + 1);
 
     // Frame 1 tick (16.6ms): Step 1 evaluated
-    handler.update_modulation(&mut pulse, &mut triangle, &active_seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &active_seqs, 60.0, 1);
 
     assert_eq!(handler.vol_seq_player.value(), 10);
     assert_eq!(handler.arp_seq_player.value(), 4);
@@ -488,7 +477,7 @@ fn test_all_envelope_editor_timings_1to1_famitracker() {
     assert_eq!(handler.macro_period, period_arp4 + 2 + 16);
 
     // Frame 2 tick (33.3ms): Step 2 evaluated
-    handler.update_modulation(&mut pulse, &mut triangle, &active_seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &active_seqs, 60.0, 1);
 
     assert_eq!(handler.vol_seq_player.value(), 5);
     assert_eq!(handler.arp_seq_player.value(), 7);
@@ -500,7 +489,7 @@ fn test_all_envelope_editor_timings_1to1_famitracker() {
     assert_eq!(handler.macro_period, period_arp7 + 3 + 32);
 
     // Frame 3 tick: all sequences finished (3 items each); macro period holds
-    handler.update_modulation(&mut pulse, &mut triangle, &active_seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &active_seqs, 60.0, 1);
     assert_eq!(handler.macro_period, period_arp7 + 3 + 32);
 }
 
@@ -598,7 +587,6 @@ fn note_off_release_processes_release_step_on_the_release_tick() {
 fn note_off_release_processes_pitch_release_step_on_the_release_tick() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let mut pitch_seq = Sequence::parse("1 / 5");
     pitch_seq.pitch_mode = PitchMode::Relative;
@@ -622,11 +610,11 @@ fn note_off_release_processes_pitch_release_step_on_the_release_tick() {
     assert_eq!(handler.macro_period, base + 1 + 5);
     assert_eq!(handler.pitch_seq_player.state, SeqState::End);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 1 + 5);
 
     // Release tail finished: END processes nothing more
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.macro_period, base + 6);
 }
 
@@ -634,12 +622,11 @@ fn note_off_release_processes_pitch_release_step_on_the_release_tick() {
 fn triangle_timer_is_halved_for_octave_parity_with_pulse() {
     let mut handler = MidiHandler::new();
     handler.channel_mode = ChannelMode::Triangle;
-    let mut pulse = Pulse::new(PulseChannel::One);
     let mut triangle = Triangle::new();
     let seqs = default_seqs();
 
     handler.note_on(60, 127, &mut AnyChannel::Triangle(&mut triangle), &seqs);
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Triangle(&mut triangle), &seqs, 44100.0, 1);
 
     // Pulse-domain period for note 72 (C4 + the default +12 octave offset) is 213.
     // The triangle sequencer runs at twice the pulse's clock ratio, so matching
@@ -665,7 +652,7 @@ fn waveform_switch_rewrites_registers_even_when_timer_bytes_match_the_cache() {
     // MIDI 48 on the triangle → note 60 → pulse-domain period 427, compensated to
     // (427 - 1) / 2 = 213 → low byte 0xD5 now sits in the cache against TRIANGLE state.
     handler.note_on(48, 127, &mut AnyChannel::Triangle(&mut triangle), &seqs);
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Triangle(&mut triangle), &seqs, 44100.0, 1);
     assert_eq!(handler.prev_timer_lo, 213);
 
     // Switch to pulse and play MIDI 60 → also period 213, low byte 0xD5 — equal to
@@ -675,7 +662,7 @@ fn waveform_switch_rewrites_registers_even_when_timer_bytes_match_the_cache() {
     handler.channel_mode = ChannelMode::Pulse;
 
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 44100.0, 1);
     assert!(
         !pulse.is_muted(),
         "pulse period must actually be written after a waveform switch"
@@ -693,7 +680,6 @@ fn releasing_top_note_returns_to_previously_held_note() {
     // The core scenario: hold C5, press D5, release D5 → should return to C5.
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let vol_seq = Sequence::parse("15 12 9 6");
     let seqs = ActiveSequences {
@@ -708,7 +694,7 @@ fn releasing_top_note_returns_to_previously_held_note() {
     assert_eq!(handler.vol_seq_player.value(), 15);
 
     // Advance a tick to move sequences forward
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.vol_seq_player.value(), 12);
 
     // Press D5 (MIDI 74) while still holding C5
@@ -721,7 +707,7 @@ fn releasing_top_note_returns_to_previously_held_note() {
     );
 
     // Let the newly active note advance before releasing it.
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.vol_seq_player.value(), 12);
 
     // Release D5 while C5 is still held
@@ -835,8 +821,7 @@ fn releasing_top_note_preserves_pitch_sequence_step_for_held_note() {
     assert_eq!(handler.macro_period, base_d5 + 1); // pitch step 0 = 1
 
     // Advance to the next pitch step while D5 is active.
-    let mut triangle = Triangle::new();
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.pitch_seq_player.value(), 2);
 
     // Release D5 → should retrigger for C5
@@ -946,7 +931,6 @@ fn note_off_for_another_voice_does_not_retrigger_this_voice() {
 fn hi_pitch_host_automation_offsets_period() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
     let seqs = default_seqs();
 
     // Default hi_pitch is 0
@@ -961,7 +945,7 @@ fn hi_pitch_host_automation_offsets_period() {
     // Trigger note and update modulation
     handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     let base_period = handler.macro_period;
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 44100.0, 1);
 
     // Final timer written should be base_period - (2 << 4) = base_period - 32
     let expected_period = (base_period - 32) as u16;
@@ -973,7 +957,6 @@ fn hi_pitch_host_automation_offsets_period() {
 fn pitch_slide_is_independent_and_centered() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
     let seqs = default_seqs();
 
     handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
@@ -983,7 +966,7 @@ fn pitch_slide_is_independent_and_centered() {
         pitch_slide: 0,
         ..HostAutomationControls::default()
     });
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 44100.0, 1);
     let centered_period = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
     assert_eq!(centered_period, base_period as u16);
 
@@ -993,16 +976,19 @@ fn pitch_slide_is_independent_and_centered() {
         pitch_slide: 0,
         ..HostAutomationControls::default()
     });
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 44100.0, 1);
     let period_with_existing_controls =
         ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
-    assert_eq!(period_with_existing_controls, (base_period - 7 - (2 << 4)) as u16);
+    assert_eq!(
+        period_with_existing_controls,
+        (base_period - 7 - (2 << 4)) as u16
+    );
 
     handler.apply_host_automation(HostAutomationControls {
         pitch_slide: 8191,
         ..HostAutomationControls::default()
     });
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 44100.0, 1);
     let raised_period = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
     assert!(raised_period < base_period as u16);
 }
@@ -1011,7 +997,6 @@ fn pitch_slide_is_independent_and_centered() {
 fn pitch_slide_range_is_host_adjustable_up_to_two_octaves() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
     let seqs = default_seqs();
 
     handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
@@ -1023,7 +1008,7 @@ fn pitch_slide_range_is_host_adjustable_up_to_two_octaves() {
         ..HostAutomationControls::default()
     });
     assert_eq!(handler.pitch_slide_range, 24);
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 44100.0, 1);
     let raised_period = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
     assert!(raised_period <= base_period as u16 / 4);
 
@@ -1062,18 +1047,9 @@ fn saw_rate_for(vol_text: &str, vol_mode: VolMode, duty_text: Option<&str>) -> u
     handler.hardware_volume = 15;
 
     let mut saw = Vrc6Saw::new();
-    let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     handler.note_on(60, 127, &mut AnyChannel::Vrc6Saw(&mut saw), &seqs);
-    handler.apply_current_modulation_all(
-        &mut pulse,
-        &mut triangle,
-        None,
-        None,
-        Some(&mut saw),
-        &seqs,
-    );
+    handler.apply_current_modulation(&mut AnyChannel::Vrc6Saw(&mut saw), &seqs);
 
     saw.rate()
 }
@@ -1113,8 +1089,6 @@ fn saw_duty_release_alone_still_clears_the_gate() {
     handler.hardware_volume = 15;
 
     let mut saw = Vrc6Saw::new();
-    let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     handler.note_on(60, 127, &mut AnyChannel::Vrc6Saw(&mut saw), &seqs);
     assert!(handler.gate());
@@ -1122,14 +1096,7 @@ fn saw_duty_release_alone_still_clears_the_gate() {
     handler.note_off(60, &mut AnyChannel::Vrc6Saw(&mut saw), &seqs);
 
     for _ in 0..8 {
-        handler.apply_current_modulation_all(
-            &mut pulse,
-            &mut triangle,
-            None,
-            None,
-            Some(&mut saw),
-            &seqs,
-        );
+        handler.apply_current_modulation(&mut AnyChannel::Vrc6Saw(&mut saw), &seqs);
         handler.clock_sequences_one_frame(&seqs);
     }
 
@@ -1159,11 +1126,10 @@ fn switching_slots_applies_the_new_duty_to_a_finished_envelope() {
     // outgoing slot's value indefinitely.
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let slot_a = duty_slot("2");
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &slot_a);
-    handler.update_modulation(&mut pulse, &mut triangle, &slot_a, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &slot_a, 60.0, 1);
 
     assert_eq!(handler.duty_seq_player.value(), 2);
     assert_eq!(handler.duty_seq_player.state, SeqState::End);
@@ -1182,7 +1148,7 @@ fn switching_slots_applies_the_new_duty_to_a_finished_envelope() {
     assert_eq!(handler.duty_seq_player.state, SeqState::Running);
     assert_eq!(handler.duty_seq_player.pos, 0);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &slot_b, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &slot_b, 60.0, 1);
 
     assert_eq!(handler.duty_seq_player.value(), 1);
     assert_eq!(handler.prev_ctrl >> 6, 1, "slot B duty must reach $4000");
@@ -1194,7 +1160,6 @@ fn switching_slots_leaves_an_unchanged_envelope_running() {
     // instrument that reuses the same envelope does not restart it mid-note.
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let seqs = ActiveSequences {
         duty_seq: Sequence::parse("0 1 2 3"),
@@ -1203,13 +1168,13 @@ fn switching_slots_leaves_an_unchanged_envelope_running() {
     };
 
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &seqs);
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(handler.duty_seq_player.value(), 1);
 
     // Same duty envelope in the new slot: `duty` stays false.
     handler.reload_sequences(&seqs, SequenceReload::default());
 
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 60.0, 1);
     assert_eq!(
         handler.duty_seq_player.value(),
         2,
@@ -1224,11 +1189,10 @@ fn switching_to_a_slot_with_the_envelope_disabled_clears_the_player() {
     // the previous slot's held value.
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
 
     let slot_a = duty_slot("3");
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &slot_a);
-    handler.update_modulation(&mut pulse, &mut triangle, &slot_a, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &slot_a, 60.0, 1);
     assert_eq!(handler.duty_seq_player.value(), 3);
 
     // Identical content, but the slot has the duty editor switched off.
@@ -1241,7 +1205,7 @@ fn switching_to_a_slot_with_the_envelope_disabled_clears_the_player() {
     assert_eq!(handler.duty_seq_player.state, SeqState::Disabled);
     assert_eq!(handler.duty_seq_player.value(), 0);
 
-    handler.update_modulation(&mut pulse, &mut triangle, &slot_b, 60.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &slot_b, 60.0, 1);
     assert_eq!(
         handler.prev_ctrl >> 6,
         0,
@@ -1259,21 +1223,13 @@ fn waveform_switch_forces_a_control_byte_that_collides_with_the_cache() {
     // as "unchanged" and drops it — the channel stays at its reset volume.
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
     let mut vrc6 = Vrc6Pulse::new();
     vrc6.set_enabled(true);
 
     // No duty sequence: the pulse falls back to duty 0.
     let pulse_seqs = default_seqs();
     handler.note_on(60, 127, &mut AnyChannel::Pulse(&mut pulse), &pulse_seqs);
-    handler.apply_current_modulation_all(
-        &mut pulse,
-        &mut triangle,
-        None,
-        Some(&mut vrc6),
-        None,
-        &pulse_seqs,
-    );
+    handler.apply_current_modulation(&mut AnyChannel::Pulse(&mut pulse), &pulse_seqs);
     assert_eq!(handler.prev_ctrl, 0x3F, "pulse duty 0 at full volume");
 
     // The host moves the Waveform parameter under the sounding note.
@@ -1291,16 +1247,12 @@ fn waveform_switch_forces_a_control_byte_that_collides_with_the_cache() {
         },
     );
     handler.clock_sequences_one_frame(&vrc6_seqs);
-    handler.apply_current_modulation_all(
-        &mut pulse,
-        &mut triangle,
-        None,
-        Some(&mut vrc6),
-        None,
-        &vrc6_seqs,
-    );
+    handler.apply_current_modulation(&mut AnyChannel::Vrc6Pulse(&mut vrc6), &vrc6_seqs);
 
-    assert_eq!(handler.prev_ctrl, 0x3F, "the two encodings really do collide");
+    assert_eq!(
+        handler.prev_ctrl, 0x3F,
+        "the two encodings really do collide"
+    );
     assert_eq!(
         vrc6.volume(),
         15,
@@ -1319,7 +1271,6 @@ fn waveform_switch_rebases_the_period_onto_the_new_channel_domain() {
 
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
     let mut saw = Vrc6Saw::new();
     saw.set_enabled(true);
     let seqs = default_seqs();
@@ -1331,14 +1282,7 @@ fn waveform_switch_rebases_the_period_onto_the_new_channel_domain() {
     handler.macro_period += 10;
 
     handler.channel_mode = ChannelMode::Vrc6Saw;
-    handler.apply_current_modulation_all(
-        &mut pulse,
-        &mut triangle,
-        None,
-        None,
-        Some(&mut saw),
-        &seqs,
-    );
+    handler.apply_current_modulation(&mut AnyChannel::Vrc6Saw(&mut saw), &seqs);
 
     let saw_base = freq_to_vrc6_saw_period(midi_note_to_freq(72)) as i32;
     assert_ne!(saw_base, test_base_period(), "test needs differing domains");
@@ -1400,21 +1344,26 @@ fn pitch_wheel_drives_pitch_slide() {
 fn pitch_wheel_bends_the_written_period() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
     let seqs = default_seqs();
 
     handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
     let base_period = handler.macro_period;
 
     handler.pitch_bend(wheel(16383));
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 44100.0, 1);
     let raised = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
-    assert!(raised < base_period as u16, "wheel up must shorten the period");
+    assert!(
+        raised < base_period as u16,
+        "wheel up must shorten the period"
+    );
 
     handler.pitch_bend(wheel(0));
-    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    handler.update_modulation(&mut AnyChannel::Pulse(&mut pulse), &seqs, 44100.0, 1);
     let lowered = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
-    assert!(lowered > base_period as u16, "wheel down must lengthen the period");
+    assert!(
+        lowered > base_period as u16,
+        "wheel down must lengthen the period"
+    );
 }
 
 #[test]
@@ -1458,7 +1407,10 @@ fn wheel_survives_the_reseed_a_stolen_voice_gets() {
     handler.reset();
     handler.apply_host_automation(HostAutomationControls::default());
 
-    assert_eq!(handler.pitch_slide, 8191, "recycled voice must keep the held bend");
+    assert_eq!(
+        handler.pitch_slide, 8191,
+        "recycled voice must keep the held bend"
+    );
     assert_eq!(handler.pitch_slide_range, 7);
 }
 
@@ -1524,7 +1476,6 @@ fn reset_all_controllers_returns_the_pitch_controls_to_the_host() {
 fn pitch_events_route_through_handle_event() {
     let mut handler = MidiHandler::new();
     let mut pulse = Pulse::new(PulseChannel::One);
-    let mut triangle = Triangle::new();
     let seqs = default_seqs();
 
     handler.handle_event::<()>(
@@ -1533,8 +1484,7 @@ fn pitch_events_route_through_handle_event() {
             channel: 0,
             value: wheel(0),
         },
-        &mut pulse,
-        &mut triangle,
+        &mut AnyChannel::Pulse(&mut pulse),
         &seqs,
     );
     assert_eq!(handler.pitch_slide, -8192);
@@ -1551,8 +1501,7 @@ fn pitch_events_route_through_handle_event() {
                 cc,
                 value,
             },
-            &mut pulse,
-            &mut triangle,
+            &mut AnyChannel::Pulse(&mut pulse),
             &seqs,
         );
     }

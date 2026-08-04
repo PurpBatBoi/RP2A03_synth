@@ -19,6 +19,38 @@ resolver = "2"
 
 [workspace.package]
 version = "0.0.7-Alpha"
+# Let-chains in the 2024 edition (used throughout the GUI/MIDI code) and
+# `u32::is_multiple_of` (voice.rs allocation ramp) are the floor.
+rust-version = "1.88"
+
+# Lints are configured once here and inherited by every member via
+# `[lints] workspace = true`, so a warning cannot be enabled in one crate and
+# silently missing in another.
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = "warn"
+
+# The audio path is a per-sample inner loop; the defaults (no LTO,
+# codegen-units = 16) leave real headroom on the table. `panic` is deliberately
+# left at the default `unwind`: this crate ships as a cdylib inside a host
+# process, so `abort` would take the whole DAW down with it.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[profile.bench]
+inherits = "release"
+debug = true
+strip = false
 
 [workspace.dependencies]
 egui = "0.34.1"
