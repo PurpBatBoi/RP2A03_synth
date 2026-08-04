@@ -21,9 +21,6 @@ like a normal synth while the audio math underneath stays somewhat hardware-accu
 
 # Synth Showcase
 ### Cover of Snail House's SUNNY by [recme](https://github.com/recm3)
-[![Watch the demo](readme_assets/demo-video-01-poster.jpg)](readme_assets\demo-video-01.mp4)
-
-▶ **[Watch the demo with sound](readme_assets/demo-video-01.webm)** (52s)
 
 
 ## Features
