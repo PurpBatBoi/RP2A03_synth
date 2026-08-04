@@ -20,9 +20,9 @@ points) plus software vibrato/tremolo LFOs, so the instrument plays and automate
 like a normal synth while the audio math underneath stays somewhat hardware-accurate.
 
 # Synth Showcase
-### Cover of Snail House's SUNNY by [Recme](https://github.com/recm3)
+### Cover of Snail House's SUNNY by [recme](https://github.com/recm3)
 <video width="100%" height="480" controls style="margin: -3em 0 0 0; display: block;">
-  <source src="readme_assets/demo-video-01.mp4" type="video/mp4">
+  <source src="readme_assets/demo-video-01.webm" type="video/mp4">
   Your browser does not support the video tag.
 </video>
 
