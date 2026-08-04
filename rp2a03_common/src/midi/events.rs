@@ -2,7 +2,9 @@
 //! MIDI/NoteEvent ingestion: NoteOn/NoteOff handling, CC dispatch, and the
 //! trigger-time macro-period computation performed on NoteOn.
 
-use super::handler::{AnyChannel, MidiHandler};
+use super::handler::{
+    AnyChannel, MAX_PITCH_SLIDE_RANGE, MidiHandler, RPN_NULL, RPN_PITCH_BEND_SENSITIVITY,
+};
 use super::types::{ActiveSequences, ChannelMode};
 use nice_plug::prelude::*;
 use rp2a03_core::apu_noise::Noise;
@@ -11,6 +13,13 @@ use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
 use rp2a03_core::vrc6_saw::Vrc6Saw;
 use rp2a03_core::sequencer::{ArpMode, PitchMode};
+
+/// Raw 14-bit pitch-bend value at the wheel's rest position.
+const PITCH_BEND_CENTER: i32 = 1 << 13;
+
+/// Largest raw 14-bit pitch-bend value. The wrapper normalizes the wheel by
+/// dividing by exactly this, so multiplying back recovers the original integer.
+const PITCH_BEND_MAX: f32 = ((1u32 << 14) - 1) as f32;
 
 impl MidiHandler {
     /// Process an incoming MIDI / Note event.
@@ -49,6 +58,21 @@ impl MidiHandler {
         // before a note event reads or rewrites `macro_period`.
         self.sync_channel_mode();
 
+        // Channel-wide controllers touch no APU register directly — they only move
+        // handler state that the next modulation pass folds into the period — so
+        // they are taken before a channel is selected below.
+        match event {
+            NoteEvent::MidiPitchBend { value, .. } => {
+                self.pitch_bend(*value);
+                return None;
+            }
+            NoteEvent::MidiCC { cc, value, .. } => {
+                self.control_change(*cc, *value);
+                return None;
+            }
+            _ => {}
+        }
+
         let mode = self.channel_mode;
         let dispatch = |handler: &mut MidiHandler, mut channel: AnyChannel| match event {
             NoteEvent::NoteOn { note, velocity, .. } => {
@@ -60,7 +84,6 @@ impl MidiHandler {
                 handler.note_off(*note, &mut channel, seqs);
                 None
             }
-            NoteEvent::MidiCC { .. } => None,
             NoteEvent::MidiProgramChange { program, .. } => Some(*program as usize),
             _ => None,
         };
@@ -87,6 +110,62 @@ impl MidiHandler {
         }
     }
 
+
+    /// Drive `pitch_slide` from the controller's pitch wheel.
+    ///
+    /// `value` is the wrapper's normalized bend, `raw_14_bit / 16383`. Scaling it
+    /// back up and subtracting the center recovers the wheel's exact integer
+    /// position, so a centered wheel lands on 0 rather than a rounding artifact
+    /// one period step off.
+    ///
+    /// The wheel keeps ownership of the control until the host parameter moves;
+    /// see `MidiHandler::midi_pitch_bend`.
+    pub fn pitch_bend(&mut self, value: f32) {
+        let raw = (value.clamp(0.0, 1.0) * PITCH_BEND_MAX).round() as i32;
+        let bend = (raw - PITCH_BEND_CENTER).clamp(-8192, 8191) as i16;
+        self.midi_pitch_bend = Some(bend);
+        self.pitch_slide = bend;
+    }
+
+    /// Handle a control change.
+    ///
+    /// The only CCs the synth currently claims are the ones that make up RPN 0
+    /// (Pitch Bend Sensitivity), which sets `pitch_slide_range`. The wrapper
+    /// forwards raw CCs without assembling multi-message RPNs, so the CC 101 /
+    /// CC 100 selection is tracked here and Data Entry is only honored while
+    /// RPN 0 is the selected parameter.
+    pub fn control_change(&mut self, cc: u8, value: f32) {
+        let raw = (value.clamp(0.0, 1.0) * 127.0).round() as u8;
+
+        match cc {
+            control_change::REGISTERED_PARAMETER_NUMBER_MSB => self.selected_rpn.0 = raw,
+            control_change::REGISTERED_PARAMETER_NUMBER_LSB => self.selected_rpn.1 = raw,
+            control_change::DATA_ENTRY_MSB if self.selected_rpn == RPN_PITCH_BEND_SENSITIVITY => {
+                let range = raw.min(MAX_PITCH_SLIDE_RANGE);
+                self.midi_pitch_bend_range = Some(range);
+                self.pitch_slide_range = range;
+            }
+            // Data Entry LSB carries the fractional cents of the bend range.
+            // `pitch_slide_range` is whole semitones, so there is nothing to
+            // store, but it is matched explicitly to record that the message is
+            // understood and deliberately dropped rather than unrecognized.
+            control_change::DATA_ENTRY_LSB => {}
+            control_change::RESET_ALL_CONTROLLERS => {
+                self.selected_rpn = RPN_NULL;
+                // Recenter the wheel and hand both controls back to the host
+                // parameters, which is where their values came from before any
+                // MIDI message arrived. Without this the parameters would stay
+                // second-class for the rest of the session once the wheel moved
+                // even once.
+                self.midi_pitch_bend = None;
+                self.midi_pitch_bend_range = None;
+                let host = self.last_host_controls.unwrap_or_default();
+                self.pitch_slide = host.pitch_slide.clamp(-8192, 8191);
+                self.pitch_slide_range = host.pitch_slide_range.min(MAX_PITCH_SLIDE_RANGE);
+            }
+            _ => {}
+        }
+    }
 
     /// Handle NoteOn event with monophonic last-note priority.
     pub fn note_on(

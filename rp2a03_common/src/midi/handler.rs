@@ -112,6 +112,17 @@ fn reload_player(
     }
 }
 
+/// The null RPN — "no registered parameter selected", which is where a receiver
+/// starts and where Reset All Controllers puts it back.
+pub(super) const RPN_NULL: (u8, u8) = (0x7F, 0x7F);
+
+/// RPN 0: Pitch Bend Sensitivity, the standard way a controller or DAW sets the
+/// pitch-wheel range.
+pub(super) const RPN_PITCH_BEND_SENSITIVITY: (u8, u8) = (0, 0);
+
+/// Widest pitch-bend range the synth accepts, in semitones (two octaves).
+pub(super) const MAX_PITCH_SLIDE_RANGE: u8 = 24;
+
 // ─────────────────────────────────────────────
 // MidiHandler
 // ─────────────────────────────────────────────
@@ -131,14 +142,34 @@ pub struct MidiHandler {
     pub fine_pitch: i8,
     /// MIDI CC 15 (Hi-pitch offset, -64..+63 coarse high-period offset)
     pub hi_pitch: i8,
-    /// Host-automated MIDI-style pitch bend (-8192..=8191).
+    /// MIDI-style pitch bend (-8192..=8191), driven by the host parameter or by
+    /// the controller's pitch wheel.
     pub pitch_slide: i16,
-    /// Host-automated pitch-bend range in semitones (0..=24).
+    /// Pitch-bend range in semitones (0..=`MAX_PITCH_SLIDE_RANGE`), driven by the
+    /// host parameter or by RPN 0 (Pitch Bend Sensitivity).
     pub pitch_slide_range: u8,
+    /// Wheel position claimed by an incoming MIDI pitch-bend message.
+    ///
+    /// `Some` means the wheel currently owns `pitch_slide`, and the host
+    /// parameter only takes it back when the parameter itself moves. That
+    /// distinction matters for polyphonic voice stealing: `reset_for_allocation`
+    /// clears `last_host_controls`, and the reseed that follows would otherwise
+    /// snap the recycled voice back to the parameter while every other voice
+    /// stays bent.
+    pub(super) midi_pitch_bend: Option<i16>,
+    /// Range claimed by RPN 0, under the same ownership rule as
+    /// `midi_pitch_bend`.
+    pub(super) midi_pitch_bend_range: Option<u8>,
+    /// Currently selected RPN as `(MSB, LSB)` from CC 101 / CC 100.
+    ///
+    /// The wrapper hands over raw CCs without assembling multi-message RPNs, so
+    /// the selection is tracked here. Starts at (and returns to) the null RPN,
+    /// which makes Data Entry a no-op until a controller selects a parameter.
+    pub(super) selected_rpn: (u8, u8),
     /// Host-controlled 4-bit APU volume, applied before MIDI CC 7 and velocity.
     pub hardware_volume: u8,
     /// Last host parameter values applied to this handler.
-    last_host_controls: Option<HostAutomationControls>,
+    pub(super) last_host_controls: Option<HostAutomationControls>,
     /// Active base MIDI note
     pub active_note: u8,
     /// Software LFO engine from `rp2a03_core`
@@ -246,6 +277,9 @@ impl Default for MidiHandler {
             hi_pitch: 0,
             pitch_slide: 0,
             pitch_slide_range: 2,
+            midi_pitch_bend: None,
+            midi_pitch_bend_range: None,
+            selected_rpn: RPN_NULL,
             hardware_volume: 15,
             last_host_controls: None,
             active_note: 60,
@@ -321,6 +355,10 @@ impl MidiHandler {
         self.vrc6_pulse.reset();
         self.vrc6_saw.reset();
         // channel_mode is intentionally NOT reset — it's a persistent host parameter.
+        // Neither are the pitch-wheel/RPN fields: those describe the state of a
+        // *channel-wide* MIDI controller that every voice is sounding, and this
+        // runs per voice on polyphonic stealing (`reset_for_allocation`), so
+        // clearing them would recenter one voice out from under a held bend.
     }
 
     /// Apply top note from monophonic note stack.
@@ -400,13 +438,35 @@ impl MidiHandler {
         if self.last_host_controls.is_none() || controls.hi_pitch != previous.hi_pitch {
             self.hi_pitch = controls.hi_pitch.clamp(-64, 63);
         }
-        if self.last_host_controls.is_none() || controls.pitch_slide != previous.pitch_slide {
-            self.pitch_slide = controls.pitch_slide.clamp(-8192, 8191);
+        // Pitch bend and its range are shared with MIDI (the wheel and RPN 0), so
+        // they need the ownership check `previous` alone cannot express: on a
+        // handler with no `last_host_controls` — a fresh voice, or one just
+        // recycled by `reset_for_allocation` — every parameter *looks* changed,
+        // and reseeding from it would drop a bend the wheel is still holding.
+        let host_moved_slide = self
+            .last_host_controls
+            .is_some_and(|previous| controls.pitch_slide != previous.pitch_slide);
+        if host_moved_slide {
+            self.midi_pitch_bend = None;
         }
-        if self.last_host_controls.is_none()
-            || controls.pitch_slide_range != previous.pitch_slide_range
-        {
-            self.pitch_slide_range = controls.pitch_slide_range.min(24);
+        if host_moved_slide || self.last_host_controls.is_none() {
+            self.pitch_slide = self
+                .midi_pitch_bend
+                .unwrap_or(controls.pitch_slide)
+                .clamp(-8192, 8191);
+        }
+
+        let host_moved_range = self
+            .last_host_controls
+            .is_some_and(|previous| controls.pitch_slide_range != previous.pitch_slide_range);
+        if host_moved_range {
+            self.midi_pitch_bend_range = None;
+        }
+        if host_moved_range || self.last_host_controls.is_none() {
+            self.pitch_slide_range = self
+                .midi_pitch_bend_range
+                .unwrap_or(controls.pitch_slide_range)
+                .min(MAX_PITCH_SLIDE_RANGE);
         }
         if self.last_host_controls.is_none() || controls.step_time_hz != previous.step_time_hz {
             self.step_time_hz = controls.step_time_hz.clamp(1, 600);

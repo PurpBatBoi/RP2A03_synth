@@ -528,7 +528,11 @@ impl Rp2a03Plugin {
                     None
                 }
             }
-            NoteEvent::Choke { .. } | NoteEvent::MidiCC { .. } => {
+            // Pitch bend and CC are channel-wide, so every voice gets them —
+            // otherwise a chord would bend one note at a time.
+            NoteEvent::Choke { .. }
+            | NoteEvent::MidiCC { .. }
+            | NoteEvent::MidiPitchBend { .. } => {
                 let mut program = None;
                 for voice in &mut self.voices {
                     program = voice
@@ -719,7 +723,11 @@ impl Plugin for Rp2a03Plugin {
         ..AudioIOLayout::const_default()
     }];
 
-    const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
+    // `Basic` delivers note events only. Pitch bend (which drives Pitch Slide),
+    // control changes (RPN 0, which drives Pitch Slide Range), and program change
+    // all require this level. For VST3 that means the wrapper registers 130*16
+    // hidden CC-binding parameters; that is the standard cost of MIDI CC input.
+    const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type SysExMessage = ();

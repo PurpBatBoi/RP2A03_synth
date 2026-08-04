@@ -1363,3 +1363,198 @@ fn reload_wakes_a_disabled_player_even_when_the_content_matches() {
     assert_eq!(handler.duty_seq_player.state, SeqState::Running);
     assert_eq!(handler.duty_seq_player.pos, 0);
 }
+
+/// Normalized form of a raw 14-bit pitch-wheel position, matching how the
+/// wrapper converts an incoming pitch-bend message.
+fn wheel(raw_14_bit: u16) -> f32 {
+    raw_14_bit as f32 / ((1u32 << 14) - 1) as f32
+}
+
+/// Normalized form of a raw 7-bit CC value.
+fn cc_value(raw: u8) -> f32 {
+    raw as f32 / 127.0
+}
+
+#[test]
+fn pitch_wheel_drives_pitch_slide() {
+    let mut handler = MidiHandler::new();
+
+    // A centered wheel has to land exactly on 0, not one period step off it.
+    handler.pitch_bend(wheel(8192));
+    assert_eq!(handler.pitch_slide, 0);
+    // VST3 hosts hand over a plain 0.5 for center rather than 8192/16383.
+    handler.pitch_bend(0.5);
+    assert_eq!(handler.pitch_slide, 0);
+
+    handler.pitch_bend(wheel(0));
+    assert_eq!(handler.pitch_slide, -8192);
+
+    handler.pitch_bend(wheel(16383));
+    assert_eq!(handler.pitch_slide, 8191);
+
+    handler.pitch_bend(wheel(12288));
+    assert_eq!(handler.pitch_slide, 4096);
+}
+
+#[test]
+fn pitch_wheel_bends_the_written_period() {
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    let seqs = default_seqs();
+
+    handler.note_on(60, 100, &mut AnyChannel::Pulse(&mut pulse), &seqs);
+    let base_period = handler.macro_period;
+
+    handler.pitch_bend(wheel(16383));
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    let raised = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
+    assert!(raised < base_period as u16, "wheel up must shorten the period");
+
+    handler.pitch_bend(wheel(0));
+    handler.update_modulation(&mut pulse, &mut triangle, &seqs, 44100.0, 1);
+    let lowered = ((handler.prev_timer_hi as u16) << 8) | handler.prev_timer_lo as u16;
+    assert!(lowered > base_period as u16, "wheel down must lengthen the period");
+}
+
+#[test]
+fn rpn_zero_drives_pitch_slide_range() {
+    let mut handler = MidiHandler::new();
+
+    // Data Entry before any RPN selection is not addressed at this synth.
+    handler.control_change(control_change::DATA_ENTRY_MSB, cc_value(12));
+    assert_eq!(handler.pitch_slide_range, 2);
+
+    handler.control_change(control_change::REGISTERED_PARAMETER_NUMBER_MSB, 0.0);
+    handler.control_change(control_change::REGISTERED_PARAMETER_NUMBER_LSB, 0.0);
+    handler.control_change(control_change::DATA_ENTRY_MSB, cc_value(12));
+    assert_eq!(handler.pitch_slide_range, 12);
+
+    // Cents are dropped: the range is whole semitones.
+    handler.control_change(control_change::DATA_ENTRY_LSB, cc_value(50));
+    assert_eq!(handler.pitch_slide_range, 12);
+
+    // Two octaves is the ceiling, as it is for the host parameter.
+    handler.control_change(control_change::DATA_ENTRY_MSB, cc_value(127));
+    assert_eq!(handler.pitch_slide_range, 24);
+
+    // Selecting a different RPN takes Data Entry away again.
+    handler.control_change(control_change::REGISTERED_PARAMETER_NUMBER_LSB, cc_value(1));
+    handler.control_change(control_change::DATA_ENTRY_MSB, cc_value(3));
+    assert_eq!(handler.pitch_slide_range, 24);
+}
+
+#[test]
+fn wheel_survives_the_reseed_a_stolen_voice_gets() {
+    let mut handler = MidiHandler::new();
+    handler.apply_host_automation(HostAutomationControls::default());
+
+    handler.pitch_bend(wheel(16383));
+    handler.control_change(control_change::REGISTERED_PARAMETER_NUMBER_MSB, 0.0);
+    handler.control_change(control_change::REGISTERED_PARAMETER_NUMBER_LSB, 0.0);
+    handler.control_change(control_change::DATA_ENTRY_MSB, cc_value(7));
+
+    // What `Voice::reset_for_allocation` + `select_voice` do to a recycled voice.
+    handler.reset();
+    handler.apply_host_automation(HostAutomationControls::default());
+
+    assert_eq!(handler.pitch_slide, 8191, "recycled voice must keep the held bend");
+    assert_eq!(handler.pitch_slide_range, 7);
+}
+
+#[test]
+fn host_parameter_takes_the_pitch_controls_back_when_it_moves() {
+    let mut handler = MidiHandler::new();
+    handler.apply_host_automation(HostAutomationControls::default());
+
+    handler.pitch_bend(wheel(16383));
+    handler.control_change(control_change::REGISTERED_PARAMETER_NUMBER_MSB, 0.0);
+    handler.control_change(control_change::REGISTERED_PARAMETER_NUMBER_LSB, 0.0);
+    handler.control_change(control_change::DATA_ENTRY_MSB, cc_value(7));
+
+    // An unrelated parameter moving must not disturb the wheel.
+    handler.apply_host_automation(HostAutomationControls {
+        hardware_volume: 9,
+        ..HostAutomationControls::default()
+    });
+    assert_eq!(handler.pitch_slide, 8191);
+    assert_eq!(handler.pitch_slide_range, 7);
+
+    handler.apply_host_automation(HostAutomationControls {
+        hardware_volume: 9,
+        pitch_slide: -4096,
+        pitch_slide_range: 5,
+        ..HostAutomationControls::default()
+    });
+    assert_eq!(handler.pitch_slide, -4096);
+    assert_eq!(handler.pitch_slide_range, 5);
+
+    // Ownership is back with the host, so the reseed no longer restores the wheel.
+    handler.reset();
+    handler.apply_host_automation(HostAutomationControls::default());
+    assert_eq!(handler.pitch_slide, 0);
+    assert_eq!(handler.pitch_slide_range, 2);
+}
+
+#[test]
+fn reset_all_controllers_returns_the_pitch_controls_to_the_host() {
+    let mut handler = MidiHandler::new();
+    handler.apply_host_automation(HostAutomationControls {
+        pitch_slide: 1234,
+        pitch_slide_range: 5,
+        ..HostAutomationControls::default()
+    });
+
+    handler.pitch_bend(wheel(16383));
+    handler.control_change(control_change::REGISTERED_PARAMETER_NUMBER_MSB, 0.0);
+    handler.control_change(control_change::REGISTERED_PARAMETER_NUMBER_LSB, 0.0);
+    handler.control_change(control_change::DATA_ENTRY_MSB, cc_value(7));
+
+    handler.control_change(control_change::RESET_ALL_CONTROLLERS, 0.0);
+
+    assert_eq!(handler.pitch_slide, 1234);
+    assert_eq!(handler.pitch_slide_range, 5);
+
+    // The RPN selection is nulled too, so a stray Data Entry no longer lands.
+    handler.control_change(control_change::DATA_ENTRY_MSB, cc_value(9));
+    assert_eq!(handler.pitch_slide_range, 5);
+}
+
+#[test]
+fn pitch_events_route_through_handle_event() {
+    let mut handler = MidiHandler::new();
+    let mut pulse = Pulse::new(PulseChannel::One);
+    let mut triangle = Triangle::new();
+    let seqs = default_seqs();
+
+    handler.handle_event::<()>(
+        &NoteEvent::MidiPitchBend {
+            timing: 0,
+            channel: 0,
+            value: wheel(0),
+        },
+        &mut pulse,
+        &mut triangle,
+        &seqs,
+    );
+    assert_eq!(handler.pitch_slide, -8192);
+
+    for (cc, value) in [
+        (control_change::REGISTERED_PARAMETER_NUMBER_MSB, 0.0),
+        (control_change::REGISTERED_PARAMETER_NUMBER_LSB, 0.0),
+        (control_change::DATA_ENTRY_MSB, cc_value(11)),
+    ] {
+        handler.handle_event::<()>(
+            &NoteEvent::MidiCC {
+                timing: 0,
+                channel: 0,
+                cc,
+                value,
+            },
+            &mut pulse,
+            &mut triangle,
+            &seqs,
+        );
+    }
+    assert_eq!(handler.pitch_slide_range, 11);
+}
