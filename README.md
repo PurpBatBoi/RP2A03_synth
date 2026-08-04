@@ -112,7 +112,9 @@ RP2A03-SYNTH/
 ├── xtask/                 # packaging / bundling tooling (nice-plug-xtask)
 │   └── src/main.rs
 └── packaging/
-    └── auv2/              # clap-wrapper CMake project — wraps the .clap as AUv2
+    ├── auv3/              # clap-wrapper CMake project — wraps the .clap as AUv3
+    │   └── CMakeLists.txt
+    └── vst3-macos/        # clap-wrapper CMake project — wraps the .clap as VST3
         └── CMakeLists.txt
 ```
 
@@ -252,35 +254,76 @@ For a single-architecture build, `cargo xtask bundle rp2a03_niceplug --release
 --no-default-features --features wgpu` works too. `xtask` ad-hoc signs
 (`codesign -s -`) every macOS bundle it produces.
 
-#### Audio Unit (AUv2)
+#### Audio Unit (AUv3)
 
-`cargo xtask` only emits CLAP and VST3. The `.component` is produced by
+AUv3 rather than AUv2: Apple has deprecated AUv2, so the AU build targets the
+v3 wrapper instead.
+
+`cargo xtask` only emits CLAP and VST3. The AU is produced by
 [`clap-wrapper`](https://github.com/free-audio/clap-wrapper), which wraps the
 already-built `.clap` — so this step runs *after* the bundle step above:
 
 ```bash
-cmake -B target/auv2-build -S packaging/auv2
-cmake --build target/auv2-build --config Release
+cmake -B target/auv3-build -S packaging/auv3 -G Xcode
+cmake --build target/auv3-build --config Release
 ```
 
-Result: `target/auv2-build/RP2A03 Synth.component`, with the `.clap` embedded
-inside it, so the AU is self-contained.
+`-G Xcode` is mandatory, not a preference. An AUv3 plugin is a macOS *app
+extension*: it must be linked as an app-extension product (entry point
+`_NSExtensionMain`) and signed by Xcode. Ninja and Makefiles cannot produce a
+loadable `.appex`, and clap-wrapper hard-errors if it sees another generator.
 
-Requirements: CMake ≥ 3.21 and the Xcode command line tools. clap-wrapper is
-pulled in by `FetchContent` (pinned to `v0.15.1`) and downloads the CLAP headers
-and AudioUnitSDK itself — no submodule to initialise.
+Result: `target/auv3-build/Release/RP2A03 Synth AUv3.app`, with the `.appex`
+inside it at `Contents/PlugIns/` and the `.clap` embedded inside that — so the
+AU is self-contained.
 
-Notes on [`packaging/auv2/CMakeLists.txt`](packaging/auv2/CMakeLists.txt):
+**AUv3 installs differently from AUv2.** There is no `.component` to drop into
+`Components/`. macOS discovers an app extension only through the containing app,
+so users install the AU by moving `RP2A03 Synth AUv3.app` into `/Applications`
+and **launching it once** — that registers the plugin with the system, after
+which it appears in AU hosts. The app itself is just a minimal host window.
+
+Requirements: CMake ≥ 3.21 and a full Xcode install (not just the command line
+tools — the Xcode generator needs `xcodebuild`). clap-wrapper is pulled in by
+`FetchContent` (pinned to `v0.15.1`) and downloads the CLAP headers itself — no
+submodule to initialise. Unlike AUv2, AUv3 does not need the AudioUnit SDK; it
+uses `AudioToolbox.framework` directly.
+
+Notes on [`packaging/auv3/CMakeLists.txt`](packaging/auv3/CMakeLists.txt):
 
 - clap-wrapper consumes the compiled `.clap`, not our source, so nothing about
   it is tied to nice-plug. The widely-linked write-up of this technique targets
   `nih-plug`, but that detail never mattered — any spec-compliant CLAP works.
-- That write-up wraps a gain plugin and sets `INSTRUMENT_TYPE "aufx"`. That is
-  the AU *effect* type. This is a synth, so it uses `aumu` (music device).
+- Two targets are built: `rp2a03_synth_auv3` (the `.appex`, via
+  `target_add_auv3_wrapper`) and `rp2a03_synth_auv3_sa` (the container `.app`,
+  via `target_add_auv3_standalone_wrapper`). Both are `add_executable` — an app
+  extension is an executable product, not a module library.
+- Passing `MACOS_EMBEDDED_CLAP_LOCATION` rather than `CLAP_TARGET_FOR_CONFIG`
+  puts the build on clap-wrapper's "nontarget" path, which is what makes
+  `MANUFACTURER_NAME` / `MANUFACTURER_CODE` / `SUBTYPE_CODE` mandatory.
+- The `AU_TYPE` / `AU_SUBTYPE` / `AU_MANUFACTURER` given to the container must
+  match the codes given to the wrapper, or the app and the extension it carries
+  would advertise two different plugins.
 - `CMAKE_OSX_ARCHITECTURES` is forced to `x86_64;arm64` so the AU is universal
   like the `.clap` and `.vst3`.
 - `MANUFACTURER_CODE` / `SUBTYPE_CODE` must each be exactly 4 characters and
   must not be all-lowercase (Apple reserves those).
+
+#### VST3 (macOS, via clap-wrapper)
+
+niceplug's own VST3 output has had unresolved issues on macOS, so the release
+workflow instead wraps the `.clap` with clap-wrapper — the same mechanism used
+for the AU above — and ships that in place of niceplug's VST3:
+
+```bash
+cmake -B target/vst3-macos-build -S packaging/vst3-macos
+cmake --build target/vst3-macos-build --config Release
+```
+
+Result: `target/vst3-macos-build/RP2A03 Synth.vst3`, with the `.clap` embedded
+inside it. This *replaces* the `.vst3` that `cargo xtask` produced in
+`target/bundled/` — the release workflow deletes niceplug's copy before copying
+this one in.
 
 Install by copying from `target/bundled/`:
 
@@ -288,17 +331,24 @@ Install by copying from `target/bundled/`:
 |---|---|
 | `.vst3` | `/Library/Audio/Plug-Ins/VST3/` or `~/Library/Audio/Plug-Ins/VST3/` |
 | `.clap` | `/Library/Audio/Plug-Ins/CLAP/` or `~/Library/Audio/Plug-Ins/CLAP/` |
-| `.component` | `/Library/Audio/Plug-Ins/Components/` or `~/Library/Audio/Plug-Ins/Components/` |
+| `.app` (AUv3) | `/Applications/` — then launch it once to register the AU |
 
 Because the plugin is ad-hoc signed rather than notarized, macOS quarantines it
 when it arrives via a downloaded release archive. Strip the flag after copying:
 
 ```bash
-xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/rp2a03_niceplug.vst3"
+xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/RP2A03 Synth.vst3"
 ```
 
-Logic caches AU scan results, so after installing a `.component` you may need to
-force a rescan:
+The quarantine flag applies to the AUv3 `.app` too — strip it before the first
+launch, or macOS will refuse to run it and the AU will never register:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/RP2A03 Synth AUv3.app"
+```
+
+Logic caches AU scan results, so after installing the AU you may need to force a
+rescan:
 
 ```bash
 killall -9 AudioComponentRegistrar
@@ -314,7 +364,7 @@ which builds all three platforms and publishes a single `RP2A03_synth.zip`:
 RP2A03_synth/
 ├── Windows/    # x86_64, OpenGL                          .clap + .vst3
 ├── Linux/      # x86_64, wgpu (Vulkan)                   .clap + .vst3
-└── Mac/        # universal x86_64 + arm64, wgpu (Metal)  .clap + .vst3 + .component
+└── Mac/        # universal x86_64 + arm64, wgpu (Metal)  .clap + .vst3 + .app (AUv3)
 ```
 
 The workflow can also be run manually from the Actions tab; a manual run

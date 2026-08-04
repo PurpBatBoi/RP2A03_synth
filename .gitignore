@@ -2,6 +2,7 @@
 /Ideas-ref-folder
 .agents
 AGENTS.md
+.claude
 
 # Compiled binaries and plugin bundles
 *.exe
