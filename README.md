@@ -20,10 +20,12 @@ points) plus software vibrato/tremolo LFOs, so the instrument plays and automate
 like a normal synth while the audio math underneath stays somewhat hardware-accurate.
 
 # Synth Showcase
-### Cover of Snail House's SUNNY by [recme](https://github.com/recm3)
+### Cover of Snail House's "SUNNY" by [recme](https://github.com/recm3)
 https://github.com/user-attachments/assets/b758d92e-7e35-460d-8dde-89ff16a07951
 
 
+### Cover of "The Brilliant Truth (Mina The Hollower)" by Me (Purpbatboi)
+https://github.com/user-attachments/assets/d7d7984e-a96e-4002-8f1c-d2bf56444ee7
 
 
 
