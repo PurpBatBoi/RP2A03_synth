@@ -35,6 +35,14 @@ project(rp2a03_synth_vst3_macos LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
+# clap-wrapper's macOS VST3 wrapper includes Objective-C++ sources for the
+# platform layer (NSView-backed editor windows), so these are required even
+# though nothing in *this* project is Objective-C. Without them CMake configures
+# fine and then fails at the generate step with:
+#   Missing variable is: CMAKE_OBJCXX_COMPILE_OBJECT
+enable_language(OBJC)
+enable_language(OBJCXX)
+
 set(RP2A03_CLAP_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../target/bundled/rp2a03_niceplug.clap"
     CACHE PATH "Path to the built .clap bundle to wrap")
 set(RP2A03_VERSION "0.0.6" CACHE STRING "Bundle version (numeric; no -Alpha suffix)")
