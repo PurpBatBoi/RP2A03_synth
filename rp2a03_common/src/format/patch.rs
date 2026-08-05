@@ -295,7 +295,11 @@ mod tests {
         patch.format_version = CURRENT_FORMAT_VERSION + 1;
         let bytes = patch.to_bytes();
         let err = Patch::from_bytes(&bytes).unwrap_err();
-        assert!(matches!(err, PatchError::UnsupportedVersion { .. }));
+        assert!(matches!(
+            err,
+            PatchError::UnsupportedVersion { found, max_supported }
+                if found == CURRENT_FORMAT_VERSION + 1 && max_supported == CURRENT_FORMAT_VERSION
+        ));
     }
 
     #[test]
@@ -305,6 +309,25 @@ mod tests {
         let bytes = patch.to_bytes();
         let err = Patch::from_bytes(&bytes).unwrap_err();
         assert!(matches!(err, PatchError::StepTimeOutOfRange(0)));
+
+        let mut patch = sample_patch();
+        patch.step_time_hz = 601;
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, PatchError::StepTimeOutOfRange(601)));
+    }
+
+    #[test]
+    fn accepts_step_time_hz_boundaries() {
+        for hz in [1u16, 600u16] {
+            let mut patch = sample_patch();
+            patch.step_time_hz = hz;
+            let bytes = patch.to_bytes();
+            assert!(
+                Patch::from_bytes(&bytes).is_ok(),
+                "step_time_hz = {hz} is within 1..=600 and must be accepted"
+            );
+        }
     }
 
     #[test]
@@ -327,7 +350,7 @@ mod tests {
         let err = Patch::from_bytes(&bytes).unwrap_err();
         assert!(matches!(
             err,
-            PatchError::InvalidSequenceIndex { envelope: "vol", .. }
+            PatchError::InvalidSequenceIndex { envelope: "vol", index } if index == MAX_SEQUENCES
         ));
     }
 
@@ -340,6 +363,21 @@ mod tests {
         assert!(matches!(
             err,
             PatchError::DuplicateSequenceIndex { envelope: "vol", index: 3 }
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_sequence_index_for_duty() {
+        // Proves the reported envelope name tracks the envelope actually at
+        // fault (not just "vol") — catches an envelope-name/array mismatch in
+        // `PatchSequences::entries` that a vol-only test would miss.
+        let mut patch = sample_patch();
+        patch.sequences.duty.push(sample_entry(3));
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(
+            err,
+            PatchError::DuplicateSequenceIndex { envelope: "duty", index: 3 }
         ));
     }
 }
