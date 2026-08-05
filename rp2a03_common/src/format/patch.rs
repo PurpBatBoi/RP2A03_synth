@@ -47,7 +47,8 @@ pub struct PatchSequences {
 }
 
 /// One populated numbered slot within an envelope type's bank. Field order is
-/// load-bearing (see `Patch`'s doc comment); `vol_mode` must stay last.
+/// load-bearing (see `Patch`'s doc comment); `enabled` must stay last — any
+/// future field is appended after it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PatchSequenceEntry {
     pub index: usize,
@@ -58,6 +59,18 @@ pub struct PatchSequenceEntry {
     pub arp_mode: ArpMode,
     #[serde(default)]
     pub vol_mode: VolMode,
+    /// Whether this envelope was enabled when saved. Stored (not derived) so
+    /// a populated-but-disabled slot round-trips correctly — an empty slot is
+    /// simply omitted from the file entirely, but a disabled non-empty slot
+    /// is authored data. Absent/older files (no `enabled` key) default to
+    /// `true` via `default_enabled`, matching every pre-existing entry, which
+    /// was always enabled in practice.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 impl PatchSequenceEntry {
@@ -74,6 +87,7 @@ impl PatchSequenceEntry {
             pitch_mode: seq.pitch_mode,
             arp_mode: seq.arp_mode,
             vol_mode: seq.vol_mode,
+            enabled: slot.enabled,
         })
     }
 
@@ -269,7 +283,7 @@ impl Patch {
                 let sequence = entry.to_sequence();
                 let slot = bank.slot_mut(entry.index);
                 slot.text = sequence_to_text(&sequence);
-                slot.enabled = !sequence.is_empty();
+                slot.enabled = entry.enabled;
                 slot.sequence = sequence;
             }
         }
@@ -294,6 +308,7 @@ mod tests {
             pitch_mode: PitchMode::Relative,
             arp_mode: ArpMode::Absolute,
             vol_mode: VolMode::Steps16,
+            enabled: true,
         }
     }
 
@@ -334,10 +349,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_entry_without_vol_mode_defaults_to_steps16() {
+    fn legacy_entry_without_vol_mode_or_enabled_defaults_correctly() {
         // Proves the array-mode back-compat mechanism the whole wire format
-        // design depends on: an older-shaped struct missing the trailing
-        // `vol_mode` field must still decode, defaulting that field.
+        // design depends on: an older-shaped struct missing the two trailing
+        // fields (`vol_mode`, `enabled`) must still decode, defaulting both.
+        // `enabled` must default to `true` — a bare `#[serde(default)]` would
+        // give `false`, silently disabling every pre-existing envelope.
         #[derive(serde::Serialize)]
         struct LegacyEntry {
             index: usize,
@@ -362,6 +379,33 @@ mod tests {
             rmp_serde::from_slice(&bytes).expect("legacy bytes must still decode");
         assert_eq!(restored.vol_mode, VolMode::Steps16);
         assert_eq!(restored.values, vec![10, 20]);
+        assert!(restored.enabled, "legacy payloads must default enabled to true");
+    }
+
+    #[test]
+    fn apply_to_shared_sequences_round_trips_disabled_but_non_empty_slot() {
+        // A populated slot the user explicitly turned OFF must stay off after
+        // a save -> load round trip through the actual bytes, not just the
+        // two in-memory conversions — going through `to_bytes`/`from_bytes`
+        // is what proves `enabled` is really carried on the wire.
+        let mut original = SharedSequences::default();
+        original.set_selected_sequence_index(0, 6); // vol tab, slot 6
+        original.selected_sequence_mut(0).1.values = vec![9, 7, 5];
+        *original.sequence_enabled_mut(0) = false;
+
+        let patch = Patch::from_shared_sequences(&original, ChannelMode::Pulse, 60);
+        let bytes = patch.to_bytes();
+        let restored_patch = Patch::from_bytes(&bytes).expect("round-tripped patch must decode");
+
+        let mut restored = SharedSequences::default();
+        restored_patch.apply_to_shared_sequences(&mut restored);
+
+        assert_eq!(restored.selected_sequence_index(0), 6);
+        assert_eq!(restored.selected_sequence(0).values, vec![9, 7, 5]);
+        assert!(
+            !restored.sequence_enabled(0),
+            "a populated slot that was disabled before saving must still be disabled after loading"
+        );
     }
 
     #[test]
@@ -470,39 +514,163 @@ mod tests {
 
     #[test]
     fn from_shared_sequences_collects_only_used_slots() {
+        // All 5 tabs populated, each with a distinct slot index and a
+        // distinct values vector, so a transposition among any tab pair
+        // (not just vol/duty) is detectable.
         let mut shared = SharedSequences::default();
-        shared.set_selected_sequence_index(0, 5); // vol tab, slot 5
-        shared.selected_sequence_mut(0).1.values.extend([1, 2, 3]);
+
+        shared.set_selected_sequence_index(0, 5); // vol
+        shared.selected_sequence_mut(0).1.values = vec![1, 2, 3];
+
+        shared.set_selected_sequence_index(1, 9); // arp
+        shared.selected_sequence_mut(1).1.values = vec![4, 5];
+
+        shared.set_selected_sequence_index(2, 12); // pitch
+        shared.selected_sequence_mut(2).1.values = vec![6, 7, 8, 9];
+
+        shared.set_selected_sequence_index(3, 20); // hipitch
+        shared.selected_sequence_mut(3).1.values = vec![10];
+
+        shared.set_selected_sequence_index(4, 2); // duty
+        shared.selected_sequence_mut(4).1.values = vec![11, 12];
 
         let patch = Patch::from_shared_sequences(&shared, ChannelMode::Pulse, 60);
 
+        // Only the one populated slot per bank is collected out of the 128
+        // available — proves the "used only" filtering still holds.
         assert_eq!(patch.sequences.vol.len(), 1);
         assert_eq!(patch.sequences.vol[0].index, 5);
         assert_eq!(patch.sequences.vol[0].values, vec![1, 2, 3]);
-        assert!(patch.sequences.arp.is_empty());
+
+        assert_eq!(patch.sequences.arp.len(), 1);
+        assert_eq!(patch.sequences.arp[0].index, 9);
+        assert_eq!(patch.sequences.arp[0].values, vec![4, 5]);
+
+        assert_eq!(patch.sequences.pitch.len(), 1);
+        assert_eq!(patch.sequences.pitch[0].index, 12);
+        assert_eq!(patch.sequences.pitch[0].values, vec![6, 7, 8, 9]);
+
+        assert_eq!(patch.sequences.hipitch.len(), 1);
+        assert_eq!(patch.sequences.hipitch[0].index, 20);
+        assert_eq!(patch.sequences.hipitch[0].values, vec![10]);
+
+        assert_eq!(patch.sequences.duty.len(), 1);
+        assert_eq!(patch.sequences.duty[0].index, 2);
+        assert_eq!(patch.sequences.duty[0].values, vec![11, 12]);
+
         assert_eq!(patch.active_indices.vol, 5);
+        assert_eq!(patch.active_indices.arp, 9);
+        assert_eq!(patch.active_indices.pitch, 12);
+        assert_eq!(patch.active_indices.hipitch, 20);
+        assert_eq!(patch.active_indices.duty, 2);
+
         assert_eq!(patch.waveform, ChannelMode::Pulse);
         assert_eq!(patch.step_time_hz, 60);
     }
 
     #[test]
-    fn apply_to_shared_sequences_round_trips_and_derives_enabled() {
+    fn apply_to_shared_sequences_round_trips_all_tabs() {
+        // All 5 tabs populated, each with a distinct slot index and distinct
+        // values, so transposing any tab pair (including the two middle
+        // tabs, pitch/hipitch) is detectable on both the save and restore
+        // sides.
         let mut original = SharedSequences::default();
-        original.set_selected_sequence_index(0, 3); // vol
+
+        original.set_selected_sequence_index(0, 4); // vol
         original.selected_sequence_mut(0).1.values = vec![15, 14, 12];
-        original.set_selected_sequence_index(4, 3); // duty
-        original.selected_sequence_mut(4).1.values = vec![0, 2];
+        *original.sequence_enabled_mut(0) = true;
+
+        original.set_selected_sequence_index(1, 8); // arp
+        original.selected_sequence_mut(1).1.values = vec![3, 6, 9];
+        *original.sequence_enabled_mut(1) = true;
+
+        original.set_selected_sequence_index(2, 15); // pitch
+        {
+            let (_text, seq) = original.selected_sequence_mut(2);
+            seq.values = vec![1, -1, 2];
+            seq.loop_point = Some(1);
+            seq.release_point = Some(2);
+            seq.pitch_mode = PitchMode::Absolute;
+            seq.arp_mode = ArpMode::Relative;
+            seq.vol_mode = VolMode::Steps64;
+        }
+        *original.sequence_enabled_mut(2) = false; // populated but disabled
+
+        original.set_selected_sequence_index(3, 20); // hipitch
+        original.selected_sequence_mut(3).1.values = vec![7, -3];
+        *original.sequence_enabled_mut(3) = true;
+
+        original.set_selected_sequence_index(4, 2); // duty
+        original.selected_sequence_mut(4).1.values = vec![0, 1];
+        *original.sequence_enabled_mut(4) = true;
 
         let patch = Patch::from_shared_sequences(&original, ChannelMode::Pulse, 60);
+
+        // Full-entry equality for the pitch tab: proves every field
+        // (loop_point, release_point, all three modes, and enabled) — not
+        // just index/values — survives the save side.
+        let expected_pitch_entry = PatchSequenceEntry {
+            index: 15,
+            values: vec![1, -1, 2],
+            loop_point: Some(1),
+            release_point: Some(2),
+            pitch_mode: PitchMode::Absolute,
+            arp_mode: ArpMode::Relative,
+            vol_mode: VolMode::Steps64,
+            enabled: false,
+        };
+        assert_eq!(patch.sequences.pitch, vec![expected_pitch_entry]);
+
+        assert_eq!(patch.sequences.vol[0].index, 4);
+        assert_eq!(patch.sequences.vol[0].values, vec![15, 14, 12]);
+        assert_eq!(patch.sequences.arp[0].index, 8);
+        assert_eq!(patch.sequences.arp[0].values, vec![3, 6, 9]);
+        assert_eq!(patch.sequences.hipitch[0].index, 20);
+        assert_eq!(patch.sequences.hipitch[0].values, vec![7, -3]);
+        assert_eq!(patch.sequences.duty[0].index, 2);
+        assert_eq!(patch.sequences.duty[0].values, vec![0, 1]);
+
+        // Computed the same way production code computes it, so this isn't a
+        // hand-typed magic string: "1 | -1 / 2" (loop marker before step 1,
+        // release marker before step 2) is non-trivial proof that `slot.text`
+        // is really regenerated from the loaded sequence.
+        let expected_pitch_text = sequence_to_text(&Sequence {
+            values: vec![1, -1, 2],
+            loop_point: Some(1),
+            release_point: Some(2),
+            pitch_mode: PitchMode::Absolute,
+            arp_mode: ArpMode::Relative,
+            vol_mode: VolMode::Steps64,
+        });
 
         let mut restored = SharedSequences::default();
         patch.apply_to_shared_sequences(&mut restored);
 
-        assert_eq!(restored.selected_sequence_index(0), 3);
+        assert_eq!(restored.selected_sequence_index(0), 4);
         assert_eq!(restored.selected_sequence(0).values, vec![15, 14, 12]);
         assert!(restored.sequence_enabled(0));
-        assert_eq!(restored.selected_sequence_index(4), 3);
-        assert_eq!(restored.selected_sequence(4).values, vec![0, 2]);
+
+        assert_eq!(restored.selected_sequence_index(1), 8);
+        assert_eq!(restored.selected_sequence(1).values, vec![3, 6, 9]);
+        assert!(restored.sequence_enabled(1));
+
+        assert_eq!(restored.selected_sequence_index(2), 15);
+        assert_eq!(restored.selected_sequence(2).values, vec![1, -1, 2]);
+        assert_eq!(restored.selected_sequence(2).loop_point, Some(1));
+        assert_eq!(restored.selected_sequence(2).release_point, Some(2));
+        assert_eq!(restored.selected_sequence(2).pitch_mode, PitchMode::Absolute);
+        assert_eq!(restored.selected_sequence(2).arp_mode, ArpMode::Relative);
+        assert_eq!(restored.selected_sequence(2).vol_mode, VolMode::Steps64);
+        assert!(!restored.sequence_enabled(2));
+        assert_eq!(restored.sequence_bank(2).slot(15).text, expected_pitch_text);
+
+        assert_eq!(restored.selected_sequence_index(3), 20);
+        assert_eq!(restored.selected_sequence(3).values, vec![7, -3]);
+        assert!(restored.sequence_enabled(3));
+
+        assert_eq!(restored.selected_sequence_index(4), 2);
+        assert_eq!(restored.selected_sequence(4).values, vec![0, 1]);
+        assert!(restored.sequence_enabled(4));
     }
 
     #[test]
