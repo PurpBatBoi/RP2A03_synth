@@ -6,8 +6,8 @@
 //! Format spec: Ideas-ref-folder\MARKDOWNs\Save&Load\Rp2a03_patch_format.md
 //! (outside version control — see that file's own header for why).
 
-use crate::{ChannelMode, MAX_SEQUENCES};
-use rp2a03_core::sequencer::{ArpMode, PitchMode, VolMode};
+use crate::{ChannelMode, MAX_SEQUENCES, SequenceBank, SequenceSlot, SharedSequences, sequence_to_text};
+use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence, VolMode};
 use std::fmt;
 
 /// Fixed file-identity prefix, never bumped — see "Wire format" in the spec.
@@ -58,6 +58,43 @@ pub struct PatchSequenceEntry {
     pub arp_mode: ArpMode,
     #[serde(default)]
     pub vol_mode: VolMode,
+}
+
+impl PatchSequenceEntry {
+    fn from_slot(index: usize, slot: &SequenceSlot) -> Option<Self> {
+        let seq = &slot.sequence;
+        if seq.is_empty() {
+            return None;
+        }
+        Some(Self {
+            index,
+            values: seq.values.clone(),
+            loop_point: seq.loop_point,
+            release_point: seq.release_point,
+            pitch_mode: seq.pitch_mode,
+            arp_mode: seq.arp_mode,
+            vol_mode: seq.vol_mode,
+        })
+    }
+
+    fn to_sequence(&self) -> Sequence {
+        Sequence {
+            values: self.values.clone(),
+            loop_point: self.loop_point,
+            release_point: self.release_point,
+            pitch_mode: self.pitch_mode,
+            arp_mode: self.arp_mode,
+            vol_mode: self.vol_mode,
+        }
+    }
+}
+
+fn collect_used_entries(bank: &SequenceBank) -> Vec<PatchSequenceEntry> {
+    bank.slots()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, slot)| PatchSequenceEntry::from_slot(index, slot))
+        .collect()
 }
 
 /// Failure decoding or validating a `.rp2a03patch` byte payload.
@@ -191,6 +228,56 @@ impl Patch {
             }
         }
         Ok(())
+    }
+
+    pub fn from_shared_sequences(
+        shared: &SharedSequences,
+        waveform: ChannelMode,
+        step_time_hz: u16,
+    ) -> Self {
+        Self {
+            format_version: CURRENT_FORMAT_VERSION,
+            waveform,
+            step_time_hz,
+            active_indices: ActiveIndices {
+                vol: shared.selected_sequence_index(0),
+                arp: shared.selected_sequence_index(1),
+                pitch: shared.selected_sequence_index(2),
+                hipitch: shared.selected_sequence_index(3),
+                duty: shared.selected_sequence_index(4),
+            },
+            sequences: PatchSequences {
+                vol: collect_used_entries(shared.sequence_bank(0)),
+                arp: collect_used_entries(shared.sequence_bank(1)),
+                pitch: collect_used_entries(shared.sequence_bank(2)),
+                hipitch: collect_used_entries(shared.sequence_bank(3)),
+                duty: collect_used_entries(shared.sequence_bank(4)),
+            },
+        }
+    }
+
+    /// Replaces `shared`'s sequence-bank content and active-slot selections
+    /// with this patch's. Does **not** touch `shared.channel_mode` or any
+    /// host parameter — `waveform`/`step_time_hz` are plain fields on `Patch`
+    /// for the caller to push through the host parameter system instead (see
+    /// this plan's "What this plan deliberately does NOT wire up").
+    pub fn apply_to_shared_sequences(&self, shared: &mut SharedSequences) {
+        shared.clear_all_sequences();
+        for (_envelope, tab, entries) in self.sequences.entries() {
+            let bank = shared.sequence_bank_mut(tab);
+            for entry in entries {
+                let sequence = entry.to_sequence();
+                let slot = bank.slot_mut(entry.index);
+                slot.text = sequence_to_text(&sequence);
+                slot.enabled = !sequence.is_empty();
+                slot.sequence = sequence;
+            }
+        }
+        shared.set_selected_sequence_index(0, self.active_indices.vol);
+        shared.set_selected_sequence_index(1, self.active_indices.arp);
+        shared.set_selected_sequence_index(2, self.active_indices.pitch);
+        shared.set_selected_sequence_index(3, self.active_indices.hipitch);
+        shared.set_selected_sequence_index(4, self.active_indices.duty);
     }
 }
 
@@ -379,5 +466,56 @@ mod tests {
             err,
             PatchError::DuplicateSequenceIndex { envelope: "duty", index: 3 }
         ));
+    }
+
+    #[test]
+    fn from_shared_sequences_collects_only_used_slots() {
+        let mut shared = SharedSequences::default();
+        shared.set_selected_sequence_index(0, 5); // vol tab, slot 5
+        shared.selected_sequence_mut(0).1.values.extend([1, 2, 3]);
+
+        let patch = Patch::from_shared_sequences(&shared, ChannelMode::Pulse, 60);
+
+        assert_eq!(patch.sequences.vol.len(), 1);
+        assert_eq!(patch.sequences.vol[0].index, 5);
+        assert_eq!(patch.sequences.vol[0].values, vec![1, 2, 3]);
+        assert!(patch.sequences.arp.is_empty());
+        assert_eq!(patch.active_indices.vol, 5);
+        assert_eq!(patch.waveform, ChannelMode::Pulse);
+        assert_eq!(patch.step_time_hz, 60);
+    }
+
+    #[test]
+    fn apply_to_shared_sequences_round_trips_and_derives_enabled() {
+        let mut original = SharedSequences::default();
+        original.set_selected_sequence_index(0, 3); // vol
+        original.selected_sequence_mut(0).1.values = vec![15, 14, 12];
+        original.set_selected_sequence_index(4, 3); // duty
+        original.selected_sequence_mut(4).1.values = vec![0, 2];
+
+        let patch = Patch::from_shared_sequences(&original, ChannelMode::Pulse, 60);
+
+        let mut restored = SharedSequences::default();
+        patch.apply_to_shared_sequences(&mut restored);
+
+        assert_eq!(restored.selected_sequence_index(0), 3);
+        assert_eq!(restored.selected_sequence(0).values, vec![15, 14, 12]);
+        assert!(restored.sequence_enabled(0));
+        assert_eq!(restored.selected_sequence_index(4), 3);
+        assert_eq!(restored.selected_sequence(4).values, vec![0, 2]);
+    }
+
+    #[test]
+    fn apply_to_shared_sequences_clears_slots_not_present_in_the_patch() {
+        let mut shared = SharedSequences::default();
+        shared.selected_sequence_mut(1).1.values.push(9); // arp slot 0
+        *shared.sequence_enabled_mut(1) = true;
+
+        let empty_patch =
+            Patch::from_shared_sequences(&SharedSequences::default(), ChannelMode::Pulse, 60);
+        empty_patch.apply_to_shared_sequences(&mut shared);
+
+        assert!(shared.selected_sequence(1).is_empty());
+        assert!(!shared.sequence_enabled(1));
     }
 }
