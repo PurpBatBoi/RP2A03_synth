@@ -5,7 +5,13 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'readme_assets/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'readme_assets/**'
   workflow_dispatch:
 
 env:

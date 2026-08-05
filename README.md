@@ -4,19 +4,16 @@
 **RP2A03 Synth** is a WiP NES synthesizer plugin for modern DAWs.
 
 The sound engine is not a sample library or an approximated "chiptune" waveform
-generator — it is a register-level emulation of the NES RP2A03 APU, driven
-directly by MIDI and host automation. Envelope, sweep, frame counter, length
-counter, and timer behavior are modeled the way an emulator models them, so the
-plugin reproduces the actual quirks of the hardware (4-bit volume steps,
-duty-cycle phase-reset behavior, real timer-derived pitch resolution) instead of
+generator — it is a emulation of the NES RP2A03 APU, driven
+directly by MIDI and host automation. So the plugin reproduces the actual quirks of the hardware instead of
 approximating them — though some deliberate liberties were taken for the sake of
 flexibility, see [Accuracy & Creative Liberties](#accuracy--creative-liberties).
 
-Beyond the stock 2A03 channels (two pulse, triangle, noise), the plugin also
+Beyond the stock 2A03 channels, the plugin also
 emulates the Konami **VRC6** (More soon!)
 On top of the emulation core sits a FamiTracker-style sequence engine
 (volume / arpeggio / pitch / hi-pitch / duty sequences with loop and release
-points) plus software vibrato/tremolo LFOs, so the instrument plays and automates
+points) plus software vibrato/tremolo LFOs (Also from FamiTracker), so the instrument plays and automates
 like a normal synth while the audio math underneath stays somewhat hardware-accurate.
 
 # Synth Showcase
@@ -37,8 +34,7 @@ https://github.com/user-attachments/assets/d7d7984e-a96e-4002-8f1c-d2bf56444ee7
 
 - **Register-level 2A03 emulation** — pulse 1/2, triangle, noise, with real
   envelope, sweep, length counter, linear counter, and frame-counter behavior.
-- **VRC6 expansion audio** — VRC6 pulse (8 duty settings plus the DDA/PCM
-  "ignore duty" mode) and VRC6 sawtooth.
+- **VRC6 expansion audio** — VRC6 pulse and VRC6 sawtooth.
 - **Band-limited output** — Blargg-style `blip_buf` synthesis resamples from the
   APU clock down to the host sample rate without aliasing.
 - **FamiTracker-style sequencer** — 5 sequence types × 128 slots, with loop (`|`)
@@ -96,42 +92,60 @@ bit-exact hardware behavior, use [FamiStudio](https://famistudio.org/), [Furnace
 ```
 RP2A03-SYNTH/
 ├── rp2a03_core/           # emulation core — no plugin/UI dependencies
-│   └── src/
-│       ├── apu.rs             # envelope, frame_counter, length_counter, timer
-│       ├── apu_pulse.rs       # Pulse, Sweep, DutySequencer
-│       ├── apu_triangle.rs    # Triangle, LinearCounter
-│       ├── apu_noise.rs       # Noise, ShiftMode
-│       ├── vrc6_common.rs     # Divider
-│       ├── vrc6_pulse.rs      # Vrc6Pulse
-│       ├── vrc6_saw.rs        # Vrc6Saw
-│       ├── sequencer.rs       # Sequence / SequencePlayer, PitchMode/ArpMode/VolMode
-│       ├── software_lfo.rs    # SoftwareLfo (vibrato / tremolo)
-│       ├── blip_buf.rs        # band-limited resampling
-│       └── lib.rs             # NTSC_CPU_CLOCK
+│   ├── src/
+│   │   ├── apu.rs             # envelope, frame_counter, length_counter, timer
+│   │   ├── apu_pulse.rs       # Pulse, Sweep, DutySequencer
+│   │   ├── apu_triangle.rs    # Triangle, LinearCounter
+│   │   ├── apu_noise.rs       # Noise, ShiftMode
+│   │   ├── vrc6_common.rs     # Divider
+│   │   ├── vrc6_pulse.rs      # Vrc6Pulse
+│   │   ├── vrc6_saw.rs        # Vrc6Saw
+│   │   ├── sequencer.rs       # Sequence / SequencePlayer, PitchMode/ArpMode/VolMode
+│   │   ├── software_lfo.rs    # SoftwareLfo (vibrato / tremolo)
+│   │   ├── blip_buf.rs        # band-limited resampling
+│   │   └── lib.rs             # NTSC_CPU_CLOCK
+│   └── Cargo.toml
 ├── rp2a03_common/         # MIDI + GUI logic shared by any plugin wrapper
-│   └── src/
-│       ├── gui/
-│       │   ├── mod.rs
-│       │   ├── state.rs       # SharedSequences, SequenceBank, SequenceSlot
-│       │   ├── editor.rs      # render_editor_ui
-│       │   ├── theme.rs
-│       │   └── widgets.rs
-│       ├── midi/
-│       │   ├── mod.rs
-│       │   ├── handler.rs     # MidiHandler
-│       │   ├── events.rs
-│       │   ├── types.rs       # ChannelMode, note→period conversion
-│       │   └── tests.rs
-│       └── lib.rs
+│   ├── src/
+│   │   ├── gui/
+│   │   │   ├── mod.rs
+│   │   │   ├── state.rs       # SharedSequences, SequenceBank, SequenceSlot
+│   │   │   ├── editor.rs      # render_editor_ui
+│   │   │   ├── theme.rs
+│   │   │   └── widgets.rs
+│   │   ├── midi/
+│   │   │   ├── mod.rs
+│   │   │   ├── handler.rs     # MidiHandler
+│   │   │   ├── events.rs
+│   │   │   ├── types.rs       # ChannelMode, note→period conversion
+│   │   │   └── tests.rs
+│   │   └── lib.rs
+│   └── Cargo.toml
 ├── rp2a03_niceplug/       # the plugin itself — CLAP + VST3 exports
-│   └── src/lib.rs             # Voice, Rp2a03Plugin, Rp2a03Params
+│   ├── src/
+│   │   ├── editor.rs
+│   │   ├── lib.rs
+│   │   ├── params.rs
+│   │   ├── plugin.rs
+│   │   ├── sequences.rs
+│   │   ├── tests.rs
+│   │   ├── voice_bank.rs
+│   │   └── voice.rs
+│   └── Cargo.toml
 ├── xtask/                 # packaging / bundling tooling (nice-plug-xtask)
-│   └── src/main.rs
-└── packaging/
-    ├── auv2/              # clap-wrapper CMake project — wraps the .clap as AUv2
-    │   └── CMakeLists.txt
-    └── vst3-macos/        # clap-wrapper CMake project — wraps the .clap as VST3
-        └── CMakeLists.txt
+│   ├── src/
+│   │   └── main.rs
+│   └── Cargo.toml
+├── packaging/             # platform-specific plugin packaging (CMake)
+│   ├── auv2/              # clap-wrapper CMake project — wraps the .clap as AUv2 (macOS)
+│   │   └── CMakeLists.txt
+│   └── vst3-macos/        # clap-wrapper CMake project — wraps the .clap as VST3 (macOS)
+│       └── CMakeLists.txt
+├── readme_assets/         # images and media for README
+├── Cargo.toml             # workspace root
+├── Cargo.lock
+├── LICENSE
+└── README.md
 ```
 
 `rp2a03_core` depends only on `serde`, so it can be tested and reasoned about in
