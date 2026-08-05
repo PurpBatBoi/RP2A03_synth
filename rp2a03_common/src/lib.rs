@@ -15,6 +15,6 @@ pub use midi::{
     freq_to_period, freq_to_triangle_period, midi_note_to_freq,
 };
 pub use format::patch::{
-    ActiveIndices, CURRENT_FORMAT_VERSION, PATCH_MAGIC, Patch, PatchError, PatchSequenceEntry,
-    PatchSequences,
+    ActiveIndices, CURRENT_FORMAT_VERSION, PATCH_MAGIC, Patch, PatchError, PatchFileError,
+    PatchSequenceEntry, PatchSequences, load_from_path, save_to_path,
 };

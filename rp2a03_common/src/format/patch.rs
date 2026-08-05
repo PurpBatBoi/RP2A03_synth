@@ -295,6 +295,53 @@ impl Patch {
     }
 }
 
+/// Failure saving or loading a `.rp2a03patch` file at a filesystem path.
+#[derive(Debug)]
+pub enum PatchFileError {
+    Io(std::io::Error),
+    Format(PatchError),
+}
+
+impl fmt::Display for PatchFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "{e}"),
+            Self::Format(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for PatchFileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Format(e) => Some(e),
+        }
+    }
+}
+
+impl From<std::io::Error> for PatchFileError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<PatchError> for PatchFileError {
+    fn from(e: PatchError) -> Self {
+        Self::Format(e)
+    }
+}
+
+pub fn save_to_path(path: &std::path::Path, patch: &Patch) -> Result<(), PatchFileError> {
+    std::fs::write(path, patch.to_bytes())?;
+    Ok(())
+}
+
+pub fn load_from_path(path: &std::path::Path) -> Result<Patch, PatchFileError> {
+    let bytes = std::fs::read(path)?;
+    Ok(Patch::from_bytes(&bytes)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,5 +732,55 @@ mod tests {
 
         assert!(shared.selected_sequence(1).is_empty());
         assert!(!shared.sequence_enabled(1));
+    }
+
+    #[test]
+    fn save_and_load_round_trip_through_a_real_file() {
+        let path = std::env::temp_dir().join(format!(
+            "rp2a03patch_test_{}_{}.rp2a03patch",
+            std::process::id(),
+            line!()
+        ));
+        let patch = sample_patch();
+
+        save_to_path(&path, &patch).expect("save must succeed");
+        let restored = load_from_path(&path).expect("load must succeed");
+        std::fs::remove_file(&path).expect("cleanup must succeed");
+
+        assert_eq!(restored, patch);
+    }
+
+    #[test]
+    fn load_from_path_reports_missing_file_as_io_error() {
+        let path = std::env::temp_dir().join(format!(
+            "rp2a03patch_test_missing_{}_{}.rp2a03patch",
+            std::process::id(),
+            line!()
+        ));
+        let err = load_from_path(&path).unwrap_err();
+        assert!(matches!(err, PatchFileError::Io(_)));
+        match err {
+            PatchFileError::Io(inner) => assert_eq!(
+                inner.kind(),
+                std::io::ErrorKind::NotFound,
+                "missing file must surface as a NotFound io::Error, not merely some Io variant"
+            ),
+            other => panic!("expected PatchFileError::Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_from_path_reports_invalid_contents_as_format_error() {
+        let path = std::env::temp_dir().join(format!(
+            "rp2a03patch_test_badformat_{}_{}.rp2a03patch",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, b"not a patch at all").expect("setup write must succeed");
+
+        let err = load_from_path(&path).unwrap_err();
+        std::fs::remove_file(&path).expect("cleanup must succeed");
+
+        assert!(matches!(err, PatchFileError::Format(PatchError::BadMagic)));
     }
 }
