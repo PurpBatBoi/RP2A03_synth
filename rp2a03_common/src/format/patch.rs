@@ -6,7 +6,9 @@
 //! Format spec: Ideas-ref-folder\MARKDOWNs\Save&Load\Rp2a03_patch_format.md
 //! (outside version control — see that file's own header for why).
 
-use crate::{ChannelMode, MAX_SEQUENCES, SequenceBank, SequenceSlot, SharedSequences, sequence_to_text};
+use crate::{
+    ChannelMode, MAX_SEQUENCES, SequenceBank, SequenceSlot, SharedSequences, sequence_to_text,
+};
 use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence, VolMode};
 use std::fmt;
 
@@ -123,11 +125,20 @@ pub enum PatchError {
     /// `step_time_hz` is outside `1..=600`.
     StepTimeOutOfRange(u16),
     /// An `active_indices` entry is `>= MAX_SEQUENCES`.
-    ActiveIndexOutOfRange { envelope: &'static str, index: usize },
+    ActiveIndexOutOfRange {
+        envelope: &'static str,
+        index: usize,
+    },
     /// A sequence entry's `index` is `>= MAX_SEQUENCES`.
-    InvalidSequenceIndex { envelope: &'static str, index: usize },
+    InvalidSequenceIndex {
+        envelope: &'static str,
+        index: usize,
+    },
     /// The same `index` appears more than once in one envelope type's array.
-    DuplicateSequenceIndex { envelope: &'static str, index: usize },
+    DuplicateSequenceIndex {
+        envelope: &'static str,
+        index: usize,
+    },
 }
 
 impl fmt::Display for PatchError {
@@ -196,7 +207,9 @@ impl Patch {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, PatchError> {
-        let payload = bytes.strip_prefix(&PATCH_MAGIC).ok_or(PatchError::BadMagic)?;
+        let payload = bytes
+            .strip_prefix(&PATCH_MAGIC)
+            .ok_or(PatchError::BadMagic)?;
         let patch: Self = rmp_serde::from_slice(payload).map_err(PatchError::Decode)?;
         patch.validate()?;
         Ok(patch)
@@ -426,7 +439,10 @@ mod tests {
             rmp_serde::from_slice(&bytes).expect("legacy bytes must still decode");
         assert_eq!(restored.vol_mode, VolMode::Steps16);
         assert_eq!(restored.values, vec![10, 20]);
-        assert!(restored.enabled, "legacy payloads must default enabled to true");
+        assert!(
+            restored.enabled,
+            "legacy payloads must default enabled to true"
+        );
     }
 
     #[test]
@@ -540,7 +556,10 @@ mod tests {
         let err = Patch::from_bytes(&bytes).unwrap_err();
         assert!(matches!(
             err,
-            PatchError::DuplicateSequenceIndex { envelope: "vol", index: 3 }
+            PatchError::DuplicateSequenceIndex {
+                envelope: "vol",
+                index: 3
+            }
         ));
     }
 
@@ -555,7 +574,10 @@ mod tests {
         let err = Patch::from_bytes(&bytes).unwrap_err();
         assert!(matches!(
             err,
-            PatchError::DuplicateSequenceIndex { envelope: "duty", index: 3 }
+            PatchError::DuplicateSequenceIndex {
+                envelope: "duty",
+                index: 3
+            }
         ));
     }
 
@@ -705,7 +727,10 @@ mod tests {
         assert_eq!(restored.selected_sequence(2).values, vec![1, -1, 2]);
         assert_eq!(restored.selected_sequence(2).loop_point, Some(1));
         assert_eq!(restored.selected_sequence(2).release_point, Some(2));
-        assert_eq!(restored.selected_sequence(2).pitch_mode, PitchMode::Absolute);
+        assert_eq!(
+            restored.selected_sequence(2).pitch_mode,
+            PitchMode::Absolute
+        );
         assert_eq!(restored.selected_sequence(2).arp_mode, ArpMode::Relative);
         assert_eq!(restored.selected_sequence(2).vol_mode, VolMode::Steps64);
         assert!(!restored.sequence_enabled(2));

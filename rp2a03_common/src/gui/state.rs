@@ -269,7 +269,12 @@ mod tests {
     #[test]
     fn sequence_bank_mut_allows_writing_an_arbitrary_slot() {
         let mut state = SharedSequences::default();
-        state.sequence_bank_mut(2).slot_mut(50).sequence.values.push(7);
+        state
+            .sequence_bank_mut(2)
+            .slot_mut(50)
+            .sequence
+            .values
+            .push(7);
         assert_eq!(state.sequence_bank(2).slots()[50].sequence.values, vec![7]);
     }
 
