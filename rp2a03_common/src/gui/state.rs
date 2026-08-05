@@ -45,7 +45,12 @@ pub struct SequenceSlot {
     ///
     /// This belongs to the slot rather than the envelope-type bank so changing
     /// sequence indexes does not carry the previous index's enabled state over.
-    enabled: bool,
+    ///
+    /// `pub(crate)` rather than fully private: `.rp2a03patch` load needs to set
+    /// this directly when writing an arbitrary slot (see `rp2a03_common::format::patch`),
+    /// bypassing the tab/selection-scoped accessors below which only reach the
+    /// currently-selected slot.
+    pub(crate) enabled: bool,
 }
 
 /// The complete set of sequences available to one envelope type.
@@ -74,6 +79,10 @@ impl SequenceBank {
 
     pub fn slot_mut(&mut self, index: usize) -> &mut SequenceSlot {
         &mut self.slots[index.min(MAX_SEQUENCES - 1)]
+    }
+
+    pub(crate) fn slots(&self) -> &[SequenceSlot] {
+        &self.slots
     }
 }
 
@@ -173,6 +182,26 @@ impl SharedSequences {
     pub fn revision(&self) -> u64 {
         self.revision
     }
+
+    pub(crate) fn sequence_bank(&self, tab: usize) -> &SequenceBank {
+        &self.sequence_banks[Self::tab_index(tab)]
+    }
+
+    pub(crate) fn sequence_bank_mut(&mut self, tab: usize) -> &mut SequenceBank {
+        self.revision += 1;
+        let tab = Self::tab_index(tab);
+        &mut self.sequence_banks[tab]
+    }
+
+    /// Discards all sequence-bank content and active-slot selections across all
+    /// 5 envelope types, replacing them with defaults. Leaves every other field
+    /// (`channel_mode`, `polyphony`, `max_voices`, portamento settings) untouched
+    /// — `.rp2a03patch` load only owns sequence data, not those params.
+    pub(crate) fn clear_all_sequences(&mut self) {
+        self.sequence_banks = std::array::from_fn(|_| SequenceBank::default());
+        self.sequence_indices = [0; SEQUENCE_TYPE_COUNT];
+        self.revision += 1;
+    }
 }
 
 #[cfg(test)]
@@ -229,5 +258,34 @@ mod tests {
         assert!(state.sequence_enabled(0));
         state.set_selected_sequence_index(0, 1);
         assert!(state.sequence_enabled(0));
+    }
+
+    #[test]
+    fn sequence_bank_slots_exposes_all_128_slots() {
+        let state = SharedSequences::default();
+        assert_eq!(state.sequence_bank(0).slots().len(), MAX_SEQUENCES);
+    }
+
+    #[test]
+    fn sequence_bank_mut_allows_writing_an_arbitrary_slot() {
+        let mut state = SharedSequences::default();
+        state.sequence_bank_mut(2).slot_mut(50).sequence.values.push(7);
+        assert_eq!(state.sequence_bank(2).slots()[50].sequence.values, vec![7]);
+    }
+
+    #[test]
+    fn clear_all_sequences_resets_banks_and_indices_but_not_other_fields() {
+        let mut state = SharedSequences::default();
+        state.set_selected_sequence_index(0, 10);
+        state.selected_sequence_mut(0).1.values.push(1);
+        state.channel_mode = ChannelMode::Triangle;
+        state.polyphony = true;
+
+        state.clear_all_sequences();
+
+        assert_eq!(state.selected_sequence_index(0), 0);
+        assert!(state.selected_sequence(0).is_empty());
+        assert_eq!(state.channel_mode, ChannelMode::Triangle);
+        assert!(state.polyphony);
     }
 }
