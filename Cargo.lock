@@ -949,7 +949,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.19",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1385,7 +1385,7 @@ dependencies = [
  "once_cell",
  "termcolor",
  "time",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1413,7 +1413,7 @@ dependencies = [
  "serde_json",
  "vst3",
  "widestring",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2184,7 +2184,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "rustix 1.1.4",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2194,6 +2194,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
+]
+
+[[package]]
 name = "rp2a03_common"
 version = "0.0.7-Alpha"
 dependencies = [
@@ -2201,6 +2220,7 @@ dependencies = [
  "egui_extras",
  "image",
  "nice-plug",
+ "rmp-serde",
  "rp2a03_core",
  "serde",
 ]
