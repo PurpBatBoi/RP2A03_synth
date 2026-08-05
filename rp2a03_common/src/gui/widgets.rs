@@ -23,6 +23,19 @@ struct MarkerDragState {
 struct LineDrawState {
     start: Pos2,
     last: Pos2,
+    /// Curvature applied to the drawn ramp, in `-1.0..=1.0`. `0.0` is a
+    /// straight line; positive bows the curve toward an ease-out (convex)
+    /// shape, negative toward an ease-in (concave) shape. Adjusted by
+    /// scrolling the mouse wheel while the line is being drawn.
+    tension: f32,
+}
+
+/// Warps a normalized `0.0..=1.0` position along a drawn line by `tension`
+/// (`-1.0..=1.0`) to produce a curved ramp instead of a straight one. `t` and
+/// the endpoints are unaffected; only the interior of the curve bows toward
+/// or away from the line's start.
+fn apply_tension(t: f32, tension: f32) -> f32 {
+    (t + tension * t * (1.0 - t)).clamp(0.0, 1.0)
 }
 
 /// Renders a FamiTracker-style envelope bar graph and handles interactive mouse editing.
@@ -126,8 +139,13 @@ pub fn draw_envelope_bar_graph(
         }
     }
 
+    // While a right-click line draw is in progress, the scroll wheel controls
+    // its curvature instead of panning the arpeggio view.
+    let line_drawing = graph_response.dragged_by(egui::PointerButton::Secondary)
+        || graph_response.drag_started_by(egui::PointerButton::Secondary);
+
     // Handle mouse wheel scrolling for Arpeggio
-    if is_arpeggio && (graph_response.hovered() || scrollbar_response.hovered()) {
+    if is_arpeggio && !line_drawing && (graph_response.hovered() || scrollbar_response.hovered()) {
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll_delta.abs() > 0.0f32 {
             let change = (scroll_delta / 8.0f32).round() as i16;
@@ -387,6 +405,7 @@ pub fn draw_envelope_bar_graph(
                     LineDrawState {
                         start: pointer_pos,
                         last: pointer_pos,
+                        tension: 0.0,
                     },
                 );
             });
@@ -399,6 +418,13 @@ pub fn draw_envelope_bar_graph(
                 .data_mut(|d| d.get_temp::<LineDrawState>(line_draw_id))
         {
             state.last = pointer_pos;
+
+            // Scroll wheel bends the ramp's curvature instead of its endpoints.
+            let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll_delta.abs() > 0.0f32 {
+                state.tension = (state.tension + scroll_delta * 0.003f32).clamp(-1.0, 1.0);
+            }
+
             ui.ctx().data_mut(|d| d.insert_temp(line_draw_id, state));
 
             let p0 = state.start;
@@ -422,7 +448,8 @@ pub fn draw_envelope_bar_graph(
                 } else {
                     let s_x = graph_rect.min.x + (s as f32 + 0.5) * step_width;
                     let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
-                    p0.y + t * (p1.y - p0.y)
+                    let curved_t = apply_tension(t, state.tension);
+                    p0.y + curved_t * (p1.y - p0.y)
                 };
 
                 let clamped_val = pos_y_to_val(
@@ -687,10 +714,29 @@ pub fn draw_envelope_bar_graph(
         .ctx()
         .data(|d| d.get_temp::<LineDrawState>(ui.make_persistent_id("envelope_line_draw_state")))
     {
-        painter.line_segment(
-            [state.start, state.last],
-            Stroke::new(4.0f32, Color32::from_rgba_unmultiplied(255, 255, 255, 200)),
-        );
+        let preview_stroke = Stroke::new(4.0f32, Color32::from_rgba_unmultiplied(255, 255, 255, 200));
+        const PREVIEW_SEGMENTS: u32 = 24;
+        let mut prev = state.start;
+        for i in 1..=PREVIEW_SEGMENTS {
+            let t = i as f32 / PREVIEW_SEGMENTS as f32;
+            let curved_t = apply_tension(t, state.tension);
+            let next = Pos2::new(
+                state.start.x + (state.last.x - state.start.x) * t,
+                state.start.y + (state.last.y - state.start.y) * curved_t,
+            );
+            painter.line_segment([prev, next], preview_stroke);
+            prev = next;
+        }
+
+        if state.tension.abs() > 0.01f32 {
+            painter.text(
+                state.last + Vec2::new(8.0f32, -8.0f32),
+                egui::Align2::LEFT_BOTTOM,
+                format!("tension {:+.2}", state.tension),
+                egui::FontId::proportional(11.0f32),
+                Color32::from_rgb(255, 220, 120),
+            );
+        }
     }
 
     // Render loop/release region headers
@@ -987,5 +1033,34 @@ mod tests {
         assert_eq!(pos_y_to_val(49.8, rect, false, -128, 127, -128, 127), 0);
         // Slightly above center: norm_y = 49.5 / 100 = 0.495 -> slot_idx = (0.495 * 256).floor() = 126 -> 127 - 126 = 1 (no zero snapping!)
         assert_eq!(pos_y_to_val(49.5, rect, false, -128, 127, -128, 127), 1);
+    }
+
+    #[test]
+    fn test_apply_tension_endpoints_are_fixed() {
+        for tension in [-1.0f32, -0.5, 0.0, 0.5, 1.0] {
+            assert_eq!(apply_tension(0.0, tension), 0.0);
+            assert_eq!(apply_tension(1.0, tension), 1.0);
+        }
+    }
+
+    #[test]
+    fn test_apply_tension_zero_is_linear() {
+        assert_eq!(apply_tension(0.25, 0.0), 0.25);
+        assert_eq!(apply_tension(0.5, 0.0), 0.5);
+        assert_eq!(apply_tension(0.75, 0.0), 0.75);
+    }
+
+    #[test]
+    fn test_apply_tension_bows_curve_and_stays_in_bounds() {
+        // Positive tension bows the midpoint above the straight line (ease-out).
+        assert!(apply_tension(0.5, 1.0) > 0.5);
+        // Negative tension bows the midpoint below the straight line (ease-in).
+        assert!(apply_tension(0.5, -1.0) < 0.5);
+        // Curve never overshoots the 0..=1 range even at extreme tension.
+        for i in 0..=20 {
+            let t = i as f32 / 20.0;
+            assert!((0.0..=1.0).contains(&apply_tension(t, 1.0)));
+            assert!((0.0..=1.0).contains(&apply_tension(t, -1.0)));
+        }
     }
 }
