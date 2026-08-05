@@ -280,12 +280,19 @@ mod tests {
         state.selected_sequence_mut(0).1.values.push(1);
         state.channel_mode = ChannelMode::Triangle;
         state.polyphony = true;
+        state.max_voices = 3;
+        state.portamento_enabled = true;
+        state.portamento_speed = 42;
 
         state.clear_all_sequences();
 
         assert_eq!(state.selected_sequence_index(0), 0);
         assert!(state.selected_sequence(0).is_empty());
+        assert!(state.sequence_bank(0).slots()[10].sequence.is_empty());
         assert_eq!(state.channel_mode, ChannelMode::Triangle);
         assert!(state.polyphony);
+        assert_eq!(state.max_voices, 3);
+        assert!(state.portamento_enabled);
+        assert_eq!(state.portamento_speed, 42);
     }
 }
