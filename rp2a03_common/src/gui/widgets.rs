@@ -714,7 +714,8 @@ pub fn draw_envelope_bar_graph(
         .ctx()
         .data(|d| d.get_temp::<LineDrawState>(ui.make_persistent_id("envelope_line_draw_state")))
     {
-        let preview_stroke = Stroke::new(4.0f32, Color32::from_rgba_unmultiplied(255, 255, 255, 200));
+        let preview_stroke =
+            Stroke::new(4.0f32, Color32::from_rgba_unmultiplied(255, 255, 255, 200));
         const PREVIEW_SEGMENTS: u32 = 24;
         let mut prev = state.start;
         for i in 1..=PREVIEW_SEGMENTS {
