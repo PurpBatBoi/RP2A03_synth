@@ -1,6 +1,7 @@
 //! rp2a03_common\src\lib.rs
 //! `rp2a03_common` - Shared MIDI and GUI logic for RP2A03 Synth.
 
+pub mod format;
 pub mod gui;
 pub mod midi;
 
@@ -12,4 +13,8 @@ pub use gui::{
 pub use midi::{
     ActiveSequences, AnyChannel, ChannelMode, HostAutomationControls, MidiHandler, SequenceReload,
     freq_to_period, freq_to_triangle_period, midi_note_to_freq,
+};
+pub use format::patch::{
+    ActiveIndices, CURRENT_FORMAT_VERSION, PATCH_MAGIC, Patch, PatchError, PatchSequenceEntry,
+    PatchSequences,
 };
