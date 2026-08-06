@@ -423,9 +423,18 @@ fn apply_channel_mode_change(
 /// call the two always agree and the previous frame's value has to be kept here.
 ///
 /// Gating on a real transition is load-bearing, not defensive style:
-/// `channel_mode` is also driven directly by host automation of the Waveform
-/// parameter, independent of Sequence Index, so an unconditional
-/// compare-and-apply every repaint would fight that automation and revert it.
+/// `apply_loaded_patch` runs *mid-frame*, from `poll_pending_dialogs` inside
+/// `draw_header`, and sets `channel_mode` to the loaded patch's waveform while
+/// this frame's `shared_sequence_index` is still the **old** slot. An
+/// unconditional compare-and-apply would read `slot_waveform(old_index)` and
+/// clobber the waveform that was just loaded. The gate is what lets a load
+/// survive to the next frame, where the index has caught up.
+///
+/// (Until the Waveform parameter was hidden, this gate also kept the recall
+/// from fighting direct host automation of it. That writer no longer exists —
+/// see the comment on `waveform` in `rp2a03_niceplug/src/params.rs` — but the
+/// load path above keeps the gate mandatory.)
+///
 /// A `None` `last_index` (before the first frame) deliberately recalls nothing,
 /// so the first frame can't misfire over a restored project's waveform.
 fn recall_slot_waveform(
@@ -1229,10 +1238,12 @@ mod tests {
     }
 
     #[test]
-    fn recall_leaves_direct_waveform_automation_alone() {
-        // Waveform is its own host parameter, automatable with no Sequence Index
-        // change involved. Repaints that follow such an automation move must not
-        // drag the channel mode back to what the current slot remembers.
+    fn recall_only_fires_on_a_real_index_transition() {
+        // `apply_loaded_patch` sets `channel_mode` mid-frame, while this
+        // frame's index is still the old slot. If the recall compared and
+        // applied on every repaint instead of only on a transition, it would
+        // read the old slot's remembered waveform and clobber the loaded one.
+        // This pins that guard: repaints at an unchanged index change nothing.
         let mut data = SharedSequences::default();
         data.set_slot_waveform(3, ChannelMode::Triangle);
         let mut last = None;
@@ -1243,8 +1254,8 @@ mod tests {
         assert_eq!(data.channel_mode, ChannelMode::Pulse);
         assert_eq!(result.new_channel_mode, None);
 
-        // The host automates Waveform straight to Noise, then the editor
-        // repaints several times with the index unchanged.
+        // Stand in for a load having just written `channel_mode` directly,
+        // then repaint several times with the index unchanged.
         data.channel_mode = ChannelMode::Noise;
         for _ in 0..3 {
             let mut result = EditorResult::default();
@@ -1252,7 +1263,8 @@ mod tests {
             assert_eq!(
                 data.channel_mode,
                 ChannelMode::Noise,
-                "a repaint with no index change must not fight Waveform automation"
+                "a repaint with no index change must not overwrite a waveform \
+                 that was set directly this frame"
             );
             assert_eq!(result.new_channel_mode, None);
         }
