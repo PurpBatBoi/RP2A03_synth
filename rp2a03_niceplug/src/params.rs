@@ -87,15 +87,18 @@ impl Default for Rp2a03Params {
             pitch_slide_range: IntParam::new("Pitch Slide Range", 2, linear(0, 24)),
             step_time: IntParam::new("Step Time", 60, linear(1, 600)),
             // Hidden, not merely non-automatable. Waveform is slot-owned
-            // instrument data: the editor combo box is its single writer, and
-            // that path writes through to `slot_waveforms`. Any second writer
-            // the host offers — automation lane or generic UI — would not, so
-            // its value would be silently discarded the next time Sequence
-            // Index moved off the slot and back. `.non_automatable()` closes
-            // only the lane and leaves the generic UI, which is the same
-            // footgun somewhere harder to find. Automate Sequence Index
-            // instead. Hiding does not remove the parameter from saved host
-            // state, and does not stop the editor writing it.
+            // instrument data: the editor is its only writer, and every editor
+            // path — combo box, patch load, per-slot recall — writes through to
+            // `slot_waveforms`. Any writer the host offers — automation lane or
+            // generic UI — would not, so its value would be silently discarded
+            // the next time Sequence Index moved off the slot and back.
+            // `.non_automatable()` closes only the lane and leaves the generic
+            // UI, which is the same footgun somewhere harder to find. Automate
+            // Sequence Index instead. Note this is advertisement, not
+            // enforcement: the wrappers consult these flags only when telling
+            // the host what exists, and apply incoming events by hash without
+            // checking them. Hiding does not remove the parameter from saved
+            // host state, and does not stop the editor writing it.
             waveform: IntParam::new("Waveform", 0, linear(0, 4)).hide(),
             polyphony: BoolParam::new("Polyphony", false),
             max_voices: IntParam::new("Max Voices", 8, linear(1, MAX_VOICES as i32)),

@@ -356,8 +356,16 @@ fn waveform_is_hidden_from_the_host() {
     );
     assert!(
         !params.sequence_number.flags().contains(ParamFlags::HIDDEN),
-        "Sequence Index stays automatable — it is the intended way to change \
+        "Sequence Index stays visible — it is the intended way to change \
          waveform over a timeline"
+    );
+    assert!(
+        !params
+            .sequence_number
+            .flags()
+            .contains(ParamFlags::NON_AUTOMATABLE),
+        "Sequence Index stays automatable — hiding Waveform is only coherent \
+         if the slot index it defers to can still be automated"
     );
 }
 

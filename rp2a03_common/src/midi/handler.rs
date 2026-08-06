@@ -504,11 +504,14 @@ impl MidiHandler {
         }
     }
 
-    /// Rebase `macro_period` when the host's Waveform parameter moves the handler to
-    /// a channel that measures periods differently.
+    /// Rebase `macro_period` when the waveform changes to a channel that measures
+    /// periods differently.
     ///
-    /// `channel_mode` is assigned straight from the host parameter every block, so a
-    /// switch can land under a sounding note. Periods are channel-specific: the VRC6
+    /// `channel_mode` is assigned straight from the `waveform` parameter every block,
+    /// so a switch can land under a sounding note. That parameter is hidden from the
+    /// host, so the change always originates in the editor — the combo box, a patch
+    /// load, or a per-slot recall on a Sequence Index move — but it still arrives
+    /// mid-note as far as the audio thread is concerned. Periods are channel-specific: the VRC6
     /// sawtooth divides by its 14-stage accumulator while every other channel divides
     /// by 16, so a period carried over unchanged detunes the held note by roughly two
     /// semitones. Nothing corrects it either — only an *absolute* arpeggio or pitch
