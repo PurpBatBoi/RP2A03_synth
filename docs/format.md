@@ -369,10 +369,12 @@ make the file self-identifying regardless of name.
 - `active_indices` values are in `0..=127`.
 - `slot_waveforms` `index` values are in `0..=127` and unique across the array.
   A repeated `index` is rejected rather than resolved last-write-wins, matching
-  the duplicate rule for sequence entries. Uniqueness also caps the array at 128
-  entries, so a crafted file cannot pad it with an unbounded number of
-  individually-valid repeats — the same resource bound `MAX_SEQUENCE_LEN` gives
-  sequence values.
+  the duplicate rule for sequence entries. Uniqueness also caps an *accepted*
+  array at 128 entries, so nothing downstream has to cope with a vec padded out
+  with repeats. Note this is not a bound on decode-time memory: a loader that
+  validates after deserializing (as the reference implementation does) has
+  already materialized the whole array by then, so what actually limits that
+  allocation is the file's own size. `MAX_SEQUENCE_LEN` carries the same caveat.
 - `step_time_hz` is in `1..=600`.
 - `format_version` is a version the loader understands; otherwise refuse to
   load rather than guess.

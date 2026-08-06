@@ -208,10 +208,13 @@ pub enum PatchError {
     InvalidSlotWaveformIndex { index: usize },
     /// The same `index` appears more than once in `slot_waveforms`. Rejected
     /// rather than resolved last-write-wins, matching `DuplicateSequenceIndex`.
-    /// This also caps `slot_waveforms` at `MAX_SEQUENCES` legitimate entries:
-    /// without it, a crafted file could pad the vec with an unbounded number of
-    /// individually-valid repeated entries — the same resource-exhaustion shape
-    /// `MAX_SEQUENCE_LEN` exists to prevent for sequence values.
+    ///
+    /// This also caps an *accepted* patch at `MAX_SEQUENCES` entries, so no
+    /// downstream code has to cope with a vec padded out with repeats. It is
+    /// not a bound on decode-time memory: like every check in `validate`, it
+    /// runs after `rmp_serde` has already materialized the whole vec, so what
+    /// actually limits that allocation is the file's own size (each entry costs
+    /// bytes on the wire). `MAX_SEQUENCE_LEN` carries the same caveat.
     DuplicateSlotWaveformIndex { index: usize },
 }
 
@@ -435,11 +438,16 @@ impl Patch {
                 hipitch: collect_used_entries(shared.sequence_bank(3)),
                 duty: collect_used_entries(shared.sequence_bank(4)),
             },
+            // Named `remembered` rather than `waveform` so it cannot be confused
+            // with this function's `waveform` parameter above, which is the one
+            // instrument-wide live value, not per-slot memory.
             slot_waveforms: (0..MAX_SEQUENCES)
                 .filter_map(|index| {
-                    let waveform = shared.slot_waveform(index);
-                    (waveform != ChannelMode::default())
-                        .then_some(PatchSlotWaveform { index, waveform })
+                    let remembered = shared.slot_waveform(index);
+                    (remembered != ChannelMode::default()).then_some(PatchSlotWaveform {
+                        index,
+                        waveform: remembered,
+                    })
                 })
                 .collect(),
         }
@@ -447,11 +455,14 @@ impl Patch {
 
     /// Replaces `shared`'s sequence-bank content, active-slot selections, and
     /// per-slot remembered waveforms with this patch's. Does **not** touch the
-    /// *live* `shared.channel_mode` (which is a different thing from the
-    /// per-slot waveform memory it does restore) or any
-    /// host parameter — `waveform`/`step_time_hz` are plain fields on `Patch`
-    /// for the caller to push through the host parameter system instead (see
-    /// this plan's "What this plan deliberately does NOT wire up").
+    /// *live* `shared.channel_mode` (a different thing from the per-slot
+    /// waveform memory it does restore) or any host parameter —
+    /// `waveform`/`step_time_hz` are plain fields on `Patch` for the caller to
+    /// push through the host parameter system instead, because
+    /// `SequenceCache::refresh` re-asserts params from the audio thread every
+    /// block and would stomp anything written here directly.
+    /// `rp2a03_common::gui::editor::apply_loaded_patch` is that caller; it
+    /// hands both values back through `EditorResult`.
     pub fn apply_to_shared_sequences(&self, shared: &mut SharedSequences) {
         shared.clear_all_sequences();
         for (_envelope, tab, entries) in self.sequences.entries() {
@@ -807,8 +818,10 @@ mod tests {
     #[test]
     fn rejects_duplicate_slot_waveform_index() {
         // Rejected rather than resolved last-write-wins. This is also what caps
-        // `slot_waveforms` at MAX_SEQUENCES entries, so a crafted file cannot
-        // pad it with unbounded repeats of an individually-valid index.
+        // an accepted patch at MAX_SEQUENCES entries, so no downstream code has
+        // to cope with a vec padded out with repeats — see
+        // `DuplicateSlotWaveformIndex`'s docs for why that is not the same
+        // thing as a bound on decode-time allocation.
         let mut patch = sample_patch();
         patch.slot_waveforms.push(PatchSlotWaveform {
             index: 3,
@@ -1298,6 +1311,17 @@ mod tests {
             Patch::from_bytes(GOLDEN_V1).expect("golden v1 bytes must still decode"),
             sample_patch()
         );
+    }
+
+    #[test]
+    fn golden_v1_bytes_are_still_exactly_what_the_encoder_writes() {
+        // The decode direction above is what protects files already on disk.
+        // This pins the encode direction, which nothing else does: a change
+        // affecting only what *new* files look like — adding
+        // `skip_serializing_if`, switching a struct to a map representation,
+        // reordering how a field is written — would leave every other test in
+        // this module green while silently splitting the format in two.
+        assert_eq!(sample_patch().to_bytes(), GOLDEN_V1);
     }
 
     /// The exact bytes `sample_patch()` produced *before* `slot_waveforms`

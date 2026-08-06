@@ -332,10 +332,12 @@ mod tests {
     }
 
     #[test]
-    fn clear_all_sequences_resets_banks_and_indices_but_not_other_fields() {
+    fn clear_all_sequences_resets_sequence_data_but_not_other_fields() {
         let mut state = SharedSequences::default();
         state.set_selected_sequence_index(0, 10);
         state.selected_sequence_mut(0).1.values.push(1);
+        state.set_slot_waveform(10, ChannelMode::Noise);
+        state.set_slot_waveform(127, ChannelMode::Vrc6Saw);
         state.channel_mode = ChannelMode::Triangle;
         state.polyphony = true;
         state.max_voices = 3;
@@ -347,10 +349,62 @@ mod tests {
         assert_eq!(state.selected_sequence_index(0), 0);
         assert!(state.selected_sequence(0).is_empty());
         assert!(state.sequence_bank(0).slots()[10].sequence.is_empty());
+        // Patch-owned: a `.rp2a03patch` only encodes slots that differ from the
+        // default, so any slot the incoming patch omits must already be back to
+        // `Pulse` rather than holding the previous instrument's waveform.
+        assert_eq!(state.slot_waveform(10), ChannelMode::Pulse);
+        assert_eq!(state.slot_waveform(127), ChannelMode::Pulse);
+        // Not patch-owned, so these survive the clear.
         assert_eq!(state.channel_mode, ChannelMode::Triangle);
         assert!(state.polyphony);
         assert_eq!(state.max_voices, 3);
         assert!(state.portamento_enabled);
         assert_eq!(state.portamento_speed, 42);
+    }
+
+    #[test]
+    fn slot_waveform_accessors_clamp_out_of_range_indexes() {
+        let mut state = SharedSequences::default();
+
+        state.set_slot_waveform(MAX_SEQUENCES, ChannelMode::Noise);
+        assert_eq!(
+            state.slot_waveform(MAX_SEQUENCES - 1),
+            ChannelMode::Noise,
+            "an out-of-range write must land on the last slot, matching \
+             `set_selected_sequence_index`"
+        );
+        assert_eq!(state.slot_waveform(usize::MAX), ChannelMode::Noise);
+        assert_eq!(
+            state.slot_waveform(0),
+            ChannelMode::Pulse,
+            "clamping must not spill onto unrelated slots"
+        );
+    }
+
+    #[test]
+    fn slot_waveform_accessors_survive_a_truncated_vec() {
+        // Only reachable through a hand-edited or corrupt persisted project
+        // state, since `default_slot_waveforms` always builds MAX_SEQUENCES
+        // entries. The accessors clamp against the real length so this can
+        // never index out of bounds.
+        let mut state = SharedSequences::default();
+        state.slot_waveforms.truncate(2);
+
+        state.set_slot_waveform(MAX_SEQUENCES - 1, ChannelMode::Triangle);
+        assert_eq!(
+            state.slot_waveform(MAX_SEQUENCES - 1),
+            ChannelMode::Triangle
+        );
+        assert_eq!(state.slot_waveform(1), ChannelMode::Triangle);
+        assert_eq!(state.slot_waveform(0), ChannelMode::Pulse);
+
+        state.slot_waveforms.clear();
+        assert_eq!(
+            state.slot_waveform(0),
+            ChannelMode::default(),
+            "an empty vec must read back the default, not panic"
+        );
+        state.set_slot_waveform(0, ChannelMode::Noise);
+        assert_eq!(state.slot_waveform(0), ChannelMode::default());
     }
 }
