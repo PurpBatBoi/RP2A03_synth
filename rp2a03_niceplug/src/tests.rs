@@ -345,6 +345,23 @@ fn polyphonic_voice_count_is_clamped_to_the_bank_size() {
 }
 
 #[test]
+fn waveform_is_hidden_from_the_host() {
+    let params = Rp2a03Params::default();
+
+    assert!(
+        params.waveform.flags().contains(ParamFlags::HIDDEN),
+        "Waveform must stay hidden: it is slot-owned instrument data, and any \
+         host-side writer of it would not write through to `slot_waveforms`, \
+         so its value would silently revert on the next slot transition"
+    );
+    assert!(
+        !params.sequence_number.flags().contains(ParamFlags::HIDDEN),
+        "Sequence Index stays automatable — it is the intended way to change \
+         waveform over a timeline"
+    );
+}
+
+#[test]
 fn waveform_parameter_maps_onto_every_channel_mode() {
     let params = Rp2a03Params::default();
     for (value, expected) in [
