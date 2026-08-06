@@ -46,8 +46,10 @@ https://github.com/user-attachments/assets/d7d7984e-a96e-4002-8f1c-d2bf56444ee7
 - **Software vibrato / tremolo LFOs** (the real 2A03 has none of its own) and
   portamento.
 - **Host automation** for vibrato/tremolo depth+speed, hardware volume, fine and
-  hi pitch, pitch slide (+ range), step time, waveform, polyphony, max voices,
-  and portamento (+ speed).
+  hi pitch, pitch slide (+ range), step time, sequence index, polyphony, max
+  voices, and portamento (+ speed). Waveform is deliberately *not* automatable:
+  it belongs to the sequence slot, which remembers its own waveform, so you
+  change it by automating the sequence index.
 - **MIDI pitch wheel** drives Pitch Slide, and RPN 0 (Pitch Bend Sensitivity)
   drives Pitch Slide Range, up to two octaves. Whichever moved last wins, so the
   wheel takes over from the parameter and the parameter takes it back the moment
