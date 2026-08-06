@@ -11,6 +11,18 @@ persisted automatically via `#[persist = "envelope_data"]`). A `.rp2a03patch`
 file is something the user explicitly saves/loads to move a sound between
 projects or share it, independent of any DAW.
 
+## Simple summary
+
+If you just want to know what's in the file, without the wire-format details:
+
+- The 5 envelope types (volume, arpeggio, pitch, hi-pitch, duty)  — the step values, loop/release
+  points, and per-type mode flags.
+- Which slot is currently selected for each envelope type.
+- Which APU channel/waveform (Pulse, Triangle, Noise, VRC6 Pulse, VRC6 Saw)
+  each slot remembers, and which one is active right now.
+- The current engine speed ("Step Time").
+
+
 ## Scope
 
 A patch stores **envelope data only**. It does *not* include:

@@ -63,6 +63,18 @@ impl EditorUiState {
             .filter(|(_, set_at)| set_at.elapsed() < STATUS_DISPLAY_DURATION)
             .map(|(msg, _)| msg.as_str())
     }
+
+    /// Returns the status message's opacity, starting at 50% and fading
+    /// linearly to 0 over its display window.
+    pub fn status_opacity(&self) -> Option<f32> {
+        self.status.as_ref().and_then(|(_, set_at)| {
+            let elapsed = set_at.elapsed();
+            (elapsed < STATUS_DISPLAY_DURATION).then(|| {
+                let remaining = 1.0 - elapsed.as_secs_f32() / STATUS_DISPLAY_DURATION.as_secs_f32();
+                0.5 * remaining
+            })
+        })
+    }
 }
 
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
@@ -255,7 +267,12 @@ fn save_dialog_and_write(patch: &crate::Patch) -> Option<String> {
     }
 
     Some(match crate::save_patch_to_path(&path, patch) {
-        Ok(()) => format!("Saved {}", path.display()),
+        Ok(()) => format!(
+            "{} saved",
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        ),
         Err(e) => e.to_string(),
     })
 }
@@ -314,7 +331,11 @@ fn poll_pending_dialogs(
                 match crate::load_patch_from_path(&path) {
                     Ok(patch) => {
                         apply_loaded_patch(data, result, &patch);
-                        ui_state.set(format!("Loaded {}", path.display()));
+                        let file_name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        ui_state.set(format!("{file_name} loaded"));
                     }
                     Err(e) => ui_state.set(e.to_string()),
                 }
@@ -1009,8 +1030,14 @@ fn draw_footer(ui: &mut egui::Ui, ui_state: &EditorUiState) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(env!("CARGO_PKG_VERSION")).weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if let Some(status) = ui_state.status_text() {
-                ui.label(status);
+            if let (Some(status), Some(opacity)) =
+                (ui_state.status_text(), ui_state.status_opacity())
+            {
+                ui.scope(|ui| {
+                    ui.set_opacity(opacity);
+                    ui.label(status);
+                });
+                ui.ctx().request_repaint();
             }
         });
     });
