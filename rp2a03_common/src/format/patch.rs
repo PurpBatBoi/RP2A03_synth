@@ -14,13 +14,35 @@ use std::fmt;
 
 /// Fixed file-identity prefix, never bumped — see "Wire format" in the spec.
 pub const PATCH_MAGIC: [u8; 4] = *b"RP2P";
+/// The highest `Patch::format_version` this build can load. `validate`
+/// rejects any file whose `format_version` is greater than this. Bumped only
+/// when a schema change cannot be expressed as an appended,
+/// `#[serde(default)]`-backed field (see the spec's "`format_version`"
+/// section) — e.g. a field is removed, repurposed, or a struct's field order
+/// needs to change.
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
 const MIN_STEP_TIME_HZ: u16 = 1;
 const MAX_STEP_TIME_HZ: u16 = 600;
+/// Upper bound on `PatchSequenceEntry::values.len()`, matching the GUI's own
+/// sequence-length cap (`rp2a03_common::gui::editor`'s size-`DragValue`
+/// `range(0..=256)`). Without this cap a crafted multi-megabyte file can
+/// decode into a multi-million-step sequence; `Sequence::clone_from` is
+/// documented allocation-free for real-time safety
+/// (`rp2a03_core/src/sequencer.rs`), so an oversized sequence would blow that
+/// budget the moment it's played.
+pub const MAX_SEQUENCE_LEN: usize = 256;
 
 /// Top-level `.rp2a03patch` contents. Field order is load-bearing — see the
 /// "Schema evolution rule" section of the format spec. New fields are always
 /// appended after `sequences`; existing fields are never reordered.
+///
+/// This format also embeds several unit-only enums (`ChannelMode`,
+/// `PitchMode`, `ArpMode`, `VolMode`). `rmp-serde` writes unit variants as
+/// their **name string**, not their discriminant — the exact inverse of the
+/// struct-field rule above: variant **names** are load-bearing (renaming
+/// `Vrc6Saw`, `Steps16`, `Relative`, etc. breaks every existing file), while
+/// variant **order**/discriminant values are not (reordering or renumbering
+/// them is harmless).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Patch {
     pub format_version: u32,
@@ -30,6 +52,8 @@ pub struct Patch {
     pub sequences: PatchSequences,
 }
 
+/// Field order is load-bearing — see `Patch`'s doc comment. New fields are
+/// always appended at the end; existing fields are never reordered.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveIndices {
     pub vol: usize,
@@ -39,6 +63,8 @@ pub struct ActiveIndices {
     pub duty: usize,
 }
 
+/// Field order is load-bearing — see `Patch`'s doc comment. New fields are
+/// always appended at the end; existing fields are never reordered.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PatchSequences {
     pub vol: Vec<PatchSequenceEntry>,
@@ -139,6 +165,28 @@ pub enum PatchError {
         envelope: &'static str,
         index: usize,
     },
+    /// A sequence entry's `values` contains an element outside `-128..=127`
+    /// (`Sequence::values`' documented range — Dn-FamiTracker stores sequence
+    /// items as `signed char`).
+    SequenceValueOutOfRange {
+        envelope: &'static str,
+        index: usize,
+        value: i16,
+    },
+    /// A sequence entry's `values.len()` exceeds `MAX_SEQUENCE_LEN`.
+    SequenceTooLong {
+        envelope: &'static str,
+        index: usize,
+        len: usize,
+    },
+    /// A sequence entry's `loop_point`/`release_point` is `> values.len()`
+    /// (a marker positioned exactly at `values.len()` is legal).
+    MarkerOutOfRange {
+        envelope: &'static str,
+        index: usize,
+        marker: &'static str,
+        position: usize,
+    },
 }
 
 impl fmt::Display for PatchError {
@@ -168,6 +216,31 @@ impl fmt::Display for PatchError {
             Self::DuplicateSequenceIndex { envelope, index } => write!(
                 f,
                 "{envelope} sequence entry index {index} appears more than once"
+            ),
+            Self::SequenceValueOutOfRange {
+                envelope,
+                index,
+                value,
+            } => write!(
+                f,
+                "{envelope} sequence entry index {index} has a step value {value} out of range (-128..=127)"
+            ),
+            Self::SequenceTooLong {
+                envelope,
+                index,
+                len,
+            } => write!(
+                f,
+                "{envelope} sequence entry index {index} has {len} steps, exceeding the maximum of {MAX_SEQUENCE_LEN}"
+            ),
+            Self::MarkerOutOfRange {
+                envelope,
+                index,
+                marker,
+                position,
+            } => write!(
+                f,
+                "{envelope} sequence entry index {index}'s {marker} = {position} is out of range"
             ),
         }
     }
@@ -215,7 +288,13 @@ impl Patch {
         Ok(patch)
     }
 
-    fn validate(&self) -> Result<(), PatchError> {
+    /// Checks every loader invariant documented in the format spec's
+    /// "Invariants a loader should validate" section (version, ranges,
+    /// sequence value bounds, marker bounds, duplicate indices). `from_bytes`
+    /// always calls this; it is also `pub` so a future `.fti` importer (or
+    /// any other code constructing a `Patch` from foreign data, bypassing
+    /// `from_bytes` entirely) can validate before use.
+    pub fn validate(&self) -> Result<(), PatchError> {
         if self.format_version > CURRENT_FORMAT_VERSION {
             return Err(PatchError::UnsupportedVersion {
                 found: self.format_version,
@@ -252,6 +331,36 @@ impl Patch {
                     });
                 }
                 seen[entry.index] = true;
+
+                if entry.values.len() > MAX_SEQUENCE_LEN {
+                    return Err(PatchError::SequenceTooLong {
+                        envelope,
+                        index: entry.index,
+                        len: entry.values.len(),
+                    });
+                }
+                for &value in &entry.values {
+                    if !(i16::from(i8::MIN)..=i16::from(i8::MAX)).contains(&value) {
+                        return Err(PatchError::SequenceValueOutOfRange {
+                            envelope,
+                            index: entry.index,
+                            value,
+                        });
+                    }
+                }
+                for (marker, position) in [
+                    ("loop_point", entry.loop_point),
+                    ("release_point", entry.release_point),
+                ] {
+                    if let Some(position) = position.filter(|&p| p > entry.values.len()) {
+                        return Err(PatchError::MarkerOutOfRange {
+                            envelope,
+                            index: entry.index,
+                            marker,
+                            position,
+                        });
+                    }
+                }
             }
         }
         Ok(())
@@ -346,6 +455,7 @@ impl From<PatchError> for PatchFileError {
 }
 
 pub fn save_to_path(path: &std::path::Path, patch: &Patch) -> Result<(), PatchFileError> {
+    patch.validate()?;
     std::fs::write(path, patch.to_bytes())?;
     Ok(())
 }
@@ -537,6 +647,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_active_index_out_of_range_for_every_envelope() {
+        // `ActiveIndexOutOfRange`'s envelope<->field pairing
+        // (`patch.rs::validate`) is a structurally separate literal list from
+        // `PatchSequences::entries()` — this loops over all 5 envelopes so a
+        // future typo like `("hipitch", self.active_indices.pitch)` would be
+        // caught, not just the `"vol"` case the other test exercises.
+        for envelope in ["vol", "arp", "pitch", "hipitch", "duty"] {
+            let mut patch = sample_patch();
+            match envelope {
+                "vol" => patch.active_indices.vol = MAX_SEQUENCES,
+                "arp" => patch.active_indices.arp = MAX_SEQUENCES,
+                "pitch" => patch.active_indices.pitch = MAX_SEQUENCES,
+                "hipitch" => patch.active_indices.hipitch = MAX_SEQUENCES,
+                "duty" => patch.active_indices.duty = MAX_SEQUENCES,
+                _ => unreachable!(),
+            }
+            let bytes = patch.to_bytes();
+            let err = Patch::from_bytes(&bytes).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    PatchError::ActiveIndexOutOfRange { envelope: e, index }
+                        if e == envelope && index == MAX_SEQUENCES
+                ),
+                "expected ActiveIndexOutOfRange{{envelope: {envelope:?}, ..}}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_sequence_index_out_of_range() {
         let mut patch = sample_patch();
         patch.sequences.vol[0].index = MAX_SEQUENCES;
@@ -579,6 +719,142 @@ mod tests {
                 index: 3
             }
         ));
+    }
+
+    #[test]
+    fn rejects_sequence_value_out_of_range() {
+        let mut patch = sample_patch();
+        patch.sequences.vol[0].values = vec![15, i16::from(i8::MAX) + 1, 8];
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PatchError::SequenceValueOutOfRange {
+                    envelope: "vol",
+                    index: 3,
+                    value: 128
+                }
+            ),
+            "expected SequenceValueOutOfRange{{envelope: \"vol\", index: 3, value: 128}}, got {err:?}"
+        );
+
+        let mut patch = sample_patch();
+        patch.sequences.vol[0].values = vec![i16::from(i8::MIN) - 1, 12, 8];
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PatchError::SequenceValueOutOfRange {
+                    envelope: "vol",
+                    index: 3,
+                    value: -129
+                }
+            ),
+            "expected SequenceValueOutOfRange{{envelope: \"vol\", index: 3, value: -129}}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_sequence_value_boundaries() {
+        let mut patch = sample_patch();
+        patch.sequences.vol[0].values = vec![-128, 0, 127];
+        let bytes = patch.to_bytes();
+        assert!(
+            Patch::from_bytes(&bytes).is_ok(),
+            "values of -128 and 127 are within -128..=127 and must be accepted"
+        );
+    }
+
+    #[test]
+    fn rejects_sequence_too_long() {
+        let mut patch = sample_patch();
+        patch.sequences.vol[0].values = vec![0; MAX_SEQUENCE_LEN + 1];
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PatchError::SequenceTooLong {
+                    envelope: "vol",
+                    index: 3,
+                    len
+                } if len == MAX_SEQUENCE_LEN + 1
+            ),
+            "expected SequenceTooLong{{envelope: \"vol\", index: 3, len: {}}}, got {err:?}",
+            MAX_SEQUENCE_LEN + 1
+        );
+    }
+
+    #[test]
+    fn accepts_sequence_at_max_length() {
+        let mut patch = sample_patch();
+        patch.sequences.vol[0].values = vec![0; MAX_SEQUENCE_LEN];
+        patch.sequences.vol[0].loop_point = None;
+        let bytes = patch.to_bytes();
+        assert!(
+            Patch::from_bytes(&bytes).is_ok(),
+            "a sequence with exactly MAX_SEQUENCE_LEN steps must be accepted"
+        );
+    }
+
+    #[test]
+    fn rejects_loop_point_out_of_range() {
+        let mut patch = sample_patch();
+        // sample_entry(3) has 3 values (indices 0..=2); a legal marker can be
+        // at most 3 (== values.len()), so 4 is one past legal.
+        patch.sequences.vol[0].loop_point = Some(4);
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PatchError::MarkerOutOfRange {
+                    envelope: "vol",
+                    index: 3,
+                    marker: "loop_point",
+                    position: 4
+                }
+            ),
+            "expected MarkerOutOfRange{{envelope: \"vol\", index: 3, marker: \"loop_point\", position: 4}}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_release_point_out_of_range() {
+        let mut patch = sample_patch();
+        patch.sequences.vol[0].release_point = Some(4);
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PatchError::MarkerOutOfRange {
+                    envelope: "vol",
+                    index: 3,
+                    marker: "release_point",
+                    position: 4
+                }
+            ),
+            "expected MarkerOutOfRange{{envelope: \"vol\", index: 3, marker: \"release_point\", position: 4}}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_marker_at_exactly_values_len() {
+        // `== values.len()` must stay legal — the conservative rule is the
+        // one that can never reject a file this build itself wrote (see
+        // `sequence_to_text` rendering a marker at `len` in `gui/editor.rs`).
+        let mut patch = sample_patch();
+        patch.sequences.vol[0].values = vec![15, 12, 8];
+        patch.sequences.vol[0].loop_point = Some(3);
+        patch.sequences.vol[0].release_point = Some(3);
+        let bytes = patch.to_bytes();
+        assert!(
+            Patch::from_bytes(&bytes).is_ok(),
+            "a marker positioned exactly at values.len() must be accepted"
+        );
     }
 
     #[test]
@@ -807,5 +1083,56 @@ mod tests {
         std::fs::remove_file(&path).expect("cleanup must succeed");
 
         assert!(matches!(err, PatchFileError::Format(PatchError::BadMagic)));
+    }
+
+    #[test]
+    fn save_to_path_rejects_an_invalid_patch_before_touching_the_filesystem() {
+        let path = std::env::temp_dir().join(format!(
+            "rp2a03patch_test_invalid_save_{}_{}.rp2a03patch",
+            std::process::id(),
+            line!()
+        ));
+        let mut patch = sample_patch();
+        patch.step_time_hz = 0; // deliberately invalid
+
+        let err = save_to_path(&path, &patch).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PatchFileError::Format(PatchError::StepTimeOutOfRange(0))
+            ),
+            "expected PatchFileError::Format(StepTimeOutOfRange(0)), got {err:?}"
+        );
+        assert!(
+            !path.exists(),
+            "save_to_path must validate before writing anything to disk"
+        );
+    }
+
+    // Real output of `sample_patch().to_bytes()` on the final wire layout
+    // (captured after every other change in this file, per the plan's
+    // required ordering). If this test fails, the wire layout changed
+    // incompatibly — i.e. some struct's field order (or an enum variant's
+    // *name*) was reordered/renamed in a way that breaks existing
+    // `.rp2a03patch` files. The fix is almost never to regenerate this
+    // constant: regenerating it only hides the incompatibility from this
+    // test, it does not undo the fact that files already on users' disks
+    // would now decode into the wrong fields. Only regenerate it as a
+    // deliberate, deserving-of-its-own-changelog-entry action alongside a
+    // `format_version` bump and explicit migration handling.
+    const GOLDEN_V1: &[u8] = &[
+        82, 80, 50, 80, 149, 1, 165, 80, 117, 108, 115, 101, 60, 149, 3, 0, 0, 0, 3, 149, 145, 152,
+        3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
+        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195, 144, 144, 144, 145, 152,
+        3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
+        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195,
+    ];
+
+    #[test]
+    fn golden_v1_bytes_still_decode_to_the_same_patch() {
+        assert_eq!(
+            Patch::from_bytes(GOLDEN_V1).expect("golden v1 bytes must still decode"),
+            sample_patch()
+        );
     }
 }

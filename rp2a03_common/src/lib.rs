@@ -7,7 +7,8 @@ pub mod midi;
 
 pub use format::patch::{
     ActiveIndices, CURRENT_FORMAT_VERSION, PATCH_MAGIC, Patch, PatchError, PatchFileError,
-    PatchSequenceEntry, PatchSequences, load_from_path, save_to_path,
+    PatchSequenceEntry, PatchSequences, load_from_path as load_patch_from_path,
+    save_to_path as save_patch_to_path,
 };
 pub use gui::{
     EditorResult, MAX_SEQUENCES, NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT, SequenceBank,
