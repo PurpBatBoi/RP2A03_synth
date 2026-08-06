@@ -27,12 +27,21 @@ pub struct EditorResult {
 /// How long a footer status message stays visible after being set.
 const STATUS_DISPLAY_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Transient, UI-only display state for the editor — e.g. the footer status
-/// message after a Save/Load. Never touches [`SharedSequences`] (audio-relevant
-/// state) or [`EditorResult`] (host-parameter signals).
+/// Transient, UI-only editor state: display state such as the footer status
+/// message after a Save/Load, plus frame-to-frame bookkeeping that has no other
+/// home. Owned by the editor alone — nothing here is read by the audio thread,
+/// and it is neither [`SharedSequences`] (audio-relevant state) nor
+/// [`EditorResult`] (host-parameter signals).
 #[derive(Default)]
 pub struct EditorUiState {
     status: Option<(String, std::time::Instant)>,
+    /// The Sequence Index seen on the previous `render_editor_ui` call, so a
+    /// real cross-frame transition can be told apart from `shared_sequence_index`
+    /// merely agreeing with `data` — which it always does within one call, since
+    /// `shared_sequence_index` *is* `data.selected_sequence_index(0)` read one
+    /// call earlier by the plugin's editor. `None` only before the first frame,
+    /// so that frame cannot misfire a recall.
+    last_sequence_index: Option<usize>,
     /// Set while a Save dialog is showing on its own thread; see
     /// `handle_save_click`'s doc comment for why this can't run on the GUI
     /// thread directly. Polled once per frame in `poll_pending_dialogs`.
@@ -335,6 +344,14 @@ fn apply_loaded_patch(data: &mut SharedSequences, result: &mut EditorResult, pat
 
     patch.apply_to_shared_sequences(data);
 
+    // The load pushes a new Sequence Index as a parameter gesture below, which
+    // makes the next frame see an index transition and recall that slot's
+    // remembered waveform. Anchoring the loaded waveform onto the slot the patch
+    // lands on keeps that recall agreeing with the patch instead of reverting
+    // it — including for files written before per-slot waveforms existed, whose
+    // slots all decode back to the default.
+    data.set_slot_waveform(patch.active_indices.vol, patch.waveform);
+
     // The loaded waveform may not have the tab the editor is sitting on.
     if !tab_is_available(data.selected_tab, data.channel_mode) {
         data.selected_tab = 0;
@@ -353,12 +370,86 @@ fn apply_loaded_patch(data: &mut SharedSequences, result: &mut EditorResult, pat
     result.new_sequence_index = Some(patch.active_indices.vol);
 }
 
+/// Switches the live channel mode, cleaning up any tab the new waveform does
+/// not support, and records the change as a host-parameter gesture.
+///
+/// Shared by the Waveform combo box and the per-slot waveform recall that runs
+/// when the Sequence Index changes, so both paths do the same tab cleanup and
+/// both push the same `new_channel_mode` gesture — `SequenceCache::refresh`
+/// re-asserts `params.waveform` every audio block, so a mode change that skipped
+/// the gesture would be stomped back within one block.
+fn apply_channel_mode_change(
+    data: &mut SharedSequences,
+    new_mode: ChannelMode,
+    result: &mut EditorResult,
+) {
+    match new_mode {
+        // If Duty tab was active, revert to Volume
+        ChannelMode::Triangle => {
+            if data.selected_tab == 4 {
+                cleanup_tab_sequence(data, 4);
+                data.selected_tab = 0;
+            }
+        }
+        // Fine pitch is not an NES noise-channel control. Keep the editor on a
+        // supported tab when switching into Noise.
+        ChannelMode::Noise => {
+            if matches!(data.selected_tab, 2..=4) {
+                cleanup_tab_sequence(data, data.selected_tab);
+                data.selected_tab = 0;
+            }
+        }
+        // The saw keeps its Duty tab: in 16-step mode duty bit 0 is the $B000
+        // rate MSB, so tab 4 stays selectable. Pulse and VRC6 pulse support
+        // every tab, so neither needs cleanup either.
+        ChannelMode::Pulse | ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw => {}
+    }
+
+    data.channel_mode = new_mode;
+    result.new_channel_mode = Some(new_mode);
+}
+
+/// Switches the live waveform to the one `shared_sequence_index`'s slot
+/// remembers, but only when the index actually changed since the previous
+/// frame. `last_index` is that previous frame's value, updated here.
+///
+/// Called from `render_editor_ui` immediately after
+/// `set_all_selected_sequence_indices`, the one point every path that can change
+/// the index converges on: the GUI drag box, host automation, and MIDI Program
+/// Change. The latter two are already written into `SharedSequences` by
+/// `SequenceCache::refresh` on the audio thread before this frame runs, which is
+/// also why the transition can't be detected by comparing against `data` —
+/// `shared_sequence_index` *is* `data.selected_sequence_index(0)`, so within one
+/// call the two always agree and the previous frame's value has to be kept here.
+///
+/// Gating on a real transition is load-bearing, not defensive style:
+/// `channel_mode` is also driven directly by host automation of the Waveform
+/// parameter, independent of Sequence Index, so an unconditional
+/// compare-and-apply every repaint would fight that automation and revert it.
+/// A `None` `last_index` (before the first frame) deliberately recalls nothing,
+/// so the first frame can't misfire over a restored project's waveform.
+fn recall_slot_waveform(
+    data: &mut SharedSequences,
+    shared_sequence_index: usize,
+    last_index: &mut Option<usize>,
+    result: &mut EditorResult,
+) {
+    if last_index.is_some_and(|prev| prev != shared_sequence_index) {
+        let target_mode = data.slot_waveform(shared_sequence_index);
+        if target_mode != data.channel_mode {
+            apply_channel_mode_change(data, target_mode, result);
+        }
+    }
+    *last_index = Some(shared_sequence_index);
+}
+
 fn draw_header(
     ui: &mut egui::Ui,
     data: &mut SharedSequences,
     result: &mut EditorResult,
     ui_state: &mut EditorUiState,
     step_time_hz: u32,
+    shared_sequence_index: usize,
 ) {
     poll_pending_dialogs(data, result, ui_state);
 
@@ -428,58 +519,21 @@ fn draw_header(
                         ChannelMode::Vrc6Saw => "VRC6 | Saw",
                     })
                     .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_value(&mut waveform_id, 0, "2A03 | Pulse")
-                            .clicked()
-                        {
-                            let new_mode = ChannelMode::Pulse;
-                            data.channel_mode = new_mode;
-                            result.new_channel_mode = Some(new_mode);
-                        }
-                        if ui
-                            .selectable_value(&mut waveform_id, 1, "2A03 | Triangle")
-                            .clicked()
-                        {
-                            let new_mode = ChannelMode::Triangle;
-                            // If Duty tab was active, revert to Volume
-                            if data.selected_tab == 4 {
-                                cleanup_tab_sequence(data, 4);
-                                data.selected_tab = 0;
+                        const WAVEFORMS: [(i32, ChannelMode, &str); 5] = [
+                            (0, ChannelMode::Pulse, "2A03 | Pulse"),
+                            (1, ChannelMode::Triangle, "2A03 | Triangle"),
+                            (2, ChannelMode::Noise, "2A03 | Noise"),
+                            (3, ChannelMode::Vrc6Pulse, "VRC6 | Pulse"),
+                            (4, ChannelMode::Vrc6Saw, "VRC6 | Saw"),
+                        ];
+                        for (id, new_mode, label) in WAVEFORMS {
+                            if ui.selectable_value(&mut waveform_id, id, label).clicked() {
+                                apply_channel_mode_change(data, new_mode, result);
+                                // Picking a waveform by hand writes through to the
+                                // selected slot, so returning to this slot later
+                                // recalls it.
+                                data.set_slot_waveform(shared_sequence_index, new_mode);
                             }
-                            data.channel_mode = new_mode;
-                            result.new_channel_mode = Some(new_mode);
-                        }
-                        if ui
-                            .selectable_value(&mut waveform_id, 2, "2A03 | Noise")
-                            .clicked()
-                        {
-                            let new_mode = ChannelMode::Noise;
-                            // Fine pitch is not an NES noise-channel control. Keep the
-                            // editor on a supported tab when switching into Noise.
-                            if matches!(data.selected_tab, 2..=4) {
-                                cleanup_tab_sequence(data, data.selected_tab);
-                                data.selected_tab = 0;
-                            }
-                            data.channel_mode = new_mode;
-                            result.new_channel_mode = Some(new_mode);
-                        }
-                        if ui
-                            .selectable_value(&mut waveform_id, 3, "VRC6 | Pulse")
-                            .clicked()
-                        {
-                            let new_mode = ChannelMode::Vrc6Pulse;
-                            data.channel_mode = new_mode;
-                            result.new_channel_mode = Some(new_mode);
-                        }
-                        if ui
-                            .selectable_value(&mut waveform_id, 4, "VRC6 | Saw")
-                            .clicked()
-                        {
-                            let new_mode = ChannelMode::Vrc6Saw;
-                            // The saw keeps its Duty tab: in 16-step mode duty bit 0
-                            // is the $B000 rate MSB, so tab 4 stays selectable.
-                            data.channel_mode = new_mode;
-                            result.new_channel_mode = Some(new_mode);
                         }
                     });
             },
@@ -969,7 +1023,20 @@ pub fn render_editor_ui(
 
     ui.set_min_height(ui.available_height());
 
+    // Each panel records what the user touched straight into this, so the change
+    // set travels as one value instead of a fan of `&mut Option<_>` out-params.
+    let mut result = EditorResult::default();
+
     data.set_all_selected_sequence_indices(shared_sequence_index);
+
+    // Called right after the line above because that is the one place every path
+    // that can change the index converges — see `recall_slot_waveform`.
+    recall_slot_waveform(
+        data,
+        shared_sequence_index,
+        &mut ui_state.last_sequence_index,
+        &mut result,
+    );
 
     // Noise has no fine-pitch control. This also handles channel changes made
     // through host automation rather than through the editor combobox.
@@ -977,14 +1044,19 @@ pub fn render_editor_ui(
         data.selected_tab = 0;
     }
 
-    // 64-step volume is saw-only; drop back to the 4-bit range on every other channel.
+    // 64-step volume is saw-only; drop back to the 4-bit range on every other
+    // channel. Runs after the recall above so it sees the recalled channel mode,
+    // matching the ordering `apply_loaded_patch` documents.
     sync_volume_step_mode_to_channel(data);
 
-    // Each panel records what the user touched straight into this, so the change
-    // set travels as one value instead of a fan of `&mut Option<_>` out-params.
-    let mut result = EditorResult::default();
-
-    draw_header(ui, data, &mut result, ui_state, step_time_hz);
+    draw_header(
+        ui,
+        data,
+        &mut result,
+        ui_state,
+        step_time_hz,
+        shared_sequence_index,
+    );
     draw_chip_tabs(ui, data);
 
     // Reserve footer space at the bottom of the window with spacing gap
@@ -1090,6 +1162,126 @@ mod tests {
             data.selected_sequence(0).values,
             vec![15, 10, 5],
             "the wrong ordering is expected to scale the steps down by 4"
+        );
+    }
+
+    #[test]
+    fn channel_mode_change_cleans_up_tabs_the_new_waveform_lacks() {
+        // Triangle has no duty envelope; noise has neither duty nor fine pitch.
+        for (mode, tab, expected_tab) in [
+            (ChannelMode::Triangle, 4, 0),
+            (ChannelMode::Triangle, 0, 0),
+            (ChannelMode::Noise, 2, 0),
+            (ChannelMode::Noise, 3, 0),
+            (ChannelMode::Noise, 4, 0),
+            (ChannelMode::Noise, 1, 1),
+            // Every tab is valid on these, including the saw's duty tab.
+            (ChannelMode::Pulse, 4, 4),
+            (ChannelMode::Vrc6Pulse, 4, 4),
+            (ChannelMode::Vrc6Saw, 4, 4),
+        ] {
+            let mut data = SharedSequences::default();
+            data.selected_tab = tab;
+            let mut result = EditorResult::default();
+
+            apply_channel_mode_change(&mut data, mode, &mut result);
+
+            assert_eq!(data.channel_mode, mode);
+            assert_eq!(result.new_channel_mode, Some(mode));
+            assert_eq!(
+                data.selected_tab, expected_tab,
+                "{mode:?} from tab {tab} should land on tab {expected_tab}"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_slots_recalls_that_slots_remembered_waveform() {
+        let mut data = SharedSequences::default();
+        data.set_slot_waveform(0, ChannelMode::Triangle);
+        data.set_slot_waveform(5, ChannelMode::Noise);
+        data.channel_mode = ChannelMode::Triangle;
+
+        let mut last = Some(0);
+        let mut result = EditorResult::default();
+
+        recall_slot_waveform(&mut data, 5, &mut last, &mut result);
+        assert_eq!(data.channel_mode, ChannelMode::Noise);
+        assert_eq!(
+            result.new_channel_mode,
+            Some(ChannelMode::Noise),
+            "the recall must travel out as a host-parameter gesture, or the \
+             audio thread re-asserts the old waveform on its next block"
+        );
+
+        // Back to 0, and on to a slot nobody ever touched.
+        let mut result = EditorResult::default();
+        recall_slot_waveform(&mut data, 0, &mut last, &mut result);
+        assert_eq!(data.channel_mode, ChannelMode::Triangle);
+
+        let mut result = EditorResult::default();
+        recall_slot_waveform(&mut data, 10, &mut last, &mut result);
+        assert_eq!(
+            data.channel_mode,
+            ChannelMode::Pulse,
+            "an untouched slot remembers the default waveform"
+        );
+    }
+
+    #[test]
+    fn recall_leaves_direct_waveform_automation_alone() {
+        // Waveform is its own host parameter, automatable with no Sequence Index
+        // change involved. Repaints that follow such an automation move must not
+        // drag the channel mode back to what the current slot remembers.
+        let mut data = SharedSequences::default();
+        data.set_slot_waveform(3, ChannelMode::Triangle);
+        let mut last = None;
+        let mut result = EditorResult::default();
+
+        // First frame on slot 3: seeds `last`, recalls nothing.
+        recall_slot_waveform(&mut data, 3, &mut last, &mut result);
+        assert_eq!(data.channel_mode, ChannelMode::Pulse);
+        assert_eq!(result.new_channel_mode, None);
+
+        // The host automates Waveform straight to Noise, then the editor
+        // repaints several times with the index unchanged.
+        data.channel_mode = ChannelMode::Noise;
+        for _ in 0..3 {
+            let mut result = EditorResult::default();
+            recall_slot_waveform(&mut data, 3, &mut last, &mut result);
+            assert_eq!(
+                data.channel_mode,
+                ChannelMode::Noise,
+                "a repaint with no index change must not fight Waveform automation"
+            );
+            assert_eq!(result.new_channel_mode, None);
+        }
+    }
+
+    #[test]
+    fn recall_after_a_load_agrees_with_the_loaded_patch() {
+        // Load pushes a new Sequence Index as a parameter gesture, so the next
+        // frame sees a transition and recalls. Without the loaded waveform being
+        // anchored onto the slot it lands on, that recall would revert it —
+        // notably for files written before per-slot waveforms existed.
+        let mut source = SharedSequences::default();
+        source.set_selected_sequence_index(0, 9);
+        source.selected_sequence_mut(0).1.values = vec![15, 7];
+        let patch = crate::Patch::from_shared_sequences(&source, ChannelMode::Vrc6Pulse, 120);
+
+        let mut data = SharedSequences::default();
+        let mut result = EditorResult::default();
+        apply_loaded_patch(&mut data, &mut result, &patch);
+
+        // The frame after the host applies `result.new_sequence_index`.
+        let mut last = Some(0);
+        let mut next_result = EditorResult::default();
+        recall_slot_waveform(&mut data, 9, &mut last, &mut next_result);
+
+        assert_eq!(
+            data.channel_mode,
+            ChannelMode::Vrc6Pulse,
+            "the recall must not revert the just-loaded patch's waveform"
         );
     }
 

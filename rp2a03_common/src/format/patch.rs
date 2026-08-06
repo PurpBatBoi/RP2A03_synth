@@ -3,8 +3,7 @@
 //! instrument's envelope/sequence data, active-slot selection, waveform, and
 //! engine speed, plus conversion to/from the plugin's live `SharedSequences`.
 //!
-//! Format spec: Ideas-ref-folder\MARKDOWNs\Save&Load\Rp2a03_patch_format.md
-//! (outside version control — see that file's own header for why).
+//! Format spec: docs\format.md — read it before changing the wire format.
 
 use crate::{
     ChannelMode, MAX_SEQUENCES, SequenceBank, SequenceSlot, SharedSequences, sequence_to_text,
@@ -50,6 +49,16 @@ pub struct Patch {
     pub step_time_hz: u16,
     pub active_indices: ActiveIndices,
     pub sequences: PatchSequences,
+    /// The waveform each numbered slot remembers, sparsely encoded: a slot
+    /// whose waveform is `ChannelMode::default()` is omitted entirely and
+    /// decodes back to the default via `SharedSequences::default`, the same way
+    /// an empty sequence slot is omitted from `sequences`.
+    ///
+    /// Appended after `sequences` per the schema evolution rule above. Files
+    /// written before per-slot waveforms existed have no such key and decode to
+    /// an empty vec.
+    #[serde(default)]
+    pub slot_waveforms: Vec<PatchSlotWaveform>,
 }
 
 /// Field order is load-bearing — see `Patch`'s doc comment. New fields are
@@ -95,6 +104,14 @@ pub struct PatchSequenceEntry {
     /// was always enabled in practice.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+/// One numbered slot's remembered waveform. Field order is load-bearing — see
+/// `Patch`'s doc comment; new fields are always appended after `waveform`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PatchSlotWaveform {
+    pub index: usize,
+    pub waveform: ChannelMode,
 }
 
 fn default_enabled() -> bool {
@@ -187,6 +204,15 @@ pub enum PatchError {
         marker: &'static str,
         position: usize,
     },
+    /// A `slot_waveforms` entry's `index` is `>= MAX_SEQUENCES`.
+    InvalidSlotWaveformIndex { index: usize },
+    /// The same `index` appears more than once in `slot_waveforms`. Rejected
+    /// rather than resolved last-write-wins, matching `DuplicateSequenceIndex`.
+    /// This also caps `slot_waveforms` at `MAX_SEQUENCES` legitimate entries:
+    /// without it, a crafted file could pad the vec with an unbounded number of
+    /// individually-valid repeated entries — the same resource-exhaustion shape
+    /// `MAX_SEQUENCE_LEN` exists to prevent for sequence values.
+    DuplicateSlotWaveformIndex { index: usize },
 }
 
 impl fmt::Display for PatchError {
@@ -242,6 +268,16 @@ impl fmt::Display for PatchError {
                 f,
                 "{envelope} sequence entry index {index}'s {marker} = {position} is out of range"
             ),
+            Self::InvalidSlotWaveformIndex { index } => write!(
+                f,
+                "slot_waveforms entry index {index} is out of range (0..{MAX_SEQUENCES})"
+            ),
+            Self::DuplicateSlotWaveformIndex { index } => {
+                write!(
+                    f,
+                    "slot_waveforms entry index {index} appears more than once"
+                )
+            }
         }
     }
 }
@@ -363,6 +399,16 @@ impl Patch {
                 }
             }
         }
+        let mut seen_waveform_slots = [false; MAX_SEQUENCES];
+        for entry in &self.slot_waveforms {
+            if entry.index >= MAX_SEQUENCES {
+                return Err(PatchError::InvalidSlotWaveformIndex { index: entry.index });
+            }
+            if seen_waveform_slots[entry.index] {
+                return Err(PatchError::DuplicateSlotWaveformIndex { index: entry.index });
+            }
+            seen_waveform_slots[entry.index] = true;
+        }
         Ok(())
     }
 
@@ -389,11 +435,20 @@ impl Patch {
                 hipitch: collect_used_entries(shared.sequence_bank(3)),
                 duty: collect_used_entries(shared.sequence_bank(4)),
             },
+            slot_waveforms: (0..MAX_SEQUENCES)
+                .filter_map(|index| {
+                    let waveform = shared.slot_waveform(index);
+                    (waveform != ChannelMode::default())
+                        .then_some(PatchSlotWaveform { index, waveform })
+                })
+                .collect(),
         }
     }
 
-    /// Replaces `shared`'s sequence-bank content and active-slot selections
-    /// with this patch's. Does **not** touch `shared.channel_mode` or any
+    /// Replaces `shared`'s sequence-bank content, active-slot selections, and
+    /// per-slot remembered waveforms with this patch's. Does **not** touch the
+    /// *live* `shared.channel_mode` (which is a different thing from the
+    /// per-slot waveform memory it does restore) or any
     /// host parameter — `waveform`/`step_time_hz` are plain fields on `Patch`
     /// for the caller to push through the host parameter system instead (see
     /// this plan's "What this plan deliberately does NOT wire up").
@@ -414,6 +469,12 @@ impl Patch {
         shared.set_selected_sequence_index(2, self.active_indices.pitch);
         shared.set_selected_sequence_index(3, self.active_indices.hipitch);
         shared.set_selected_sequence_index(4, self.active_indices.duty);
+        // `clear_all_sequences` above reset every slot to the default waveform,
+        // so the omitted (default-valued) slots are already correct and only the
+        // encoded ones need writing back.
+        for entry in &self.slot_waveforms {
+            shared.set_slot_waveform(entry.index, entry.waveform);
+        }
     }
 }
 
@@ -501,6 +562,10 @@ mod tests {
                 hipitch: vec![],
                 duty: vec![sample_entry(3)],
             },
+            slot_waveforms: vec![PatchSlotWaveform {
+                index: 3,
+                waveform: ChannelMode::Vrc6Saw,
+            }],
         }
     }
 
@@ -719,6 +784,95 @@ mod tests {
                 index: 3
             }
         ));
+    }
+
+    #[test]
+    fn rejects_slot_waveform_index_out_of_range() {
+        let mut patch = sample_patch();
+        patch.slot_waveforms.push(PatchSlotWaveform {
+            index: MAX_SEQUENCES,
+            waveform: ChannelMode::Noise,
+        });
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PatchError::InvalidSlotWaveformIndex { index } if index == MAX_SEQUENCES
+            ),
+            "expected InvalidSlotWaveformIndex, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_slot_waveform_index() {
+        // Rejected rather than resolved last-write-wins. This is also what caps
+        // `slot_waveforms` at MAX_SEQUENCES entries, so a crafted file cannot
+        // pad it with unbounded repeats of an individually-valid index.
+        let mut patch = sample_patch();
+        patch.slot_waveforms.push(PatchSlotWaveform {
+            index: 3,
+            waveform: ChannelMode::Noise,
+        });
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(err, PatchError::DuplicateSlotWaveformIndex { index: 3 }),
+            "expected DuplicateSlotWaveformIndex, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn slot_waveforms_round_trip_through_shared_sequences() {
+        let mut source = SharedSequences::default();
+        source.set_slot_waveform(0, ChannelMode::Triangle);
+        source.set_slot_waveform(5, ChannelMode::Noise);
+        source.set_slot_waveform(127, ChannelMode::Vrc6Saw);
+        // Explicitly set back to the default — must encode as absent, not as an
+        // entry, so the sparse encoding stays sparse.
+        source.set_slot_waveform(9, ChannelMode::Pulse);
+
+        let patch = Patch::from_shared_sequences(&source, ChannelMode::Triangle, 60);
+        assert_eq!(
+            patch.slot_waveforms,
+            vec![
+                PatchSlotWaveform {
+                    index: 0,
+                    waveform: ChannelMode::Triangle
+                },
+                PatchSlotWaveform {
+                    index: 5,
+                    waveform: ChannelMode::Noise
+                },
+                PatchSlotWaveform {
+                    index: 127,
+                    waveform: ChannelMode::Vrc6Saw
+                },
+            ],
+            "only slots differing from the default belong in the file"
+        );
+
+        let restored = Patch::from_bytes(&patch.to_bytes()).expect("valid patch must decode");
+        // Load into state carrying a stale waveform on a slot the patch omits:
+        // `clear_all_sequences` must wipe it rather than let it survive.
+        let mut target = SharedSequences::default();
+        target.set_slot_waveform(20, ChannelMode::Vrc6Pulse);
+        restored.apply_to_shared_sequences(&mut target);
+
+        assert_eq!(target.slot_waveform(0), ChannelMode::Triangle);
+        assert_eq!(target.slot_waveform(5), ChannelMode::Noise);
+        assert_eq!(target.slot_waveform(127), ChannelMode::Vrc6Saw);
+        assert_eq!(
+            target.slot_waveform(9),
+            ChannelMode::Pulse,
+            "an omitted slot decodes back to the default"
+        );
+        assert_eq!(
+            target.slot_waveform(20),
+            ChannelMode::Pulse,
+            "loading a patch must not leave the previous instrument's per-slot \
+             waveform on a slot the patch does not mention"
+        );
     }
 
     #[test]
@@ -1120,12 +1274,22 @@ mod tests {
     // would now decode into the wrong fields. Only regenerate it as a
     // deliberate, deserving-of-its-own-changelog-entry action alongside a
     // `format_version` bump and explicit migration handling.
+    //
+    // Regenerated once, when `slot_waveforms` was appended to `Patch`. That
+    // append is a *compatible* change — the only difference from the previous
+    // constant is the top-level array header (`149` → `150`, 5 fields to 6) and
+    // the new trailing element; every preceding byte is identical. The
+    // `format_version` bump the paragraph above calls for was deliberately
+    // skipped because the project is unreleased, and
+    // `a_file_saved_before_slot_waveforms_existed_still_loads` below keeps the
+    // pre-append bytes around to prove old files were not orphaned by it.
     const GOLDEN_V1: &[u8] = &[
-        82, 80, 50, 80, 149, 1, 165, 80, 117, 108, 115, 101, 60, 149, 3, 0, 0, 0, 3, 149, 145, 152,
+        82, 80, 50, 80, 150, 1, 165, 80, 117, 108, 115, 101, 60, 149, 3, 0, 0, 0, 3, 149, 145, 152,
         3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
         111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195, 144, 144, 144, 145, 152,
         3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
-        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195,
+        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195, 145, 146, 3, 167, 86,
+        114, 99, 54, 83, 97, 119,
     ];
 
     #[test]
@@ -1134,5 +1298,48 @@ mod tests {
             Patch::from_bytes(GOLDEN_V1).expect("golden v1 bytes must still decode"),
             sample_patch()
         );
+    }
+
+    /// The exact bytes `sample_patch()` produced *before* `slot_waveforms`
+    /// existed — a real file from the previous wire layout, kept verbatim.
+    ///
+    /// This is what an already-saved `.rp2a03patch` on a user's disk looks
+    /// like. `GOLDEN_V1` proves the current layout is stable; this proves the
+    /// change that produced it was backwards compatible, which regenerating
+    /// `GOLDEN_V1` alone can never show.
+    const GOLDEN_BEFORE_SLOT_WAVEFORMS: &[u8] = &[
+        82, 80, 50, 80, 149, 1, 165, 80, 117, 108, 115, 101, 60, 149, 3, 0, 0, 0, 3, 149, 145, 152,
+        3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
+        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195, 144, 144, 144, 145, 152,
+        3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
+        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195,
+    ];
+
+    #[test]
+    fn a_file_saved_before_slot_waveforms_existed_still_loads() {
+        let patch = Patch::from_bytes(GOLDEN_BEFORE_SLOT_WAVEFORMS)
+            .expect("a file from the previous wire layout must still decode");
+
+        assert!(
+            patch.slot_waveforms.is_empty(),
+            "an absent slot_waveforms key must decode to an empty vec, not fail"
+        );
+        // Everything the older file did carry is untouched by the append.
+        assert_eq!(patch.waveform, ChannelMode::Pulse);
+        assert_eq!(patch.step_time_hz, 60);
+        assert_eq!(patch.active_indices.vol, 3);
+        assert_eq!(patch.sequences.vol, vec![sample_entry(3)]);
+
+        // And it applies cleanly: every slot falls back to the default waveform.
+        let mut shared = SharedSequences::default();
+        shared.set_slot_waveform(3, ChannelMode::Noise);
+        patch.apply_to_shared_sequences(&mut shared);
+        for index in 0..MAX_SEQUENCES {
+            assert_eq!(
+                shared.slot_waveform(index),
+                ChannelMode::default(),
+                "slot {index} of a pre-slot_waveforms file must decode to the default"
+            );
+        }
     }
 }

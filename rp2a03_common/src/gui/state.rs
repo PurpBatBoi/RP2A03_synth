@@ -102,6 +102,22 @@ pub struct SharedSequences {
     pub portamento_speed: i32,
     sequence_indices: [usize; SEQUENCE_TYPE_COUNT],
     sequence_banks: [SequenceBank; SEQUENCE_TYPE_COUNT],
+    /// The waveform each numbered slot remembers, so selecting a sequence index
+    /// behaves like recalling an instrument. One value per index (not per
+    /// envelope bank) because `set_all_selected_sequence_indices` already drives
+    /// all 5 banks in lockstep.
+    ///
+    /// Needs a serde default: this whole struct is persisted by the host through
+    /// nice-plug's `#[persist = "envelope_data"]`, and DAW project states saved
+    /// before this field existed won't contain it.
+    ///
+    /// A `Vec` rather than `[ChannelMode; MAX_SEQUENCES]` for the same reason
+    /// `SequenceBank` holds one: serde implements `Deserialize` for arrays only
+    /// up to length 32. Always `MAX_SEQUENCES` long once constructed; the
+    /// accessors below clamp against the real length so a truncated or padded
+    /// deserialized value still can't index out of bounds.
+    #[serde(default = "default_slot_waveforms")]
+    slot_waveforms: Vec<ChannelMode>,
     /// Bumped whenever sequence content is mutated (see `selected_sequence_mut`
     /// and `sequence_enabled_mut`). The audio thread compares this against a
     /// cached value to avoid re-locking and re-cloning sequence data on every
@@ -109,6 +125,10 @@ pub struct SharedSequences {
     /// callers only ever compare it within one plugin instance's lifetime.
     #[serde(skip)]
     revision: u64,
+}
+
+fn default_slot_waveforms() -> Vec<ChannelMode> {
+    vec![ChannelMode::Pulse; MAX_SEQUENCES]
 }
 
 impl Default for SharedSequences {
@@ -122,6 +142,7 @@ impl Default for SharedSequences {
             portamento_speed: 0,
             sequence_indices: [0; SEQUENCE_TYPE_COUNT],
             sequence_banks: std::array::from_fn(|_| SequenceBank::default()),
+            slot_waveforms: default_slot_waveforms(),
             revision: 0,
         }
     }
@@ -146,6 +167,31 @@ impl SharedSequences {
     /// matching sequence numbers without making the envelope banks share data.
     pub fn set_all_selected_sequence_indices(&mut self, index: usize) {
         self.sequence_indices.fill(index.min(MAX_SEQUENCES - 1));
+    }
+
+    /// Clamps an index into `slot_waveforms`' real length, returning `None` only
+    /// if the vec is empty. Length-clamping rather than `MAX_SEQUENCES`-clamping
+    /// because a hand-edited or corrupt persisted project state can deserialize
+    /// a shorter vec than `default_slot_waveforms` builds.
+    fn slot_waveform_index(&self, index: usize) -> Option<usize> {
+        let last = self.slot_waveforms.len().checked_sub(1)?;
+        Some(index.min(MAX_SEQUENCES - 1).min(last))
+    }
+
+    /// The waveform remembered by one numbered slot. Out-of-range indexes clamp
+    /// to the last slot, matching `selected_sequence_index`.
+    pub fn slot_waveform(&self, index: usize) -> ChannelMode {
+        self.slot_waveform_index(index)
+            .map_or(ChannelMode::default(), |i| self.slot_waveforms[i])
+    }
+
+    /// Records the waveform for one numbered slot. Called when the user picks a
+    /// waveform manually (writing through to whichever slot is selected) and
+    /// when a `.rp2a03patch` restores saved per-slot waveforms.
+    pub fn set_slot_waveform(&mut self, index: usize, mode: ChannelMode) {
+        if let Some(i) = self.slot_waveform_index(index) {
+            self.slot_waveforms[i] = mode;
+        }
     }
 
     pub fn selected_sequence(&self, tab: usize) -> &Sequence {
@@ -193,13 +239,20 @@ impl SharedSequences {
         &mut self.sequence_banks[tab]
     }
 
-    /// Discards all sequence-bank content and active-slot selections across all
-    /// 5 envelope types, replacing them with defaults. Leaves every other field
-    /// (`channel_mode`, `polyphony`, `max_voices`, portamento settings) untouched
-    /// — `.rp2a03patch` load only owns sequence data, not those params.
+    /// Discards all sequence-bank content, active-slot selections, and per-slot
+    /// remembered waveforms across all 5 envelope types, replacing them with
+    /// defaults. Leaves every other field (`channel_mode`, `polyphony`,
+    /// `max_voices`, portamento settings) untouched — `.rp2a03patch` load only
+    /// owns sequence data, not those params.
+    ///
+    /// `slot_waveforms` *is* patch-owned: a patch encodes only the slots whose
+    /// waveform differs from the default, so without resetting here, loading a
+    /// patch would leave stale per-slot waveforms from the previous instrument
+    /// on every slot the new patch does not mention.
     pub(crate) fn clear_all_sequences(&mut self) {
         self.sequence_banks = std::array::from_fn(|_| SequenceBank::default());
         self.sequence_indices = [0; SEQUENCE_TYPE_COUNT];
+        self.slot_waveforms = default_slot_waveforms();
         self.revision += 1;
     }
 }
