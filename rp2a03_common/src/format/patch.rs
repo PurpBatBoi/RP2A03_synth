@@ -1,7 +1,8 @@
 //! rp2a03_common\src\format\patch.rs
 //! `.rp2a03patch` native preset file format: encode/decode/validate for one
-//! instrument's envelope/sequence data, active-slot selection, waveform, and
-//! engine speed, plus conversion to/from the plugin's live `SharedSequences`.
+//! instrument's envelope/sequence data, active-slot selection, per-slot
+//! waveforms, and engine speed, plus conversion to/from the plugin's live
+//! `SharedSequences`.
 //!
 //! Format spec: docs\format.md — read it before changing the wire format.
 
@@ -45,7 +46,6 @@ pub const MAX_SEQUENCE_LEN: usize = 256;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Patch {
     pub format_version: u32,
-    pub waveform: ChannelMode,
     pub step_time_hz: u16,
     pub active_indices: ActiveIndices,
     pub sequences: PatchSequences,
@@ -54,9 +54,13 @@ pub struct Patch {
     /// decodes back to the default via `SharedSequences::default`, the same way
     /// an empty sequence slot is omitted from `sequences`.
     ///
-    /// Appended after `sequences` per the schema evolution rule above. Files
-    /// written before per-slot waveforms existed have no such key and decode to
-    /// an empty vec.
+    /// This is also the *only* place the instrument's live channel selection
+    /// lives on disk: the channel a load switches to is whatever
+    /// `active_indices.vol`'s slot remembers here (see `active_waveform`),
+    /// rather than a separately stored value — the live plugin keeps those two
+    /// always in agreement (see `apply_channel_mode_change`'s and the waveform
+    /// combo box's write-through in `rp2a03_common::gui::editor`), so storing
+    /// both would just be the same fact twice.
     #[serde(default)]
     pub slot_waveforms: Vec<PatchSlotWaveform>,
 }
@@ -415,14 +419,9 @@ impl Patch {
         Ok(())
     }
 
-    pub fn from_shared_sequences(
-        shared: &SharedSequences,
-        waveform: ChannelMode,
-        step_time_hz: u16,
-    ) -> Self {
+    pub fn from_shared_sequences(shared: &SharedSequences, step_time_hz: u16) -> Self {
         Self {
             format_version: CURRENT_FORMAT_VERSION,
-            waveform,
             step_time_hz,
             active_indices: ActiveIndices {
                 vol: shared.selected_sequence_index(0),
@@ -438,9 +437,6 @@ impl Patch {
                 hipitch: collect_used_entries(shared.sequence_bank(3)),
                 duty: collect_used_entries(shared.sequence_bank(4)),
             },
-            // Named `remembered` rather than `waveform` so it cannot be confused
-            // with this function's `waveform` parameter above, which is the one
-            // instrument-wide live value, not per-slot memory.
             slot_waveforms: (0..MAX_SEQUENCES)
                 .filter_map(|index| {
                     let remembered = shared.slot_waveform(index);
@@ -453,16 +449,29 @@ impl Patch {
         }
     }
 
+    /// The waveform `active_indices.vol`'s slot remembers — the channel a load
+    /// switches the instrument to. Defaults to `ChannelMode::default()`
+    /// (`Pulse`) if that slot has no `slot_waveforms` entry, the same fallback
+    /// `SharedSequences::slot_waveform` uses.
+    pub fn active_waveform(&self) -> ChannelMode {
+        self.slot_waveforms
+            .iter()
+            .find(|entry| entry.index == self.active_indices.vol)
+            .map_or(ChannelMode::default(), |entry| entry.waveform)
+    }
+
     /// Replaces `shared`'s sequence-bank content, active-slot selections, and
     /// per-slot remembered waveforms with this patch's. Does **not** touch the
-    /// *live* `shared.channel_mode` (a different thing from the per-slot
-    /// waveform memory it does restore) or any host parameter —
-    /// `waveform`/`step_time_hz` are plain fields on `Patch` for the caller to
-    /// push through the host parameter system instead, because
+    /// *live* `shared.channel_mode` (a different, independently-settable field
+    /// that the editor keeps in sync with the active slot's remembered
+    /// waveform, but which this function has no reason to touch directly) or
+    /// any host parameter — `step_time_hz` is a plain field on `Patch` for the
+    /// caller to push through the host parameter system instead, because
     /// `SequenceCache::refresh` re-asserts params from the audio thread every
     /// block and would stomp anything written here directly.
     /// `rp2a03_common::gui::editor::apply_loaded_patch` is that caller; it
-    /// hands both values back through `EditorResult`.
+    /// sets `shared.channel_mode` itself (from `active_waveform`, before
+    /// calling this) and hands `step_time_hz` back through `EditorResult`.
     pub fn apply_to_shared_sequences(&self, shared: &mut SharedSequences) {
         shared.clear_all_sequences();
         for (_envelope, tab, entries) in self.sequences.entries() {
@@ -557,7 +566,6 @@ mod tests {
     fn sample_patch() -> Patch {
         Patch {
             format_version: CURRENT_FORMAT_VERSION,
-            waveform: ChannelMode::Pulse,
             step_time_hz: 60,
             active_indices: ActiveIndices {
                 vol: 3,
@@ -642,7 +650,7 @@ mod tests {
         original.selected_sequence_mut(0).1.values = vec![9, 7, 5];
         *original.sequence_enabled_mut(0) = false;
 
-        let patch = Patch::from_shared_sequences(&original, ChannelMode::Pulse, 60);
+        let patch = Patch::from_shared_sequences(&original, 60);
         let bytes = patch.to_bytes();
         let restored_patch = Patch::from_bytes(&bytes).expect("round-tripped patch must decode");
 
@@ -845,7 +853,7 @@ mod tests {
         // entry, so the sparse encoding stays sparse.
         source.set_slot_waveform(9, ChannelMode::Pulse);
 
-        let patch = Patch::from_shared_sequences(&source, ChannelMode::Triangle, 60);
+        let patch = Patch::from_shared_sequences(&source, 60);
         assert_eq!(
             patch.slot_waveforms,
             vec![
@@ -1046,7 +1054,7 @@ mod tests {
         shared.set_selected_sequence_index(4, 2); // duty
         shared.selected_sequence_mut(4).1.values = vec![11, 12];
 
-        let patch = Patch::from_shared_sequences(&shared, ChannelMode::Pulse, 60);
+        let patch = Patch::from_shared_sequences(&shared, 60);
 
         // Only the one populated slot per bank is collected out of the 128
         // available — proves the "used only" filtering still holds.
@@ -1076,7 +1084,6 @@ mod tests {
         assert_eq!(patch.active_indices.hipitch, 20);
         assert_eq!(patch.active_indices.duty, 2);
 
-        assert_eq!(patch.waveform, ChannelMode::Pulse);
         assert_eq!(patch.step_time_hz, 60);
     }
 
@@ -1116,7 +1123,7 @@ mod tests {
         original.selected_sequence_mut(4).1.values = vec![0, 1];
         *original.sequence_enabled_mut(4) = true;
 
-        let patch = Patch::from_shared_sequences(&original, ChannelMode::Pulse, 60);
+        let patch = Patch::from_shared_sequences(&original, 60);
 
         // Full-entry equality for the pitch tab: proves every field
         // (loop_point, release_point, all three modes, and enabled) — not
@@ -1194,8 +1201,7 @@ mod tests {
         shared.selected_sequence_mut(1).1.values.push(9); // arp slot 0
         *shared.sequence_enabled_mut(1) = true;
 
-        let empty_patch =
-            Patch::from_shared_sequences(&SharedSequences::default(), ChannelMode::Pulse, 60);
+        let empty_patch = Patch::from_shared_sequences(&SharedSequences::default(), 60);
         empty_patch.apply_to_shared_sequences(&mut shared);
 
         assert!(shared.selected_sequence(1).is_empty());
@@ -1288,21 +1294,21 @@ mod tests {
     // deliberate, deserving-of-its-own-changelog-entry action alongside a
     // `format_version` bump and explicit migration handling.
     //
-    // Regenerated once, when `slot_waveforms` was appended to `Patch`. That
-    // append is a *compatible* change — the only difference from the previous
-    // constant is the top-level array header (`149` → `150`, 5 fields to 6) and
-    // the new trailing element; every preceding byte is identical. The
-    // `format_version` bump the paragraph above calls for was deliberately
-    // skipped because the project is unreleased, and
-    // `a_file_saved_before_slot_waveforms_existed_still_loads` below keeps the
-    // pre-append bytes around to prove old files were not orphaned by it.
+    // Regenerated when the top-level `waveform` field was removed (the
+    // instrument's live channel selection is now derived from
+    // `slot_waveforms[active_indices.vol]` — see `Patch::active_waveform` —
+    // rather than stored redundantly). Unlike the `slot_waveforms` append this
+    // constant was previously regenerated for, removing a field is exactly the
+    // kind of change the paragraph above calls a `format_version` bump for;
+    // it was skipped anyway because the project is unreleased, so there is no
+    // real `.rp2a03patch` file on any disk this could orphan, and no
+    // pre-removal golden bytes are kept around for the same reason.
     const GOLDEN_V1: &[u8] = &[
-        82, 80, 50, 80, 150, 1, 165, 80, 117, 108, 115, 101, 60, 149, 3, 0, 0, 0, 3, 149, 145, 152,
-        3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
-        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195, 144, 144, 144, 145, 152,
-        3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
-        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195, 145, 146, 3, 167, 86,
-        114, 99, 54, 83, 97, 119,
+        82, 80, 50, 80, 149, 1, 60, 149, 3, 0, 0, 0, 3, 149, 145, 152, 3, 147, 15, 12, 8, 1, 192,
+        168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115, 111, 108, 117, 116, 101, 167,
+        83, 116, 101, 112, 115, 49, 54, 195, 144, 144, 144, 145, 152, 3, 147, 15, 12, 8, 1, 192,
+        168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115, 111, 108, 117, 116, 101, 167,
+        83, 116, 101, 112, 115, 49, 54, 195, 145, 146, 3, 167, 86, 114, 99, 54, 83, 97, 119,
     ];
 
     #[test]
@@ -1322,48 +1328,5 @@ mod tests {
         // reordering how a field is written — would leave every other test in
         // this module green while silently splitting the format in two.
         assert_eq!(sample_patch().to_bytes(), GOLDEN_V1);
-    }
-
-    /// The exact bytes `sample_patch()` produced *before* `slot_waveforms`
-    /// existed — a real file from the previous wire layout, kept verbatim.
-    ///
-    /// This is what an already-saved `.rp2a03patch` on a user's disk looks
-    /// like. `GOLDEN_V1` proves the current layout is stable; this proves the
-    /// change that produced it was backwards compatible, which regenerating
-    /// `GOLDEN_V1` alone can never show.
-    const GOLDEN_BEFORE_SLOT_WAVEFORMS: &[u8] = &[
-        82, 80, 50, 80, 149, 1, 165, 80, 117, 108, 115, 101, 60, 149, 3, 0, 0, 0, 3, 149, 145, 152,
-        3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
-        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195, 144, 144, 144, 145, 152,
-        3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115,
-        111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195,
-    ];
-
-    #[test]
-    fn a_file_saved_before_slot_waveforms_existed_still_loads() {
-        let patch = Patch::from_bytes(GOLDEN_BEFORE_SLOT_WAVEFORMS)
-            .expect("a file from the previous wire layout must still decode");
-
-        assert!(
-            patch.slot_waveforms.is_empty(),
-            "an absent slot_waveforms key must decode to an empty vec, not fail"
-        );
-        // Everything the older file did carry is untouched by the append.
-        assert_eq!(patch.waveform, ChannelMode::Pulse);
-        assert_eq!(patch.step_time_hz, 60);
-        assert_eq!(patch.active_indices.vol, 3);
-        assert_eq!(patch.sequences.vol, vec![sample_entry(3)]);
-
-        // And it applies cleanly: every slot falls back to the default waveform.
-        let mut shared = SharedSequences::default();
-        shared.set_slot_waveform(3, ChannelMode::Noise);
-        patch.apply_to_shared_sequences(&mut shared);
-        for index in 0..MAX_SEQUENCES {
-            assert_eq!(
-                shared.slot_waveform(index),
-                ChannelMode::default(),
-                "slot {index} of a pre-slot_waveforms file must decode to the default"
-            );
-        }
     }
 }

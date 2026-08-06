@@ -243,7 +243,7 @@ fn handle_save_click(data: &SharedSequences, step_time_hz: u32, ui_state: &mut E
         return;
     }
 
-    let patch = crate::Patch::from_shared_sequences(data, data.channel_mode, step_time_hz as u16);
+    let patch = crate::Patch::from_shared_sequences(data, step_time_hz as u16);
     let (tx, rx) = std::sync::mpsc::channel();
     ui_state.pending_save = Some(rx);
 
@@ -352,6 +352,14 @@ fn poll_pending_dialogs(
 /// Split out from the dialog half of Load so the ordering below is reachable
 /// from tests — the step order here is load-bearing, not stylistic.
 fn apply_loaded_patch(data: &mut SharedSequences, result: &mut EditorResult, patch: &crate::Patch) {
+    // The instrument's live channel isn't a separate field on `Patch` — it's
+    // whichever waveform `active_indices.vol`'s slot remembers (see
+    // `Patch::active_waveform`), same as switching to that slot by hand would
+    // recall. Reading it here, before `apply_to_shared_sequences` below,
+    // means it comes straight from the patch's own data rather than from
+    // `data`, which the next line is about to overwrite anyway.
+    let waveform = patch.active_waveform();
+
     // `channel_mode` must be updated BEFORE the sequences land.
     // `sync_volume_step_mode_to_channel` runs unconditionally at the top of
     // every frame, and rescales tab 0's volume sequence back to the 4-bit
@@ -360,18 +368,14 @@ fn apply_loaded_patch(data: &mut SharedSequences, result: &mut EditorResult, pat
     // sitting under the previous channel mode, and the next frame's sync
     // would silently clamp it away. Setting the mode here means that sync
     // sees the loaded channel and takes its early return instead.
-    data.channel_mode = patch.waveform;
-    result.new_channel_mode = Some(patch.waveform);
+    data.channel_mode = waveform;
+    result.new_channel_mode = Some(waveform);
 
+    // This also settles `active_indices.vol`'s slot to `waveform` (or leaves
+    // it at the default, which is where `waveform` just came from), so
+    // `data.channel_mode` and `data.slot_waveform(patch.active_indices.vol)`
+    // already agree — no separate reconciliation step needed.
     patch.apply_to_shared_sequences(data);
-
-    // The load pushes a new Sequence Index as a parameter gesture below, which
-    // makes the next frame see an index transition and recall that slot's
-    // remembered waveform. Anchoring the loaded waveform onto the slot the patch
-    // lands on keeps that recall agreeing with the patch instead of reverting
-    // it — including for files written before per-slot waveforms existed, whose
-    // slots all decode back to the default.
-    data.set_slot_waveform(patch.active_indices.vol, patch.waveform);
 
     // The loaded waveform may not have the tab the editor is sitting on.
     if !tab_is_available(data.selected_tab, data.channel_mode) {
@@ -1142,13 +1146,14 @@ mod tests {
         let mut source = SharedSequences::default();
         source.channel_mode = ChannelMode::Vrc6Saw;
         source.set_selected_sequence_index(0, 7);
+        source.set_slot_waveform(7, ChannelMode::Vrc6Saw);
         {
             let (text, sequence) = source.selected_sequence_mut(0);
             sequence.values = vec![63, 40, 20];
             sequence.vol_mode = VolMode::Steps64;
             *text = sequence_to_text(sequence);
         }
-        crate::Patch::from_shared_sequences(&source, ChannelMode::Vrc6Saw, 60)
+        crate::Patch::from_shared_sequences(&source, 60)
     }
 
     #[test]
@@ -1192,7 +1197,7 @@ mod tests {
 
         patch.apply_to_shared_sequences(&mut data);
         sync_volume_step_mode_to_channel(&mut data);
-        data.channel_mode = patch.waveform;
+        data.channel_mode = patch.active_waveform();
 
         assert_eq!(
             data.selected_sequence(0).values,
@@ -1300,13 +1305,14 @@ mod tests {
     #[test]
     fn recall_after_a_load_agrees_with_the_loaded_patch() {
         // Load pushes a new Sequence Index as a parameter gesture, so the next
-        // frame sees a transition and recalls. Without the loaded waveform being
-        // anchored onto the slot it lands on, that recall would revert it —
-        // notably for files written before per-slot waveforms existed.
+        // frame sees a transition and recalls. Since the loaded channel comes
+        // from the landing slot's own remembered waveform, that recall reads
+        // back the same value it just loaded rather than reverting it.
         let mut source = SharedSequences::default();
         source.set_selected_sequence_index(0, 9);
+        source.set_slot_waveform(9, ChannelMode::Vrc6Pulse);
         source.selected_sequence_mut(0).1.values = vec![15, 7];
-        let patch = crate::Patch::from_shared_sequences(&source, ChannelMode::Vrc6Pulse, 120);
+        let patch = crate::Patch::from_shared_sequences(&source, 120);
 
         let mut data = SharedSequences::default();
         let mut result = EditorResult::default();
@@ -1328,8 +1334,9 @@ mod tests {
     fn loading_moves_off_a_tab_the_loaded_waveform_does_not_have() {
         let mut source = SharedSequences::default();
         source.set_selected_sequence_index(4, 1);
+        source.set_slot_waveform(0, ChannelMode::Triangle); // slot 0: vol's active index
         source.selected_sequence_mut(4).1.values = vec![1, 2];
-        let patch = crate::Patch::from_shared_sequences(&source, ChannelMode::Triangle, 60);
+        let patch = crate::Patch::from_shared_sequences(&source, 60);
 
         let mut data = SharedSequences::default();
         data.selected_tab = 4; // Duty / Noise — triangle has no duty envelope
@@ -1350,8 +1357,9 @@ mod tests {
         // selection on its next block (see `apply_loaded_patch`).
         let mut source = SharedSequences::default();
         source.set_selected_sequence_index(0, 9);
+        source.set_slot_waveform(9, ChannelMode::Vrc6Pulse);
         source.selected_sequence_mut(0).1.values = vec![15, 7];
-        let patch = crate::Patch::from_shared_sequences(&source, ChannelMode::Vrc6Pulse, 120);
+        let patch = crate::Patch::from_shared_sequences(&source, 120);
 
         let mut data = SharedSequences::default();
         let mut result = EditorResult::default();
@@ -1487,7 +1495,7 @@ mod tests {
         let mut source = SharedSequences::default();
         source.set_selected_sequence_index(0, 3);
         source.selected_sequence_mut(0).1.values = vec![10, 5];
-        let patch = crate::Patch::from_shared_sequences(&source, ChannelMode::Pulse, 60);
+        let patch = crate::Patch::from_shared_sequences(&source, 60);
 
         let path = std::env::temp_dir().join(format!(
             "rp2a03_editor_test_{}_{}.rp2a03patch",

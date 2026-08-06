@@ -2,9 +2,9 @@
 
 A standalone, shareable binary file capturing one instrument's envelope/sequence
 data — the numbered volume, arpeggio, pitch, hi-pitch, and duty sequences a
-user has authored, plus which slot is currently active per envelope type,
-which APU channel (waveform) the instrument is currently set to, and the
-current engine speed.
+user has authored, plus which slot is currently active per envelope type, the
+APU channel/waveform each numbered slot remembers, and the current engine
+speed.
 
 This is separate from the plugin's in-DAW session state (`SharedSequences`,
 persisted automatically via `#[persist = "envelope_data"]`). A `.rp2a03patch`
@@ -19,7 +19,9 @@ If you just want to know what's in the file, without the wire-format details:
   points, and per-type mode flags.
 - Which slot is currently selected for each envelope type.
 - Which APU channel/waveform (Pulse, Triangle, Noise, VRC6 Pulse, VRC6 Saw)
-  each slot remembers, and which one is active right now.
+  each slot remembers. Loading a patch switches the instrument to whichever
+  waveform the active slot remembers — there's no separately stored "current"
+  channel, since the active slot's memory already says what it is.
 - The current engine speed ("Step Time").
 
 
@@ -34,17 +36,20 @@ A patch stores **envelope data only**. It does *not* include:
 - Metadata: no name, author, or description fields. The file's identity is
   its filename on disk.
 
-Two host-automatable params **are** in scope, saved anyway because in
-practice neither is something a host automates:
+One host-automatable param **is** in scope, saved anyway because in practice
+it isn't something a host automates:
 
-- The instrument's currently-selected APU channel (`waveform` — Pulse,
-  Triangle, Noise, VRC6 Pulse, or VRC6 Saw); see `waveform` below.
 - The engine speed (`step_time_hz`, labeled "Engine Speed"/"Step Time" in
   the UI); see `step_time_hz` below.
 
+(The instrument's currently-selected APU channel is also effectively in
+scope, but not as a separate host-automatable param — see `slot_waveforms`
+below for why it doesn't need its own entry.)
+
 Loading a patch replaces the plugin's sequence banks, active-slot selection,
-per-slot remembered waveforms, waveform selection, and engine speed; it leaves
-every other parameter untouched.
+per-slot remembered waveforms, and engine speed; it leaves every other
+parameter untouched. The live channel selection changes too, but only as a
+consequence of the active-slot replacement — see `slot_waveforms`.
 
 ## Wire format
 
@@ -99,8 +104,9 @@ this format:
 > is a breaking change — bump `format_version` and handle it explicitly
 > instead).
 
-This format also embeds several unit-only enums (`waveform`'s `ChannelMode`,
-and `pitch_mode`/`arp_mode`/`vol_mode`'s `PitchMode`/`ArpMode`/`VolMode`).
+This format also embeds several unit-only enums (`slot_waveforms`'s
+`ChannelMode`, and `pitch_mode`/`arp_mode`/`vol_mode`'s
+`PitchMode`/`ArpMode`/`VolMode`).
 `rmp-serde` writes unit enum variants as their **name string**, not their
 numeric discriminant — the exact **inverse** of the struct-field rule above:
 
@@ -131,7 +137,6 @@ text. The *logical* structure is:
 ```json
 {
   "format_version": 1,
-  "waveform": "Pulse",
   "step_time_hz": 60,
   "active_indices": {
     "vol": 0,
@@ -151,25 +156,16 @@ text. The *logical* structure is:
 }
 ```
 
-Field order (top-level): `format_version`, `waveform`, `step_time_hz`,
-`active_indices`, `sequences`, `slot_waveforms` — the two instrument-wide
-settings sit up front, ahead of the envelope data itself. This order is
-load-bearing (see "Schema evolution rule" above): it's fixed once shipped, and
-any future top-level field is appended after `slot_waveforms`, the current last
-field.
+Field order (top-level): `format_version`, `step_time_hz`, `active_indices`,
+`sequences`, `slot_waveforms` — the one instrument-wide scalar setting sits up
+front, ahead of the envelope data itself. This order is load-bearing (see
+"Schema evolution rule" above): it's fixed once shipped, and any future
+top-level field is appended after `slot_waveforms`, the current last field.
 
 `slot_waveforms` was itself added this way — appended after `sequences`, backed
 by `#[serde(default)]`, with no `format_version` bump, since a file written
 before it existed simply ends its top-level array early and decodes the field as
 an empty list. It is the worked example of the rule above.
-
-### `waveform`
-
-The APU channel/instrument type currently selected in the plugin (mirrors
-the `waveform` param and its `ChannelMode` enum — see
-`rp2a03_common::midi::types::ChannelMode`): `"Pulse"` | `"Triangle"` |
-`"Noise"` | `"Vrc6Pulse"` | `"Vrc6Saw"`. Loading a patch sets this as the
-plugin's active channel selection, same as `active_indices`.
 
 ### `step_time_hz`
 
@@ -180,9 +176,9 @@ Integer, `1..=600`, matching the param's own range.
 
 This param is technically host-automatable, but in practice a host
 automating engine speed mid-performance is not a realistic use case for this
-synth, so storing its current value in the patch (same treatment as
-`waveform`) is a reasonable simplification rather than a fidelity
-compromise. Loading a patch sets this as the plugin's current engine speed.
+synth, so storing its current value in the patch is a reasonable
+simplification rather than a fidelity compromise. Loading a patch sets this
+as the plugin's current engine speed.
 
 ### `active_indices`
 
@@ -191,7 +187,8 @@ each of the 5 envelope types. Loading a patch sets these as the plugin's
 active selection, so the patch is immediately playable rather than just a
 library of authored-but-unselected slots.
 
-All 5 keys are required.
+All 5 keys are required. `vol` also decides the instrument's live channel on
+load — see `slot_waveforms` below.
 
 ### `sequences`
 
@@ -296,14 +293,17 @@ Slots nobody set are omitted entirely and decode back to `"Pulse"`.
 | Field      | Type               | Notes |
 |------------|--------------------|-------|
 | `index`    | integer, `0..=127` | The numbered slot this entry describes. Unique within the array. |
-| `waveform` | `ChannelMode` name | Same value set as the top-level `waveform` field: `"Pulse"` \| `"Triangle"` \| `"Noise"` \| `"Vrc6Pulse"` \| `"Vrc6Saw"`. |
+| `waveform` | `ChannelMode` name | `"Pulse"` \| `"Triangle"` \| `"Noise"` \| `"Vrc6Pulse"` \| `"Vrc6Saw"`. |
 
-This is distinct from the top-level `waveform` field, which is the instrument's
-*live* channel selection at save time. On load the two are reconciled: the
-loaded `waveform` is also written onto the slot named by `active_indices.vol`,
-so the waveform recall that fires on the next index change agrees with the patch
-instead of overriding it. This matters most for files written before
-`slot_waveforms` existed, whose slots all decode to the default.
+This is also where the instrument's *live* channel selection comes from on
+load — there is no separate top-level field for it. Loading a patch sets the
+plugin's active channel to whatever `active_indices.vol`'s slot remembers here
+(falling back to the default, `"Pulse"`, if that slot has no entry), the same
+value switching to that slot by hand would recall. The live plugin keeps a
+slot's remembered waveform and the live channel selection in agreement
+whenever either one changes (picking a waveform by hand writes through to the
+selected slot; switching slots recalls that slot's remembered waveform), so
+by the time a save happens there is only ever one value to record.
 
 Because loading is a full replacement (not a merge), a load clears every slot's
 remembered waveform first — otherwise slots the incoming patch doesn't mention
@@ -319,7 +319,6 @@ for readability — see "Wire format" for the actual binary encoding:
 ```json
 {
   "format_version": 1,
-  "waveform": "Pulse",
   "step_time_hz": 60,
   "active_indices": {
     "vol": 3,
