@@ -1,8 +1,9 @@
 /target
 /Ideas-ref-folder
 .agents
-AGENTS.md
 .claude
+CLAUDE.md
+
 
 # Compiled binaries and plugin bundles
 *.exe

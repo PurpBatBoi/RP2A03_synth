@@ -11,8 +11,8 @@ pub use format::patch::{
     save_to_path as save_patch_to_path,
 };
 pub use gui::{
-    EditorResult, MAX_SEQUENCES, NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT, SequenceBank,
-    SequencePlayheads, SequenceSlot, SharedSequences, cleanup_tab_sequence,
+    EditorResult, EditorUiState, MAX_SEQUENCES, NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT,
+    SequenceBank, SequencePlayheads, SequenceSlot, SharedSequences, cleanup_tab_sequence,
     draw_envelope_bar_graph, render_editor_ui, sanitize_sequence_text, sequence_to_text, style,
 };
 pub use midi::{

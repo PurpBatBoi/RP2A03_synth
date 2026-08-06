@@ -24,6 +24,38 @@ pub struct EditorResult {
     pub new_portamento_speed: Option<i32>,
 }
 
+/// How long a footer status message stays visible after being set.
+const STATUS_DISPLAY_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Transient, UI-only display state for the editor — e.g. the footer status
+/// message after a Save/Load. Never touches [`SharedSequences`] (audio-relevant
+/// state) or [`EditorResult`] (host-parameter signals).
+#[derive(Default)]
+pub struct EditorUiState {
+    status: Option<(String, std::time::Instant)>,
+    /// Set while a Save dialog is showing on its own thread; see
+    /// `handle_save_click`'s doc comment for why this can't run on the GUI
+    /// thread directly. Polled once per frame in `poll_pending_dialogs`.
+    pending_save: Option<std::sync::mpsc::Receiver<Option<String>>>,
+    pending_load: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
+}
+
+impl EditorUiState {
+    /// Sets the footer status message, restarting its display timer.
+    pub fn set(&mut self, msg: impl Into<String>) {
+        self.status = Some((msg.into(), std::time::Instant::now()));
+    }
+
+    /// Returns the status message if one is set and still within its display
+    /// window; `None` otherwise (including once it has expired).
+    pub fn status_text(&self) -> Option<&str> {
+        self.status
+            .as_ref()
+            .filter(|(_, set_at)| set_at.elapsed() < STATUS_DISPLAY_DURATION)
+            .map(|(msg, _)| msg.as_str())
+    }
+}
+
 /// Converts a Sequence engine instance back to FamiTracker formatted text.
 pub fn sequence_to_text(seq: &Sequence) -> String {
     if seq.values.is_empty() {
@@ -160,7 +192,176 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
     }
 }
 
-fn draw_header(ui: &mut egui::Ui, data: &mut SharedSequences, result: &mut EditorResult) {
+/// Whether an envelope tab means anything for `channel_mode`.
+///
+/// The instrument settings panel greys out unavailable tabs; `.rp2a03patch`
+/// load reads the same rule to move off a tab the loaded waveform doesn't
+/// support, so the two can't drift apart. Triangle and noise have no duty
+/// envelope, and noise has no pitch/hi-pitch.
+fn tab_is_available(tab: usize, channel_mode: ChannelMode) -> bool {
+    let is_no_duty = tab == 4 && matches!(channel_mode, ChannelMode::Triangle | ChannelMode::Noise);
+    let is_noise_pitch = matches!(tab, 2 | 3) && channel_mode == ChannelMode::Noise;
+    !is_no_duty && !is_noise_pitch
+}
+
+/// Opens the Save dialog and writes the file on a dedicated OS thread.
+///
+/// `rfd`'s blocking dialog runs its own nested Win32 message loop. If that
+/// loop runs on the same thread as the editor's baseview window, Windows
+/// dispatches cross-window messages back into baseview's WndProc while it is
+/// already mid-callback, and baseview's window state (a `RefCell`) is not
+/// reentrant — the nested call panics with "already borrowed", which nothing
+/// upstream catches, so the panic reaches the top of the thread and aborts
+/// the whole host process. Spawning a plain thread with no baseview window on
+/// it sidesteps this entirely: that thread's message queue only ever serves
+/// the dialog's own windows. This is a bare `std::thread`, not an async
+/// runtime — the "no async runtime" constraint from this feature's spec is
+/// about not pulling in an executor, not about avoiding threads.
+fn handle_save_click(data: &SharedSequences, step_time_hz: u32, ui_state: &mut EditorUiState) {
+    if ui_state.pending_save.is_some() {
+        return;
+    }
+
+    let patch = crate::Patch::from_shared_sequences(data, data.channel_mode, step_time_hz as u16);
+    let (tx, rx) = std::sync::mpsc::channel();
+    ui_state.pending_save = Some(rx);
+
+    std::thread::spawn(move || {
+        let status = save_dialog_and_write(&patch);
+        let _ = tx.send(status);
+    });
+}
+
+/// Returns `None` when the user cancels the dialog (no status to report).
+fn save_dialog_and_write(patch: &crate::Patch) -> Option<String> {
+    let mut path = rfd::FileDialog::new()
+        .add_filter("RP2A03 Patch", &["rp2a03patch"])
+        .set_file_name("User_Instrument.rp2a03patch")
+        .save_file()?;
+
+    if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rp2a03patch") {
+        let mut file_name = path.into_os_string();
+        file_name.push(".rp2a03patch");
+        path = file_name.into();
+    }
+
+    Some(match crate::save_patch_to_path(&path, patch) {
+        Ok(()) => format!("Saved {}", path.display()),
+        Err(e) => e.to_string(),
+    })
+}
+
+/// Opens the Load dialog on a dedicated OS thread — see `handle_save_click`'s
+/// doc comment for why the dialog itself can never run on the GUI thread.
+/// The picked path (if any) is applied later, from `poll_pending_dialogs`,
+/// since that needs `&mut SharedSequences`/`&mut EditorResult` from whatever
+/// frame the pick actually lands on.
+fn handle_load_click(ui_state: &mut EditorUiState) {
+    if ui_state.pending_load.is_some() {
+        return;
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    ui_state.pending_load = Some(rx);
+
+    std::thread::spawn(move || {
+        let path = rfd::FileDialog::new()
+            .add_filter("RP2A03 Patch", &["rp2a03patch"])
+            .pick_file();
+        let _ = tx.send(path);
+    });
+}
+
+/// Applies whichever background dialog (Save, Load, or neither) has finished
+/// since the last frame. Must run every frame regardless of whether a dialog
+/// is pending — that's what actually advances a finished one.
+fn poll_pending_dialogs(
+    data: &mut SharedSequences,
+    result: &mut EditorResult,
+    ui_state: &mut EditorUiState,
+) {
+    use std::sync::mpsc::TryRecvError;
+
+    if let Some(rx) = &ui_state.pending_save {
+        match rx.try_recv() {
+            Ok(status) => {
+                ui_state.pending_save = None;
+                if let Some(status) = status {
+                    ui_state.set(status);
+                }
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => ui_state.pending_save = None,
+        }
+    }
+
+    if let Some(rx) = &ui_state.pending_load {
+        match rx.try_recv() {
+            Ok(Some(path)) => {
+                ui_state.pending_load = None;
+                // Nothing has been written yet on `Err`, so a rejected file
+                // leaves the current instrument exactly as it was — never a
+                // partial application.
+                match crate::load_patch_from_path(&path) {
+                    Ok(patch) => {
+                        apply_loaded_patch(data, result, &patch);
+                        ui_state.set(format!("Loaded {}", path.display()));
+                    }
+                    Err(e) => ui_state.set(e.to_string()),
+                }
+            }
+            Ok(None) => ui_state.pending_load = None,
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => ui_state.pending_load = None,
+        }
+    }
+}
+
+/// Installs a decoded patch into the live editor state.
+///
+/// Split out from the dialog half of Load so the ordering below is reachable
+/// from tests — the step order here is load-bearing, not stylistic.
+fn apply_loaded_patch(data: &mut SharedSequences, result: &mut EditorResult, patch: &crate::Patch) {
+    // `channel_mode` must be updated BEFORE the sequences land.
+    // `sync_volume_step_mode_to_channel` runs unconditionally at the top of
+    // every frame, and rescales tab 0's volume sequence back to the 4-bit
+    // range whenever the channel is not the VRC6 saw. Writing the sequences
+    // first would leave a freshly loaded saw patch's 64-step volume data
+    // sitting under the previous channel mode, and the next frame's sync
+    // would silently clamp it away. Setting the mode here means that sync
+    // sees the loaded channel and takes its early return instead.
+    data.channel_mode = patch.waveform;
+    result.new_channel_mode = Some(patch.waveform);
+
+    patch.apply_to_shared_sequences(data);
+
+    // The loaded waveform may not have the tab the editor is sitting on.
+    if !tab_is_available(data.selected_tab, data.channel_mode) {
+        data.selected_tab = 0;
+    }
+
+    result.new_step_time_hz = Some(patch.step_time_hz as i32);
+    // The slot selection has to travel out as a parameter gesture too, not
+    // just into `data`: the audio thread re-asserts `sequence_number` over
+    // every envelope's selected index on each `process` block
+    // (`SequenceCache::refresh`), so leaving the parameter stale would slam
+    // the freshly loaded selection back to the old slot within one block.
+    // A `Patch` carries five independent indices but this build only has the
+    // one shared parameter, so tab 0's is the one that can be honored — every
+    // file this build writes has all five equal anyway, since the plugin
+    // keeps them in lockstep.
+    result.new_sequence_index = Some(patch.active_indices.vol);
+}
+
+fn draw_header(
+    ui: &mut egui::Ui,
+    data: &mut SharedSequences,
+    result: &mut EditorResult,
+    ui_state: &mut EditorUiState,
+    step_time_hz: u32,
+) {
+    poll_pending_dialogs(data, result, ui_state);
+
     let mut portamento = data.portamento_enabled;
 
     const HEADER_H: f32 = 92.0;
@@ -312,6 +513,45 @@ fn draw_header(ui: &mut egui::Ui, data: &mut SharedSequences, result: &mut Edito
         );
 
         let _check_row_w = check_row.inner.rect.width();
+
+        //------------------------------------------------------
+        // Save / Load
+        //------------------------------------------------------
+
+        const BUTTON_W: f32 = 64.0;
+        const BUTTON_H: f32 = 24.0;
+        const BUTTON_GAP: f32 = 8.0;
+        let block_w = BUTTON_W * 2.0 + BUTTON_GAP;
+        let block_x = origin.x + ui.available_width() - block_w;
+
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                egui::pos2(block_x, origin.y + CENTER_Y - BUTTON_H / 2.0),
+                egui::vec2(block_w, BUTTON_H),
+            )),
+            |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled_ui(ui_state.pending_save.is_none(), |ui| {
+                            ui.add_sized([BUTTON_W, BUTTON_H], egui::Button::new("Save"))
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        handle_save_click(data, step_time_hz, ui_state);
+                    }
+                    if ui
+                        .add_enabled_ui(ui_state.pending_load.is_none(), |ui| {
+                            ui.add_sized([BUTTON_W, BUTTON_H], egui::Button::new("Load"))
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        handle_load_click(ui_state);
+                    }
+                });
+            },
+        );
     });
 
     ui.add_space(12.0);
@@ -374,15 +614,7 @@ fn draw_instrument_settings_panel(
                 ui.end_row();
 
                 for &(name, tab) in seq_types {
-                    let is_duty = tab == 4;
-                    let is_no_duty = is_duty
-                        && matches!(
-                            data.channel_mode,
-                            ChannelMode::Triangle | ChannelMode::Noise
-                        );
-                    let is_noise_pitch =
-                        matches!(tab, 2 | 3) && data.channel_mode == ChannelMode::Noise;
-                    let enabled = !is_no_duty && !is_noise_pitch;
+                    let enabled = tab_is_available(tab, data.channel_mode);
 
                     ui.add_enabled(
                         enabled,
@@ -707,15 +939,17 @@ fn draw_main_content(
     });
 }
 
-fn draw_footer(ui: &mut egui::Ui) {
+fn draw_footer(ui: &mut egui::Ui, ui_state: &EditorUiState) {
     ui.separator();
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(env!("CARGO_PKG_VERSION")).weak());
-        // ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        //     ui.button("Settings")
-        // });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(status) = ui_state.status_text() {
+                ui.label(status);
+            }
+        });
     });
 }
 
@@ -725,6 +959,7 @@ pub fn render_editor_ui(
     shared_sequence_index: usize,
     playheads: &SequencePlayheads,
     step_time_hz: u32,
+    ui_state: &mut EditorUiState,
 ) -> EditorResult {
     // Apply non-selectable labels to the global Context style so all child scopes,
     // grids, and group boxes inherit it
@@ -749,7 +984,7 @@ pub fn render_editor_ui(
     // set travels as one value instead of a fan of `&mut Option<_>` out-params.
     let mut result = EditorResult::default();
 
-    draw_header(ui, data, &mut result);
+    draw_header(ui, data, &mut result, ui_state, step_time_hz);
     draw_chip_tabs(ui, data);
 
     // Reserve footer space at the bottom of the window with spacing gap
@@ -783,7 +1018,7 @@ pub fn render_editor_ui(
 
     // Footer is always at the very bottom
     ui.scope_builder(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
-        draw_footer(ui);
+        draw_footer(ui, ui_state);
     });
 
     result
@@ -792,6 +1027,281 @@ pub fn render_editor_ui(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saw instrument whose volume envelope uses the 64-step range — the
+    /// only data shape the load-ordering hazard can destroy.
+    fn saw_patch_with_64_step_volume() -> crate::Patch {
+        let mut source = SharedSequences::default();
+        source.channel_mode = ChannelMode::Vrc6Saw;
+        source.set_selected_sequence_index(0, 7);
+        {
+            let (text, sequence) = source.selected_sequence_mut(0);
+            sequence.values = vec![63, 40, 20];
+            sequence.vol_mode = VolMode::Steps64;
+            *text = sequence_to_text(sequence);
+        }
+        crate::Patch::from_shared_sequences(&source, ChannelMode::Vrc6Saw, 60)
+    }
+
+    #[test]
+    fn loading_a_saw_patch_survives_the_next_frames_volume_sync() {
+        let patch = saw_patch_with_64_step_volume();
+
+        // The editor is on a non-saw channel, which is what arms the hazard.
+        let mut data = SharedSequences::default();
+        data.channel_mode = ChannelMode::Pulse;
+        let mut result = EditorResult::default();
+
+        apply_loaded_patch(&mut data, &mut result, &patch);
+
+        // `render_editor_ui` runs this unconditionally at the top of every
+        // frame, so the very next repaint after the click does exactly this.
+        sync_volume_step_mode_to_channel(&mut data);
+
+        assert_eq!(
+            data.selected_sequence(0).vol_mode,
+            VolMode::Steps64,
+            "the loaded saw patch must still be in 64-step mode"
+        );
+        assert_eq!(
+            data.selected_sequence(0).values,
+            vec![63, 40, 20],
+            "64-step volume data must survive the next frame's sync"
+        );
+    }
+
+    #[test]
+    fn writing_sequences_before_the_channel_mode_would_clamp_a_saw_patch() {
+        // The inverse of the test above: proves that test is actually load
+        // bearing rather than passing for unrelated reasons. This reproduces
+        // the wrong ordering by hand — sequences first, channel mode second —
+        // and shows the next frame's sync halves every step. If a refactor
+        // ever makes this ordering safe, delete both tests together.
+        let patch = saw_patch_with_64_step_volume();
+
+        let mut data = SharedSequences::default();
+        data.channel_mode = ChannelMode::Pulse;
+
+        patch.apply_to_shared_sequences(&mut data);
+        sync_volume_step_mode_to_channel(&mut data);
+        data.channel_mode = patch.waveform;
+
+        assert_eq!(
+            data.selected_sequence(0).values,
+            vec![15, 10, 5],
+            "the wrong ordering is expected to scale the steps down by 4"
+        );
+    }
+
+    #[test]
+    fn loading_moves_off_a_tab_the_loaded_waveform_does_not_have() {
+        let mut source = SharedSequences::default();
+        source.set_selected_sequence_index(4, 1);
+        source.selected_sequence_mut(4).1.values = vec![1, 2];
+        let patch = crate::Patch::from_shared_sequences(&source, ChannelMode::Triangle, 60);
+
+        let mut data = SharedSequences::default();
+        data.selected_tab = 4; // Duty / Noise — triangle has no duty envelope
+        let mut result = EditorResult::default();
+
+        apply_loaded_patch(&mut data, &mut result, &patch);
+
+        assert_eq!(
+            data.selected_tab, 0,
+            "loading a triangle patch must move off the duty tab"
+        );
+    }
+
+    #[test]
+    fn loading_reports_every_host_parameter_the_patch_carries() {
+        // Without these the shared state and the host parameters disagree, and
+        // the audio thread re-asserts the stale parameter over the loaded slot
+        // selection on its next block (see `apply_loaded_patch`).
+        let mut source = SharedSequences::default();
+        source.set_selected_sequence_index(0, 9);
+        source.selected_sequence_mut(0).1.values = vec![15, 7];
+        let patch = crate::Patch::from_shared_sequences(&source, ChannelMode::Vrc6Pulse, 120);
+
+        let mut data = SharedSequences::default();
+        let mut result = EditorResult::default();
+
+        apply_loaded_patch(&mut data, &mut result, &patch);
+
+        assert_eq!(result.new_channel_mode, Some(ChannelMode::Vrc6Pulse));
+        assert_eq!(result.new_step_time_hz, Some(120));
+        assert_eq!(result.new_sequence_index, Some(9));
+        assert_eq!(
+            data.channel_mode,
+            ChannelMode::Vrc6Pulse,
+            "the shared state must be updated alongside the parameter signal"
+        );
+    }
+
+    #[test]
+    fn unavailable_tabs_match_the_channels_missing_envelopes() {
+        for tab in 0..crate::SEQUENCE_TYPE_COUNT {
+            assert!(tab_is_available(tab, ChannelMode::Pulse));
+            assert!(tab_is_available(tab, ChannelMode::Vrc6Pulse));
+            assert!(tab_is_available(tab, ChannelMode::Vrc6Saw));
+        }
+
+        assert!(!tab_is_available(4, ChannelMode::Triangle));
+        assert!(tab_is_available(0, ChannelMode::Triangle));
+
+        for tab in [2, 3, 4] {
+            assert!(!tab_is_available(tab, ChannelMode::Noise));
+        }
+        assert!(tab_is_available(0, ChannelMode::Noise));
+        assert!(tab_is_available(1, ChannelMode::Noise));
+    }
+
+    #[test]
+    fn status_text_expires_after_its_display_window() {
+        let mut ui_state = EditorUiState::default();
+        assert_eq!(ui_state.status_text(), None);
+
+        ui_state.set("Saved");
+        assert_eq!(ui_state.status_text(), Some("Saved"));
+
+        ui_state.status = Some((
+            "Saved".to_string(),
+            std::time::Instant::now() - STATUS_DISPLAY_DURATION,
+        ));
+        assert_eq!(
+            ui_state.status_text(),
+            None,
+            "a message older than the display window must stop rendering"
+        );
+    }
+
+    #[test]
+    fn polling_an_empty_pending_save_channel_does_not_block_or_clear_it() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut ui_state = EditorUiState {
+            pending_save: Some(rx),
+            ..Default::default()
+        };
+        let mut data = SharedSequences::default();
+        let mut result = EditorResult::default();
+
+        poll_pending_dialogs(&mut data, &mut result, &mut ui_state);
+
+        assert!(
+            ui_state.pending_save.is_some(),
+            "an unfinished dialog must stay pending, not silently drop"
+        );
+    }
+
+    #[test]
+    fn polling_a_finished_save_channel_reports_the_status_and_clears_pending() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Some("Saved test.rp2a03patch".to_string())).unwrap();
+        let mut ui_state = EditorUiState {
+            pending_save: Some(rx),
+            ..Default::default()
+        };
+        let mut data = SharedSequences::default();
+        let mut result = EditorResult::default();
+
+        poll_pending_dialogs(&mut data, &mut result, &mut ui_state);
+
+        assert!(ui_state.pending_save.is_none());
+        assert_eq!(ui_state.status_text(), Some("Saved test.rp2a03patch"));
+    }
+
+    #[test]
+    fn polling_a_cancelled_save_dialog_clears_pending_without_a_status() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(None).unwrap();
+        let mut ui_state = EditorUiState {
+            pending_save: Some(rx),
+            ..Default::default()
+        };
+        let mut data = SharedSequences::default();
+        let mut result = EditorResult::default();
+
+        poll_pending_dialogs(&mut data, &mut result, &mut ui_state);
+
+        assert!(
+            ui_state.pending_save.is_none(),
+            "the Save button must re-enable after a cancelled dialog"
+        );
+        assert_eq!(ui_state.status_text(), None);
+    }
+
+    #[test]
+    fn polling_a_cancelled_load_dialog_clears_pending_without_touching_state() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(None).unwrap();
+        let mut ui_state = EditorUiState {
+            pending_load: Some(rx),
+            ..Default::default()
+        };
+        let mut data = SharedSequences::default();
+        data.channel_mode = ChannelMode::Vrc6Saw;
+        let mut result = EditorResult::default();
+
+        poll_pending_dialogs(&mut data, &mut result, &mut ui_state);
+
+        assert!(
+            ui_state.pending_load.is_none(),
+            "the Load button must re-enable after a cancelled dialog"
+        );
+        assert_eq!(data.channel_mode, ChannelMode::Vrc6Saw);
+        assert_eq!(result.new_channel_mode, None);
+    }
+
+    #[test]
+    fn polling_a_finished_load_dialog_loads_the_file_from_the_picked_path() {
+        let mut source = SharedSequences::default();
+        source.set_selected_sequence_index(0, 3);
+        source.selected_sequence_mut(0).1.values = vec![10, 5];
+        let patch = crate::Patch::from_shared_sequences(&source, ChannelMode::Pulse, 60);
+
+        let path = std::env::temp_dir().join(format!(
+            "rp2a03_editor_test_{}_{}.rp2a03patch",
+            std::process::id(),
+            line!()
+        ));
+        crate::save_patch_to_path(&path, &patch).expect("setup save must succeed");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Some(path.clone())).unwrap();
+        let mut ui_state = EditorUiState {
+            pending_load: Some(rx),
+            ..Default::default()
+        };
+        let mut data = SharedSequences::default();
+        let mut result = EditorResult::default();
+
+        poll_pending_dialogs(&mut data, &mut result, &mut ui_state);
+        std::fs::remove_file(&path).expect("cleanup must succeed");
+
+        assert!(ui_state.pending_load.is_none());
+        assert_eq!(data.selected_sequence(0).values, vec![10, 5]);
+        assert_eq!(result.new_channel_mode, Some(ChannelMode::Pulse));
+    }
+
+    #[test]
+    fn polling_a_disconnected_channel_clears_pending_instead_of_wedging_the_button() {
+        // Simulates the dialog thread panicking before it can send anything —
+        // dropping the sender is exactly what that looks like from here.
+        let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+        drop(tx);
+        let mut ui_state = EditorUiState {
+            pending_save: Some(rx),
+            ..Default::default()
+        };
+        let mut data = SharedSequences::default();
+        let mut result = EditorResult::default();
+
+        poll_pending_dialogs(&mut data, &mut result, &mut ui_state);
+
+        assert!(
+            ui_state.pending_save.is_none(),
+            "a dead sender must not leave the Save button permanently disabled"
+        );
+    }
 
     #[test]
     fn sequence_text_round_trips_markers() {

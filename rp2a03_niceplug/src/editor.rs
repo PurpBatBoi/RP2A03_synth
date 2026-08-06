@@ -5,7 +5,7 @@
 
 use nice_plug::prelude::*;
 use nice_plug_egui::{EguiSettings, EguiState, create_egui_editor};
-use rp2a03_common::{EditorResult, SEQUENCE_TYPE_COUNT, render_editor_ui, style};
+use rp2a03_common::{EditorResult, EditorUiState, SEQUENCE_TYPE_COUNT, render_editor_ui, style};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
@@ -34,13 +34,13 @@ pub(crate) fn create(
 
     create_egui_editor(
         egui_state,
-        (),
+        EditorUiState::default(),
         EguiSettings::default(),
-        move |ctx, _queue, _state| {
+        move |ctx, _queue, _ui_state| {
             egui_extras::install_image_loaders(ctx);
             ctx.set_style_of(egui::Theme::Dark, style());
         },
-        move |ui, setter, _queue, _state| {
+        move |ui, setter, _queue, ui_state| {
             let mut data = params.shared_sequences.lock();
             let sequence_index = data.selected_sequence_index(0);
             let playheads = snapshot(&playheads);
@@ -51,8 +51,14 @@ pub(crate) fn create(
             egui::Frame::NONE
                 .inner_margin(egui::Margin::same(EDITOR_MARGIN))
                 .show(ui, |ui| {
-                    let result =
-                        render_editor_ui(ui, &mut data, sequence_index, &playheads, step_time_hz);
+                    let result = render_editor_ui(
+                        ui,
+                        &mut data,
+                        sequence_index,
+                        &playheads,
+                        step_time_hz,
+                        ui_state,
+                    );
 
                     // The sequence index is the one control the editor owns
                     // directly as well as through the parameter, so the shared
