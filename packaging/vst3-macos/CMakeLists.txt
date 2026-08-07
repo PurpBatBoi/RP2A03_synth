@@ -9,10 +9,10 @@
 #
 #   cargo xtask bundle-universal rp2a03_niceplug --release \
 #       --no-default-features --features wgpu
-#   cmake -B target/vst3-macos-build -S packaging/vst3-macos
-#   cmake --build target/vst3-macos-build --config Release
+#   cmake -B build/vst3-macos -S packaging/vst3-macos
+#   cmake --build build/vst3-macos --config Release
 #
-# Result: target/vst3-macos-build/RP2A03 Synth.vst3
+# Result: build/vst3-macos/RP2A03 Synth.vst3
 
 cmake_minimum_required(VERSION 3.21)
 

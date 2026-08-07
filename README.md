@@ -293,11 +293,11 @@ For a single-architecture build, `cargo xtask bundle rp2a03_niceplug --release
 already-built `.clap` — so this step runs *after* the bundle step above:
 
 ```bash
-cmake -B target/auv2-build -S packaging/auv2
-cmake --build target/auv2-build --config Release
+cmake -B build/auv2 -S packaging/auv2
+cmake --build build/auv2 --config Release
 ```
 
-Result: `target/auv2-build/RP2A03 Synth.component`, with the `.clap` embedded
+Result: `build/auv2/RP2A03 Synth.component`, with the `.clap` embedded
 inside it, so the AU is self-contained.
 
 Requirements: CMake ≥ 3.21 and the Xcode command line tools. clap-wrapper is
@@ -341,11 +341,11 @@ workflow instead wraps the `.clap` with clap-wrapper — the same mechanism used
 for the AU above — and ships that in place of niceplug's VST3:
 
 ```bash
-cmake -B target/vst3-macos-build -S packaging/vst3-macos
-cmake --build target/vst3-macos-build --config Release
+cmake -B build/vst3-macos -S packaging/vst3-macos
+cmake --build build/vst3-macos --config Release
 ```
 
-Result: `target/vst3-macos-build/RP2A03 Synth.vst3`, with the `.clap` embedded
+Result: `build/vst3-macos/RP2A03 Synth.vst3`, with the `.clap` embedded
 inside it. This *replaces* the `.vst3` that `cargo xtask` produced in
 `target/bundled/` — the release workflow deletes niceplug's copy before copying
 this one in.

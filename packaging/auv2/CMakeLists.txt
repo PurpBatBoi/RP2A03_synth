@@ -9,10 +9,10 @@
 #
 #   cargo xtask bundle-universal rp2a03_niceplug --release \
 #       --no-default-features --features wgpu
-#   cmake -B target/auv2-build -S packaging/auv2
-#   cmake --build target/auv2-build --config Release
+#   cmake -B build/auv2 -S packaging/auv2
+#   cmake --build build/auv2 --config Release
 #
-# Result: target/auv2-build/RP2A03 Synth.component
+# Result: build/auv2/RP2A03 Synth.component
 
 cmake_minimum_required(VERSION 3.21)
 

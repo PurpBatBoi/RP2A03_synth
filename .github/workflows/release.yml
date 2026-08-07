@@ -98,11 +98,11 @@ jobs:
           # VST3 bundle versions must be numeric — drop any "-Alpha" style suffix.
           version=$(grep -m1 '^version' Cargo.toml | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
           echo "VST3 bundle version: $version"
-          cmake -B target/vst3-macos-build -S packaging/vst3-macos \
+          cmake -B build/vst3-macos -S packaging/vst3-macos \
             -DCMAKE_BUILD_TYPE=Release \
             -DRP2A03_VERSION="$version"
-          cmake --build target/vst3-macos-build --config Release
-          vst3=$(find target/vst3-macos-build -maxdepth 2 -name "*.vst3" -type d | head -1)
+          cmake --build build/vst3-macos --config Release
+          vst3=$(find build/vst3-macos -maxdepth 2 -name "*.vst3" -type d | head -1)
           if [ -z "$vst3" ]; then
             echo "::error::VST3 build produced no .vst3 bundle"
             exit 1
@@ -136,11 +136,11 @@ jobs:
           # AU bundle versions must be numeric — drop any "-Alpha" style suffix.
           version=$(grep -m1 '^version' Cargo.toml | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
           echo "AU bundle version: $version"
-          cmake -B target/auv2-build -S packaging/auv2 \
+          cmake -B build/auv2 -S packaging/auv2 \
             -DCMAKE_BUILD_TYPE=Release \
             -DRP2A03_VERSION="$version"
-          cmake --build target/auv2-build --config Release
-          component=$(find target/auv2-build -maxdepth 2 -name "*.component" -type d | head -1)
+          cmake --build build/auv2 --config Release
+          component=$(find build/auv2 -maxdepth 2 -name "*.component" -type d | head -1)
           if [ -z "$component" ]; then
             echo "::error::AUv2 build produced no .component bundle"
             exit 1
