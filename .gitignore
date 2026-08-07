@@ -3,7 +3,7 @@
 /Ideas-ref-folder
 .agents
 .claude
-
+/.references/
 
 # Compiled binaries and plugin bundles
 *.exe
