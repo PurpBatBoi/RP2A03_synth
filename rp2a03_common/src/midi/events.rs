@@ -147,6 +147,7 @@ impl MidiHandler {
             AnyChannel::Noise(_) => true,
             AnyChannel::Vrc6Pulse(_) => !self.pulse_phase_initialized,
             AnyChannel::Vrc6Saw(_) => !self.gate,
+            AnyChannel::S5B(_) => !self.gate,
         };
 
         self.note_stack.retain(|(n, _)| *n != note);

@@ -67,6 +67,22 @@ pub fn freq_to_vrc6_saw_period(freq: f32) -> u16 {
     t.round().clamp(0.0, 4095.0) as u16
 }
 
+/// Converts a frequency in Hz to a Sunsoft 5B tone period (12-bit).
+///
+/// The 5B's YM2149-compatible PSG runs at half the NES CPU clock, and its
+/// tone generator divides that by a further 8 internally (standard AY/YM
+/// tone-generator prescaler), giving `tone_freq = cpu_clock / (32 * TP)`.
+/// Unlike the triangle/VRC6-saw periods above, TP is not internally
+/// incremented by hardware (TP=0 behaves like TP=1), so there's no `-0.5`
+/// rounding bias to match a `period + 1` divisor.
+pub fn freq_to_s5b_period(freq: f32) -> u16 {
+    if freq <= 0.0 {
+        return 4095;
+    }
+    let t = NTSC_CPU_CLOCK as f32 / (32.0 * freq);
+    t.round().clamp(1.0, 4095.0) as u16
+}
+
 /// Maps a MIDI key to the 4-bit NES noise period used by FamiStudio.
 /// FamiStudio first converts MIDI to its internal C0-based note (`key - 11`),
 /// then masks and inverts the low nibble at the `$400E` register boundary.

@@ -8,6 +8,7 @@ pub mod apu_noise;
 pub mod apu_pulse;
 pub mod apu_triangle;
 pub mod blip_buf;
+pub mod s5b_audio;
 pub mod sequencer;
 pub mod software_lfo;
 pub mod vrc6_common;

@@ -12,6 +12,7 @@ use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::blip_buf::{BlipBuf, InvalidRates};
+use rp2a03_core::s5b_audio::Sunsoft;
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
 use rp2a03_core::vrc6_saw::Vrc6Saw;
 
@@ -21,6 +22,13 @@ pub(crate) const DEFAULT_SAMPLE_RATE: f32 = 44100.0;
 const BLIP_BUFFER_SIZE: u32 = 4096;
 const AMPLITUDE_SCALE: i32 = 1500;
 const TRIANGLE_AMPLITUDE_SCALE: i32 = 3000;
+/// `Sunsoft::output()` (one active PSG tone channel) tops out at `0xFF0`
+/// (4080) versus `Pulse::output()`'s max of 15 — scaled so a max-volume S5B
+/// note lands in the same ballpark as `AMPLITUDE_SCALE`'s pulse output
+/// (`15 * 1500 = 22500`). Not ear-verified against real hardware balance yet
+/// (see `.references/Implement-Plans-S5B/CoreHook.md` §2); revisit by
+/// listening once the mixer is exercised end-to-end.
+const S5B_AMPLITUDE_SCALE: i32 = 6;
 const ALLOCATION_RAMP_CLOCKS: u32 = 2048;
 
 pub(crate) struct Voice {
@@ -34,6 +42,7 @@ pub(crate) struct Voice {
     noise: Noise,
     vrc6_pulse: Vrc6Pulse,
     vrc6_saw: Vrc6Saw,
+    sunsoft: Sunsoft,
     last_output: i32,
     last_triangle_output: i32,
     allocation_ramp_clocks: u32,
@@ -51,6 +60,7 @@ impl Voice {
         vrc6_pulse.set_enabled(true);
         let mut vrc6_saw = Vrc6Saw::new();
         vrc6_saw.set_enabled(true);
+        let sunsoft = Sunsoft::new();
         let mut blip = BlipBuf::new(BLIP_BUFFER_SIZE);
         blip.set_rates(NTSC_CPU_CLOCK, f64::from(DEFAULT_SAMPLE_RATE))
             .expect("the NTSC clock at the default sample rate is a valid rate pair");
@@ -63,6 +73,7 @@ impl Voice {
             noise,
             vrc6_pulse,
             vrc6_saw,
+            sunsoft,
             last_output: 0,
             last_triangle_output: 0,
             allocation_ramp_clocks: 0,
@@ -99,6 +110,7 @@ impl Voice {
         self.vrc6_pulse.set_enabled(true);
         self.vrc6_saw.reset();
         self.vrc6_saw.set_enabled(true);
+        self.sunsoft.reset();
     }
 
     pub(crate) fn reset(&mut self) {
@@ -164,6 +176,7 @@ impl Voice {
             noise,
             vrc6_pulse,
             vrc6_saw,
+            sunsoft,
             ..
         } = self;
         // `handle_event` calls `sync_channel_mode`, but that only rebases the
@@ -176,6 +189,7 @@ impl Voice {
             noise,
             vrc6_pulse,
             vrc6_saw,
+            sunsoft,
         );
         midi_handler.handle_event(event, &mut channel, seqs)
     }
@@ -190,6 +204,7 @@ impl Voice {
             noise,
             vrc6_pulse,
             vrc6_saw,
+            sunsoft,
             ..
         } = self;
         let mut channel = select_channel(
@@ -199,6 +214,7 @@ impl Voice {
             noise,
             vrc6_pulse,
             vrc6_saw,
+            sunsoft,
         );
         midi_handler.apply_current_modulation(&mut channel, seqs)
     }
@@ -256,9 +272,14 @@ impl Voice {
                     0
                 }
             }
-            // UI-only for now — no `Sunsoft` instance wired into `Voice` yet.
-            // See `.references/Implement-Plans-S5B/CoreHook.md`.
-            ChannelMode::S5B => 0,
+            ChannelMode::S5B => {
+                self.sunsoft.clock();
+                if self.midi_handler.gate() {
+                    self.sunsoft.output() as i32 * S5B_AMPLITUDE_SCALE
+                } else {
+                    0
+                }
+            }
         }
     }
 
@@ -311,6 +332,7 @@ fn select_channel<'a>(
     noise: &'a mut Noise,
     vrc6_pulse: &'a mut Vrc6Pulse,
     vrc6_saw: &'a mut Vrc6Saw,
+    sunsoft: &'a mut Sunsoft,
 ) -> AnyChannel<'a> {
     match mode {
         ChannelMode::Pulse => AnyChannel::Pulse(pulse),
@@ -318,13 +340,6 @@ fn select_channel<'a>(
         ChannelMode::Noise => AnyChannel::Noise(noise),
         ChannelMode::Vrc6Pulse => AnyChannel::Vrc6Pulse(vrc6_pulse),
         ChannelMode::Vrc6Saw => AnyChannel::Vrc6Saw(vrc6_saw),
-        // UI-only for now — no `Sunsoft` instance wired into `Voice` yet (see
-        // `.references/Implement-Plans-S5B/CoreHook.md`). Register writes land
-        // on `pulse` as a dead sink; `clock_channel_output`'s `S5B` arm always
-        // returns 0 regardless of what this channel holds, and — same as any
-        // other same-voice mode switch today — the next real NoteOn on
-        // whichever channel gets selected next overwrites its stale registers
-        // before it is heard.
-        ChannelMode::S5B => AnyChannel::Pulse(pulse),
+        ChannelMode::S5B => AnyChannel::S5B(sunsoft),
     }
 }

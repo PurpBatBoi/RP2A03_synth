@@ -8,7 +8,11 @@ use rp2a03_core::NTSC_CPU_CLOCK;
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
-use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, Sequence, VolMode};
+use rp2a03_core::s5b_audio::Sunsoft;
+use rp2a03_core::sequencer::{
+    ArpMode, PitchMode, S5B_MODE_ENVELOPE, S5B_MODE_NOISE, S5B_MODE_SQUARE, SeqState, Sequence,
+    VolMode, VolMode5B,
+};
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
 use rp2a03_core::vrc6_saw::Vrc6Saw;
 
@@ -1102,6 +1106,159 @@ fn saw_duty_release_alone_still_clears_the_gate() {
 
     assert!(!handler.gate(), "duty release tail must not hang the note");
     assert_eq!(saw.rate(), 0);
+}
+
+// ── Sunsoft 5B ──────────────────────────────────────────────────────────
+// `CSeqInstHandlerS5B::ProcessSequence`: duty-byte low 5 bits are the noise
+// period, top 3 bits are Envelope/Square/Noise flags. Volume is 16 or 32
+// steps per `VolMode5B`, scaled down to the chip's genuinely 4-bit
+// constant-volume register (reg 8's D3..D0) either way.
+
+#[test]
+fn s5b_timer_lo_hi_round_trip_through_psg_freq() {
+    let mut sunsoft = Sunsoft::new();
+    let mut channel = AnyChannel::S5B(&mut sunsoft);
+    channel.write_timer_lo(0xFD);
+    channel.write_timer_hi(0x02);
+    channel.set_period_hi_soft(0x03);
+    assert_eq!(sunsoft.psg().reg(0), 0xFD);
+    // reg 1 masks to 4 bits in hardware (`REG_MASK[1] = 0x0f`).
+    assert_eq!(sunsoft.psg().reg(1), 0x03);
+}
+
+#[test]
+fn s5b_gate_off_disables_tone_and_noise() {
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::S5B;
+    let mut sunsoft = Sunsoft::new();
+    let seqs = default_seqs();
+
+    handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
+
+    // Mixer reg 7: bit 0 = tone 0 disable, bit 3 = noise 0 disable (active-low).
+    assert_eq!(sunsoft.psg().reg(7) & 0x01, 0x01);
+    assert_eq!(sunsoft.psg().reg(7) & 0x08, 0x08);
+}
+
+#[test]
+fn s5b_duty_byte_splits_period_and_flags_to_the_right_registers() {
+    let mut seqs = ActiveSequences {
+        duty_seq: Sequence::parse(&format!(
+            "{}",
+            (S5B_MODE_SQUARE | S5B_MODE_NOISE | S5B_MODE_ENVELOPE) | 0x0A
+        )),
+        duty_enabled: true,
+        vol_seq: Sequence::parse("15"),
+        vol_enabled: true,
+        ..default_seqs()
+    };
+    seqs.vol_seq.vol_mode_5b = VolMode5B::Steps16;
+
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::S5B;
+    handler.hardware_volume = 15;
+    let mut sunsoft = Sunsoft::new();
+
+    handler.note_on(60, 127, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
+    handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
+
+    // Noise period (reg 6) gets the low 5 bits, only written because the
+    // noise flag is set.
+    assert_eq!(sunsoft.psg().reg(6), 0x0A);
+    // Tone (bit 0) and noise (bit 3) both enabled -> both bits clear.
+    assert_eq!(sunsoft.psg().reg(7) & 0x09, 0);
+    // Envelope-select bit (D4) set in reg 8.
+    assert_eq!(sunsoft.psg().reg(8) & 0x10, 0x10);
+}
+
+#[test]
+fn s5b_noise_period_not_written_when_noise_flag_clear() {
+    let mut seqs = ActiveSequences {
+        duty_seq: Sequence::parse(&format!("{}", S5B_MODE_SQUARE | 0x0A)),
+        duty_enabled: true,
+        ..default_seqs()
+    };
+    seqs.vol_enabled = false;
+
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::S5B;
+    let mut sunsoft = Sunsoft::new();
+
+    handler.note_on(60, 127, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
+    handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
+
+    assert_eq!(sunsoft.psg().reg(6), 0, "noise period must not be written when the noise flag is clear");
+    // Tone enabled (bit 0 clear), noise stays disabled (bit 3 set).
+    assert_eq!(sunsoft.psg().reg(7) & 0x09, 0x08);
+}
+
+/// Drives one S5B modulation pass with the given volume sequence/mode and
+/// returns the resulting reg 8 constant-volume nibble (D3..D0).
+fn s5b_volume_reg_for(vol_text: &str, vol_mode: VolMode5B) -> u8 {
+    let mut vol_seq = Sequence::parse(vol_text);
+    vol_seq.vol_mode_5b = vol_mode;
+
+    let seqs = ActiveSequences {
+        vol_seq,
+        vol_enabled: true,
+        ..default_seqs()
+    };
+
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::S5B;
+    handler.hardware_volume = 15;
+    let mut sunsoft = Sunsoft::new();
+
+    handler.note_on(60, 127, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
+    handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
+
+    sunsoft.psg().reg(8) & 0x0F
+}
+
+#[test]
+fn s5b_volume_clamps_to_15_in_16_step_mode() {
+    assert_eq!(s5b_volume_reg_for("15", VolMode5B::Steps16), 15);
+    assert_eq!(s5b_volume_reg_for("31", VolMode5B::Steps16), 15);
+}
+
+#[test]
+fn s5b_volume_halves_down_from_32_step_to_the_4bit_register() {
+    assert_eq!(s5b_volume_reg_for("31", VolMode5B::Steps32), 15);
+    assert_eq!(s5b_volume_reg_for("0", VolMode5B::Steps32), 0);
+    assert_eq!(s5b_volume_reg_for("16", VolMode5B::Steps32), 8);
+}
+
+#[test]
+fn s5b_note_on_off_cycle_gates_tone_and_returns_to_silence() {
+    let seqs = ActiveSequences {
+        vol_seq: Sequence::parse("15 / 0"),
+        vol_enabled: true,
+        duty_seq: Sequence::parse(&format!("{}", S5B_MODE_SQUARE)),
+        duty_enabled: true,
+        ..default_seqs()
+    };
+
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::S5B;
+    handler.hardware_volume = 15;
+    let mut sunsoft = Sunsoft::new();
+
+    handler.note_on(60, 127, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
+    handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
+    assert_eq!(sunsoft.psg().reg(7) & 0x01, 0, "tone must be enabled while gated");
+
+    handler.note_off(60, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
+    for _ in 0..8 {
+        handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
+        handler.clock_sequences_one_frame(&seqs);
+    }
+
+    assert!(!handler.gate(), "volume release tail must not hang the note");
+    assert_eq!(
+        sunsoft.psg().reg(7) & 0x01,
+        0x01,
+        "tone must be disabled once the gate closes"
+    );
 }
 
 // ── Sequence-slot switching (dn CSeqInstHandler::LoadInstrument parity) ──

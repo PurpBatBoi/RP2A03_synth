@@ -5,13 +5,18 @@
 
 use super::types::{
     ActiveSequences, ChannelMode, HostAutomationControls, SequenceReload, freq_to_period,
-    freq_to_triangle_period, freq_to_vrc6_saw_period, midi_note_to_freq, midi_note_to_noise_period,
+    freq_to_s5b_period, freq_to_triangle_period, freq_to_vrc6_saw_period, midi_note_to_freq,
+    midi_note_to_noise_period,
 };
 use rp2a03_core::apu_noise::Noise;
 use rp2a03_core::apu_pulse::Pulse;
 use rp2a03_core::apu_triangle::Triangle;
+use rp2a03_core::s5b_audio::Sunsoft;
 use rp2a03_core::sequencer::Sequence;
-use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, SequencePlayer, VolMode};
+use rp2a03_core::sequencer::{
+    ArpMode, PitchMode, S5B_MODE_ENVELOPE, S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK,
+    SeqState, SequencePlayer, VolMode, VolMode5B,
+};
 use rp2a03_core::software_lfo::SoftwareLfo;
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
 use rp2a03_core::vrc6_saw::Vrc6Saw;
@@ -29,6 +34,7 @@ pub enum AnyChannel<'a> {
     Noise(&'a mut Noise),
     Vrc6Pulse(&'a mut Vrc6Pulse),
     Vrc6Saw(&'a mut Vrc6Saw),
+    S5B(&'a mut Sunsoft),
 }
 
 impl<'a> AnyChannel<'a> {
@@ -41,6 +47,7 @@ impl<'a> AnyChannel<'a> {
             AnyChannel::Noise(_) => ChannelMode::Noise,
             AnyChannel::Vrc6Pulse(_) => ChannelMode::Vrc6Pulse,
             AnyChannel::Vrc6Saw(_) => ChannelMode::Vrc6Saw,
+            AnyChannel::S5B(_) => ChannelMode::S5B,
         }
     }
 
@@ -51,6 +58,10 @@ impl<'a> AnyChannel<'a> {
             AnyChannel::Noise(n) => n.set_enabled(enabled),
             AnyChannel::Vrc6Pulse(p) => p.set_enabled(enabled),
             AnyChannel::Vrc6Saw(s) => s.set_enabled(enabled),
+            // S5B has no chip-level enable latch of its own; `set_tone_noise_enable`
+            // (driven every modulation tick from the gate, see `apply_s5b_modulation`)
+            // is what silences it.
+            AnyChannel::S5B(_) => {}
         }
     }
 
@@ -61,6 +72,7 @@ impl<'a> AnyChannel<'a> {
             AnyChannel::Noise(_) => {}
             AnyChannel::Vrc6Pulse(p) => p.write_freq_lo(val),
             AnyChannel::Vrc6Saw(s) => s.write_freq_lo(val),
+            AnyChannel::S5B(s) => s.write_timer_lo(val),
         }
     }
 
@@ -71,6 +83,11 @@ impl<'a> AnyChannel<'a> {
             AnyChannel::Noise(_) => {}
             AnyChannel::Vrc6Pulse(p) => p.write_freq_hi(val),
             AnyChannel::Vrc6Saw(s) => s.write_freq_hi(val),
+            // S5B reg 1 is a plain 4-bit period-hi register (`REG_MASK[1] = 0x0f`),
+            // not a packed enable+period byte like the other channels' hi
+            // registers — `apply_pitch_registers` already masks `val` to the
+            // right width before calling in, so no further packing is needed.
+            AnyChannel::S5B(s) => s.write_timer_hi(val),
         }
     }
 
@@ -81,6 +98,9 @@ impl<'a> AnyChannel<'a> {
             AnyChannel::Noise(_) => {}
             AnyChannel::Vrc6Pulse(p) => p.set_period_hi_soft(hi_bits),
             AnyChannel::Vrc6Saw(s) => s.set_period_hi_soft(hi_bits),
+            // S5B's reg 1 write is already a soft update (no phase to reset),
+            // so this is the same as `write_timer_hi`.
+            AnyChannel::S5B(s) => s.write_timer_hi(hi_bits),
         }
     }
 
@@ -313,7 +333,9 @@ impl Default for MidiHandler {
 impl MidiHandler {
     pub(super) fn max_macro_period(&self) -> i32 {
         match self.channel_mode {
-            ChannelMode::Triangle | ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw => 0x0FFF,
+            ChannelMode::Triangle | ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw | ChannelMode::S5B => {
+                0x0FFF
+            }
             _ => 0x07FF,
         }
     }
@@ -393,6 +415,9 @@ impl MidiHandler {
                     }
                 }
                 AnyChannel::Vrc6Saw(_) => {}
+                // No phase to reset — the PSG tone generator free-runs from its
+                // period register, same as the VRC6 sawtooth.
+                AnyChannel::S5B(_) => {}
             }
 
             if reset_phase {
@@ -724,6 +749,7 @@ impl MidiHandler {
         match mode {
             ChannelMode::Triangle => freq_to_triangle_period(midi_note_to_freq(note)) as i32,
             ChannelMode::Vrc6Saw => freq_to_vrc6_saw_period(midi_note_to_freq(note)) as i32,
+            ChannelMode::S5B => freq_to_s5b_period(midi_note_to_freq(note)) as i32,
             _ => freq_to_period(midi_note_to_freq(note)) as i32,
         }
     }
@@ -793,6 +819,7 @@ impl MidiHandler {
             AnyChannel::Vrc6Saw(vrc6_saw) => {
                 self.apply_vrc6_saw_modulation(vrc6_saw, seqs, master_gain)
             }
+            AnyChannel::S5B(sunsoft) => self.apply_s5b_modulation(sunsoft, seqs, master_gain),
         }
     }
 
@@ -1059,6 +1086,88 @@ impl MidiHandler {
         master_gain
     }
 
+    /// Sunsoft 5B: volume (16 or 32 steps per `VolMode5B`), duty/mode byte
+    /// (period + Envelope/Tone/Noise flags), and pitch. Follows
+    /// `CChannelHandlerS5B::RefreshChannel` / `CSeqInstHandlerS5B::ProcessSequence`
+    /// (see `.references/Implement-Plans-S5B/CoreHook.md` §3) with this
+    /// project's one-voice-one-chip shape: only channel 0 of the PSG is
+    /// driven, and gate-off silences via the tone/noise enable bits rather
+    /// than a separate no-gate branch, since dn's own "silence" is just
+    /// writing volume 0 every frame regardless of gate.
+    fn apply_s5b_modulation(
+        &mut self,
+        sunsoft: &mut Sunsoft,
+        seqs: &ActiveSequences,
+        master_gain: f32,
+    ) -> f32 {
+        if !self.gate {
+            sunsoft.set_tone_noise_enable(false, false);
+            return master_gain;
+        }
+
+        // 1. Volume: 16 or 32 steps depending on the volume sequence's own
+        //    `VolMode5B` setting (dn stores this per-sequence, same as the
+        //    VRC6 saw's `vol_mode`/`Steps64`). Unlike the saw, the S5B's
+        //    constant-volume register (reg 8, D3..D0) is genuinely only
+        //    4-bit — hardware has no wider sink for it, the chip's 5-bit
+        //    resolution belongs to the *envelope* ramp table, not the
+        //    per-channel constant write — so 32-step values are halved down
+        //    to the same 0..=15 register range `Steps16` uses.
+        let steps_32 = seqs.vol_seq.vol_mode_5b == VolMode5B::Steps32;
+        let vol_ceiling: i16 = if steps_32 { 31 } else { 15 };
+        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
+            self.vol_seq_player.value().clamp(0, vol_ceiling) as u32
+        } else {
+            vol_ceiling as u32
+        };
+        let vol_val = if steps_32 { vol_val / 2 } else { vol_val };
+
+        let hardware_scaled = vol_val * self.hardware_volume as u32 / 15;
+        let vel_scaled_vol = hardware_scaled * self.current_velocity as u32 / 127;
+        let tremolo_sub = self.lfo.tremolo_volume_delta() as u32;
+        let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).min(15) as u8;
+
+        // Turn off gate when release tail completes and volume reaches 0.
+        if self.note_stack.is_empty()
+            && self.vol_seq_player.is_releasing
+            && self.vol_seq_player.state == SeqState::End
+            && apu_vol == 0
+        {
+            self.gate = false;
+        }
+
+        // 2. Duty/mode byte: low 5 bits are the noise period, top 3 are the
+        //    Envelope/Square/Noise flags (`CSeqInstHandlerS5B::ProcessSequence`).
+        let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
+            self.duty_seq_player.value()
+        } else {
+            0
+        };
+        let noise_period = (duty_val & S5B_PERIOD_MASK) as u8;
+        let envelope_flag = duty_val & S5B_MODE_ENVELOPE != 0;
+        let square_flag = duty_val & S5B_MODE_SQUARE != 0;
+        let noise_flag = duty_val & S5B_MODE_NOISE != 0;
+
+        // 3. Noise period, only written while the noise flag is set — mirrors
+        //    dn writing it conditionally in `HandleNote`. Every modulation
+        //    tick is a superset of dn's note-trigger-only write, converging
+        //    to the same steady state (see CoreHook.md §3, known simplification).
+        if noise_flag {
+            sunsoft.write_noise_period(noise_period);
+        }
+
+        // 4. Tone/noise enable bits, gated by the channel's own gate state.
+        sunsoft.set_tone_noise_enable(self.gate && square_flag, self.gate && noise_flag);
+
+        // 5. Volume/envelope-select.
+        sunsoft.write_volume_envelope(apu_vol, envelope_flag);
+
+        // 6. Pitch application.
+        self.apply_pitch_registers(&mut AnyChannel::S5B(sunsoft));
+
+        master_gain
+    }
+
     /// Shared pitch register write path for all channels.
     fn apply_pitch_registers(&mut self, channel: &mut AnyChannel) {
         let fine_pitch_offset = self.fine_pitch as i32;
@@ -1087,7 +1196,7 @@ impl MidiHandler {
 
         let timer_lo = (final_period & 0xFF) as u8;
         let timer_hi_mask = match self.channel_mode {
-            ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw => 0x0F,
+            ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw | ChannelMode::S5B => 0x0F,
             _ => 0x07,
         };
         let timer_hi_bits = ((final_period >> 8) & timer_hi_mask) as u8;
@@ -1101,6 +1210,10 @@ impl MidiHandler {
             if channel_switched || self.prev_timer_hi == 0xFF {
                 let hi_byte = match self.channel_mode {
                     ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw => 0x80 | timer_hi_bits,
+                    // S5B reg 1 is a plain 4-bit period-hi register with no
+                    // enable/other bits packed alongside it — `Psg::write_reg`
+                    // masks to `REG_MASK[1] = 0x0f` itself, so no OR-mask needed.
+                    ChannelMode::S5B => timer_hi_bits,
                     _ => 0xF8 | timer_hi_bits,
                 };
                 channel.write_timer_hi(hi_byte);

@@ -548,6 +548,56 @@ impl Sunsoft {
         self.psg.set_channel_mask(idx, !enabled);
     }
 
+    // ── Channel-0-scoped voice helpers ───────
+    //
+    // This project drives one polyphonic voice pool, each voice owning a
+    // private `Sunsoft` that only ever uses tone channel 0 (see
+    // `.references/Implement-Plans-S5B/CoreHook.md`, "Architecture
+    // mismatch"). These are thin wrappers around `write_reg` for that one
+    // channel — `Psg` itself stays a faithful 3-channel/16-register model.
+
+    /// Channel 0 fine period (reg 0).
+    pub fn write_timer_lo(&mut self, val: u8) {
+        self.psg.write_reg(0, u32::from(val));
+    }
+
+    /// Channel 0 coarse period (reg 1, masked to 4 bits by hardware).
+    pub fn write_timer_hi(&mut self, val: u8) {
+        self.psg.write_reg(1, u32::from(val));
+    }
+
+    /// Channel 0 volume/envelope-select (reg 8): `vol` is the 4-bit constant
+    /// volume, `envelope_enabled` selects the shared envelope generator
+    /// instead (bit 4).
+    pub fn write_volume_envelope(&mut self, vol: u8, envelope_enabled: bool) {
+        let val = (vol & 0x0F) | if envelope_enabled { 0x10 } else { 0 };
+        self.psg.write_reg(8, u32::from(val));
+    }
+
+    /// Chip-global noise generator period (reg 6, masked to 5 bits).
+    pub fn write_noise_period(&mut self, period: u8) {
+        self.psg.write_reg(6, u32::from(period & 0x1F));
+    }
+
+    /// Channel 0's tone/noise enable bits in the mixer register (reg 7),
+    /// read-modify-write so channels 1/2 stay disabled (their bits forced
+    /// to `1`, matching the register's active-low polarity) since nothing
+    /// drives them.
+    pub fn set_tone_noise_enable(&mut self, tone: bool, noise: bool) {
+        let mut val = self.psg.reg(7) | 0b0011_0110; // channels 1/2 tone+noise disabled
+        if tone {
+            val &= !0x01;
+        } else {
+            val |= 0x01;
+        }
+        if noise {
+            val &= !0x08;
+        } else {
+            val |= 0x08;
+        }
+        self.psg.write_reg(7, u32::from(val));
+    }
+
     // ── Register access ──────────────────────
 
     /// Handles a CPU write in the mapper's register window: `addr` in
@@ -851,6 +901,43 @@ mod tests {
         // Register 0 wasn't touched during seeking, so it should be
         // unaffected by stop_seeking.
         assert_eq!(sunsoft.psg.reg(0), 0x11);
+    }
+
+    #[test]
+    fn channel0_helpers_round_trip_through_psg_registers() {
+        let mut sunsoft = Sunsoft::new();
+        sunsoft.write_timer_lo(0xFD);
+        sunsoft.write_timer_hi(0x02);
+        assert_eq!(sunsoft.psg.freq[0], 0x02FD);
+
+        sunsoft.write_noise_period(0xFF);
+        assert_eq!(sunsoft.psg.noise_freq, 0x1F);
+
+        sunsoft.write_volume_envelope(0x0F, false);
+        assert_eq!(sunsoft.psg.volume[0], (0x0F << 1) | 1);
+        sunsoft.write_volume_envelope(0x00, true);
+        assert_eq!(sunsoft.psg.volume[0], (0x10 << 1) | 1);
+    }
+
+    #[test]
+    fn set_tone_noise_enable_only_touches_channel_zero_bits() {
+        let mut sunsoft = Sunsoft::new();
+        sunsoft.set_tone_noise_enable(true, false);
+        assert!(!sunsoft.psg.tone_disable[0]);
+        assert!(sunsoft.psg.noise_disable[0]);
+        // Channels 1/2 always stay disabled — nothing drives them.
+        assert!(sunsoft.psg.tone_disable[1]);
+        assert!(sunsoft.psg.tone_disable[2]);
+        assert!(sunsoft.psg.noise_disable[1]);
+        assert!(sunsoft.psg.noise_disable[2]);
+
+        sunsoft.set_tone_noise_enable(false, true);
+        assert!(sunsoft.psg.tone_disable[0]);
+        assert!(!sunsoft.psg.noise_disable[0]);
+        assert!(sunsoft.psg.tone_disable[1]);
+        assert!(sunsoft.psg.tone_disable[2]);
+        assert!(sunsoft.psg.noise_disable[1]);
+        assert!(sunsoft.psg.noise_disable[2]);
     }
 
     #[test]
