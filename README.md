@@ -177,6 +177,12 @@ sibling chip had something worth stealing:
   would happily click.
 - **Pitch.** Fine-pitch and hi-pitch offsets extend beyond what a period-register
   write alone would give you on hardware.
+- **The Sunsoft 5B's hardware envelope generator isn't modeled.** Real 5B
+  hardware lets any tone channel opt into a shared ramp/LFO generator in place
+  of its constant volume. Nothing in this synth's S5B voice path ever selects
+  it, so it would be pure per-clock overhead — shared by every polyphonic
+  voice — for a feature no patch here can reach. Register writes to it are
+  still stored and read back faithfully; they just don't drive anything.
 - **The Sunsoft 5B is a hybrid chip that never existed.** Every other liberty on
   this list *removes* a hardware limit; this one *adds* a feature from a
   different chip. The real 5B's tone generator is a fixed 50% square with no

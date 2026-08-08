@@ -12,14 +12,22 @@
 //!
 //! The Sunsoft 5B is a Konami-competitor expansion chip (used by e.g.
 //! Gimmick!, Batman: Return of the Joker) built around a YM2149 PSG: three
-//! square-wave tone channels, a shared 17-bit LFSR noise generator, and one
-//! hardware envelope generator that any channel can opt into in place of its
-//! own 5-bit volume register.
+//! square-wave tone channels and a shared 17-bit LFSR noise generator.
 //!
 //! Unlike the 2A03/VRC6 channels in this crate, the three tone channels are
-//! not independent structs — they share one noise generator and one
-//! envelope generator, so the chip is modeled as a single [`Sunsoft`] unit
-//! clocked once per CPU cycle, exposing per-channel output for the mixer.
+//! not independent structs — they share one noise generator, so the chip is
+//! modeled as a single [`Sunsoft`] unit clocked once per CPU cycle, exposing
+//! per-channel output for the mixer.
+//!
+//! The real chip also has a hardware envelope generator any channel can
+//! select in place of its own volume register ($0B-$0D, opt-in via bit 5 of
+//! $08/$09/$0A). This project drives the chip only through
+//! [`Sunsoft`]'s channel-0-scoped helpers, none of which ever set that bit,
+//! so the envelope is unreachable from this synth — modeling it would be
+//! dead weight on a per-clock hot path shared by every polyphonic voice. It
+//! is not modeled: $0B-$0D writes are stored (so a register snapshot still
+//! reads back what was written) but drive nothing, and the select bit is
+//! ignored. See "Accuracy & Creative Liberties" in the README.
 //!
 //! See: <https://www.nesdev.org/wiki/Sunsoft_5B_audio>
 
@@ -70,105 +78,6 @@ const REG_MASK: [u8; 16] = [
 ];
 
 // ─────────────────────────────────────────────
-// Envelope Generator
-// ─────────────────────────────────────────────
-
-/// The PSG's single shared hardware envelope generator ($0B/$0C period,
-/// $0D shape). Any of the three tone channels can select it in place of
-/// its own constant volume by setting bit 5 of its volume register.
-#[derive(Debug, Clone, Default)]
-struct EnvelopeGen {
-    /// 6-bit ramp position; only the low 5 bits (0..=0x1F) are ever used to
-    /// index the volume table — the generator forces the pointer to 0 or
-    /// 0x1F immediately after every carry/borrow, matching hardware.
-    ptr: u8,
-    /// Ramp direction: true counts up, false counts down.
-    face: bool,
-    period: u16,
-    count: u32,
-    pause: bool,
-    continue_: bool,
-    attack: bool,
-    alternate: bool,
-    hold: bool,
-}
-
-impl EnvelopeGen {
-    /// $0D Envelope shape.
-    ///   D3: Continue
-    ///   D2: Attack
-    ///   D1: Alternate
-    ///   D0: Hold
-    /// Writing this register fully restarts the envelope, matching real
-    /// YM2149/YM6630 hardware (alexmush fix; the original emu2149 left the
-    /// ramp position untouched here).
-    fn write_shape(&mut self, val: u8) {
-        self.continue_ = (val >> 3) & 1 != 0;
-        self.attack = (val >> 2) & 1 != 0;
-        self.alternate = (val >> 1) & 1 != 0;
-        self.hold = val & 1 != 0;
-        self.face = self.attack;
-        self.pause = false;
-        self.count = 0;
-        self.ptr = if self.face { 0 } else { 0x1f };
-    }
-
-    fn set_period(&mut self, period: u16) {
-        self.period = period;
-    }
-
-    /// Advances the envelope by `incr` sub-sample steps. Returns whether the
-    /// ramp position reset to 0 this step while repeating (used by the
-    /// caller to build the FamiStudio trigger mask).
-    fn advance(&mut self, incr: u32) -> bool {
-        let mut trigger = false;
-        self.count += incr;
-        if self.count >= u32::from(self.period) {
-            if !self.pause {
-                if self.face {
-                    self.ptr = (self.ptr + 1) & 0x3f;
-                } else {
-                    self.ptr = (self.ptr + 0x3f) & 0x3f;
-                }
-            }
-
-            if self.ptr & 0x20 != 0 {
-                // Carry or borrow out of the 5-bit ramp.
-                if self.continue_ {
-                    if self.alternate ^ self.hold {
-                        self.face = !self.face;
-                    }
-                    if self.hold {
-                        self.pause = true;
-                    }
-                    self.ptr = if self.face { 0 } else { 0x1f };
-                } else {
-                    self.pause = true;
-                    self.ptr = 0;
-                }
-            }
-
-            if self.ptr == 0 && !self.hold && self.continue_ && (!self.alternate || !self.face) {
-                trigger = true;
-            }
-
-            if u32::from(self.period) >= incr {
-                self.count -= u32::from(self.period);
-            } else {
-                self.count = 0;
-            }
-        }
-        trigger
-    }
-
-    /// Envelope shape considered "fast enough to trigger", matching the
-    /// FamiStudio threshold in `Nes_Sunsoft::run_until`'s trigger logic.
-    fn is_fast_repeating(&self) -> bool {
-        self.period != 0 && self.period < 200 && !self.hold
-    }
-}
-
-// ─────────────────────────────────────────────
 // PSG Core
 // ─────────────────────────────────────────────
 
@@ -199,15 +108,14 @@ const DUTY_CYCLE_TABLE: [u32; 9] = [
 ];
 
 /// Sunsoft 5B PSG core: three tone generators, one shared noise generator,
-/// one shared envelope generator, and the register file that drives them.
+/// and the register file that drives them. The real chip's shared envelope
+/// generator is not modeled — see the module doc.
 ///
 /// See: <https://www.nesdev.org/wiki/Sunsoft_5B_audio>
 //
 //                         ┌─> Tone 0 ─┐
 // Noise LFSR ──shared───> ├─> Tone 1 ─┼──> per-channel gate ──> (to mixer)
 //                         └─> Tone 2 ─┘
-//                               ^
-//                     Envelope (opt-in per channel)
 //
 #[derive(Debug, Clone)]
 pub struct Psg {
@@ -225,12 +133,14 @@ pub struct Psg {
     edge: [bool; 3],
     /// Selected duty preset (0..=8) per channel, indexing `DUTY_CYCLE_TABLE`.
     duty_index: [u8; 3],
-    /// Per-channel volume/envelope-select, as derived from $08/$09/$0A.
-    /// The CPU write is 5 bits (D4..D0): D4 selects the shared envelope in
-    /// place of a constant volume, D3..D0 is the 4-bit constant volume.
-    /// It's stored here shifted left one (`(val << 1) | 1`, matching
-    /// hardware/emu2149): bit 5 becomes the envelope-select flag and bits
-    /// 4..1 hold the volume, which is what the output stage indexes with.
+    /// Per-channel constant volume, as derived from $08/$09/$0A. The CPU
+    /// write is 5 bits (D4..D0): D4 would select the shared envelope on real
+    /// hardware in place of a constant volume, but that generator is not
+    /// modeled here (see the module doc), so D4 is ignored and D3..D0 is the
+    /// 4-bit volume this stage always indexes the volume table with. Stored
+    /// shifted left one (`(val << 1) | 1`, matching hardware/emu2149's
+    /// packing) purely for parity with the odd/even table-index split
+    /// documented on [`Psg::set_volume_level`].
     volume: [u8; 3],
     /// Tone/noise disable flags from $07 (Mixer control), per channel.
     /// `true` means the corresponding source is *disabled* on that channel,
@@ -244,8 +154,6 @@ pub struct Psg {
     noise_count: u8,
     noise_scaler: bool,
     noise_seed: u32,
-
-    envelope: EnvelopeGen,
 
     /// External channel mute mask (bit `i` set mutes tone channel `i`),
     /// distinct from the mixer-control tone/noise disable bits.
@@ -289,7 +197,6 @@ impl Psg {
             noise_count: 0,
             noise_scaler: false,
             noise_seed: 1,
-            envelope: EnvelopeGen::default(),
             mask: 0,
             base_count: 0,
             base_incr: 1 << GETA_BITS,
@@ -348,16 +255,15 @@ impl Psg {
     }
 
     /// Sets tone channel `idx`'s level as a direct index into the selected
-    /// volume table (0..=31), clearing the envelope-select flag.
+    /// volume table (0..=31).
     ///
     /// This deliberately reaches past the register model. A $08/$09/$0A
     /// write is 4-bit and is stored as `(val << 1) | 1`, so the register
     /// path can only ever address the table's *odd* entries — 16 of its 32
-    /// analog levels. The even entries are levels the chip really does
-    /// produce, just only ever under the hardware envelope generator, which
-    /// sweeps the full 0..=31 range. A host that wants that resolution as a
-    /// constant volume has no register to write, so it writes here instead.
-    /// Faithful register emulation goes through [`Self::write_reg`].
+    /// analog levels. The even entries are levels the chip's DAC really can
+    /// produce; a host that wants that resolution as a constant volume has
+    /// no register to write, so it writes here instead. Faithful register
+    /// emulation goes through [`Self::write_reg`].
     pub fn set_volume_level(&mut self, idx: usize, level: u8) {
         self.volume[idx] = level & 0x1f;
     }
@@ -448,20 +354,19 @@ impl Psg {
             }
             8..=10 => {
                 // The masked write value is 5 bits (D4..D0: envelope-select
-                // + 4-bit volume). It's shifted left one and OR'd with 1
-                // before storing, so the stored byte's bit 5 is the
-                // envelope-select flag and bits 4..1 hold the volume — this
-                // matches the original C exactly (and its `| 1` low bit is
-                // simply unused by the read side below).
+                // + 4-bit volume). Bit 5 of the stored byte would be the
+                // envelope-select flag on real hardware, but that generator
+                // isn't modeled (see the module doc), so bits 4..1 — the
+                // volume this stage actually indexes with — are all that
+                // matters below. Still shifted left one and OR'd with 1 to
+                // match the original C's packing (and `reg()`/`read_reg()`
+                // read the pre-shift byte back from `self.reg`, unaffected
+                // either way).
                 self.volume[reg - 8] = (val << 1) | 1;
             }
-            11 | 12 => {
-                let period = (u16::from(self.reg[12]) << 8) | u16::from(self.reg[11]);
-                self.envelope.set_period(period);
-            }
-            13 => {
-                self.envelope.write_shape(val);
-            }
+            // 11 | 12 (envelope period) and 13 (envelope shape): stored in
+            // `self.reg` above for read-back, same as every other register,
+            // but drive nothing — see the module doc.
             _ => {}
         }
     }
@@ -474,17 +379,16 @@ impl Psg {
 
     // ── Clocking ────────────────────────────
 
-    /// Advances the PSG by one internal step (envelope, noise LFSR, and all
-    /// three tone generators), recomputing [`Self::channel_output`]/
-    /// [`Self::output`] and [`Self::trigger_mask`]. Call once per host
-    /// sub-sample tick; see [`Self::set_step_increment`] for finer
-    /// granularity.
+    /// Advances the PSG by one internal step (noise LFSR and all three tone
+    /// generators), recomputing [`Self::channel_output`]/[`Self::output`]
+    /// and [`Self::trigger_mask`]. Call once per host sub-sample tick; see
+    /// [`Self::set_step_increment`] for finer granularity.
     pub fn clock(&mut self) {
         self.trigger_mask = 0;
         let incr = self.take_step_increment();
-        let (noise, env_trigger) = self.clock_shared(incr);
+        let noise = self.clock_shared(incr);
         for i in 0..3 {
-            self.clock_tone(i, incr, noise, env_trigger);
+            self.clock_tone(i, incr, noise);
         }
         self.tone_dirty = false;
     }
@@ -509,13 +413,13 @@ impl Psg {
     pub fn clock_channel0(&mut self) {
         let incr = self.take_step_increment();
 
-        // The shared generators always run: they are a handful of integer ops
-        // with no division, and they are *not* inert on a swallowed step —
-        // both `EnvelopeGen::advance` and the noise LFSR guard against a
-        // period of 0, which `x >= 0` makes true unconditionally, and 0 is
-        // this chip's reset value for both. Only the tone body is skipped.
+        // The noise generator always runs: it is a handful of integer ops
+        // with no division, and it is *not* inert on a swallowed step — it
+        // guards with `count >= period`, and `x >= 0` is unconditionally true
+        // at this chip's reset period of 0, which is exactly the state this
+        // project leaves it in. Only the tone body is skipped.
         self.trigger_mask = 0;
-        let (noise, env_trigger) = self.clock_shared(incr);
+        let noise = self.clock_shared(incr);
 
         if incr == 0 && !self.tone_dirty {
             // Nothing the tone body reads has moved: `count[0]` is below
@@ -523,21 +427,21 @@ impl Psg {
             // `tone_dirty` would be set had a period or duty write happened
             // since), so it would wrap to itself, leaving `phase` and
             // `edge[0]` exactly as they are. The output gate still has to
-            // run — `noise` and `envelope.ptr` above may have moved, as may
-            // a volume, mute, or mixer register written between two clocks.
+            // run — `noise` may have moved, as may a volume, mute, or mixer
+            // register written between two clocks.
             self.update_ch_out(0, noise);
-            self.trigger_mask = self.trigger_bits(0, env_trigger, false);
+            self.trigger_mask = self.trigger_bits(0, false);
             return;
         }
 
-        self.clock_tone(0, incr, noise, env_trigger);
+        self.clock_tone(0, incr, noise);
         self.tone_dirty = false;
     }
 
     /// Advances the sub-sample accumulator, returning the number of whole
     /// internal steps this call produces — 0 on a call the caller's step
     /// increment swallows.
-    #[inline]
+    #[inline(always)]
     fn take_step_increment(&mut self) -> u32 {
         self.base_count += self.base_incr;
         let incr = self.base_count >> GETA_BITS;
@@ -545,15 +449,19 @@ impl Psg {
         incr
     }
 
-    /// Advances the two chip-wide generators by `incr` steps, returning the
-    /// current noise gate level and whether the envelope reported a trigger.
-    #[inline]
-    fn clock_shared(&mut self, incr: u32) -> (bool, bool) {
-        let env_trigger = self.envelope.advance(incr);
+    /// Advances the shared noise generator by `incr` steps, returning the
+    /// current noise gate level.
+    #[inline(always)]
+    fn clock_shared(&mut self, incr: u32) -> bool {
+        self.clock_noise(incr);
+        self.noise_seed & 1 == 0
+    }
 
-        // Noise: shared 17-bit LFSR, advances at half the rate of its own
-        // period counter (the `noise_scaler` toggle), matching real
-        // YM2149/YM6630 hardware.
+    /// Advances the shared 17-bit LFSR, which steps at half the rate of its
+    /// own period counter (the `noise_scaler` toggle), matching real
+    /// YM2149/YM6630 hardware.
+    #[inline(always)]
+    fn clock_noise(&mut self, incr: u32) {
         self.noise_count = self.noise_count.wrapping_add(incr as u8);
         if u32::from(self.noise_count) >= u32::from(self.noise_freq) {
             self.noise_scaler = !self.noise_scaler;
@@ -570,14 +478,12 @@ impl Psg {
                 self.noise_count = 0;
             }
         }
-
-        (self.noise_seed & 1 == 0, env_trigger)
     }
 
     /// Advances tone channel `i` by `incr` steps and folds its new edge into
     /// [`Self::channel_output`] and [`Self::trigger_mask`].
-    #[inline]
-    fn clock_tone(&mut self, i: usize, incr: u32, noise: bool, env_trigger: bool) {
+    #[inline(always)]
+    fn clock_tone(&mut self, i: usize, incr: u32, noise: bool) {
         // `count[i]` free-runs across a full wave (`2*freq[i]` count units —
         // the register period historically covered a half-cycle, two toggles
         // per wave) and wraps every cycle. Its position within that span maps
@@ -594,12 +500,12 @@ impl Psg {
         self.edge[i] = new_edge;
 
         self.update_ch_out(i, noise);
-        self.trigger_mask |= self.trigger_bits(i, env_trigger, tone_trigger);
+        self.trigger_mask |= self.trigger_bits(i, tone_trigger);
     }
 
     /// Recomputes tone channel `i`'s output level from the current mute,
-    /// mixer, edge, and volume/envelope state.
-    #[inline]
+    /// mixer, edge, and volume state.
+    #[inline(always)]
     fn update_ch_out(&mut self, i: usize, noise: bool) {
         self.ch_out[i] = if self.mask & (1 << i) != 0 {
             0
@@ -610,25 +516,17 @@ impl Psg {
         // noise bit and vice versa.
         } else if (self.tone_disable[i] || self.edge[i]) && (self.noise_disable[i] || noise) {
             let table = self.voltbl.table();
-            if self.volume[i] & 0x20 == 0 {
-                (table[usize::from(self.volume[i] & 0x1f)] as i16) << 4
-            } else {
-                (table[usize::from(self.envelope.ptr)] as i16) << 4
-            }
+            (table[usize::from(self.volume[i] & 0x1f)] as i16) << 4
         } else {
             0
         };
     }
 
-    /// Tone channel `i`'s contribution to [`Self::trigger_mask`]. If the
-    /// channel is gated by a repeating (non-hold) envelope, report the
-    /// envelope's trigger; otherwise report the tone edge, provided the tone
-    /// isn't disabled.
-    #[inline]
-    fn trigger_bits(&self, i: usize, env_trigger: bool, tone_trigger: bool) -> TriggerMask {
-        if self.envelope.is_fast_repeating() && self.volume[i] & 0x20 != 0 {
-            (0x08 << i) | (u8::from(env_trigger) << i)
-        } else if !self.tone_disable[i] && self.freq[i] != 0 {
+    /// Tone channel `i`'s contribution to [`Self::trigger_mask`]: the tone
+    /// edge, provided the tone isn't disabled.
+    #[inline(always)]
+    fn trigger_bits(&self, i: usize, tone_trigger: bool) -> TriggerMask {
+        if !self.tone_disable[i] && self.freq[i] != 0 {
             (0x08 << i) | (u8::from(tone_trigger) << i)
         } else {
             0
@@ -962,45 +860,43 @@ mod tests {
         }
     }
 
+    /// The envelope generator isn't modeled (see the module doc): its
+    /// registers ($0B-$0D) and the select bit (D4 of $08/$09/$0A) are
+    /// accepted without panicking, stored for read-back, and otherwise
+    /// inert. This pins that removal as intentional and silent — a channel
+    /// with the select bit set still produces plain constant-volume output
+    /// from D3..D0 of the same write, indistinguishable from D4 being clear.
     #[test]
-    fn envelope_select_bit_uses_envelope_ptr_instead_of_constant_volume() {
-        let mut psg = Psg::new();
-        psg.write_reg(7, 0b0000_1110); // tone A enabled, rest disabled
-        psg.write_reg(0, 4);
-        psg.write_reg(1, 0);
-        psg.write_reg(8, 0x10); // D4 set -> select shared envelope, volume bits ignored
-        psg.write_reg(11, 0x10); // envelope period lo
-        psg.write_reg(12, 0x00); // envelope period hi
-        psg.write_reg(13, 0b0000_1100); // continue + attack -> ramps up from 0
+    fn envelope_registers_are_stored_but_do_not_drive_output() {
+        let mut with_select_bit = Psg::new();
+        with_select_bit.write_reg(7, 0b0000_1110); // tone A enabled, rest disabled
+        with_select_bit.write_reg(0, 4);
+        with_select_bit.write_reg(1, 0);
+        with_select_bit.write_reg(11, 0x10); // envelope period lo
+        with_select_bit.write_reg(12, 0x00); // envelope period hi
+        with_select_bit.write_reg(13, 0b0000_1100); // continue + attack
+        with_select_bit.write_reg(8, 0x10); // D4 set: would select envelope on real hardware
 
-        // Just verify it doesn't panic and eventually produces nonzero
-        // output as the envelope ramps up from 0.
-        let mut saw_output = false;
-        for _ in 0..2000 {
-            psg.clock();
-            if psg.channel_output(0) != 0 {
-                saw_output = true;
-                break;
-            }
+        let mut without_select_bit = Psg::new();
+        without_select_bit.write_reg(7, 0b0000_1110);
+        without_select_bit.write_reg(0, 4);
+        without_select_bit.write_reg(1, 0);
+        without_select_bit.write_reg(8, 0x00); // D4 clear, same D3..D0 (0)
+
+        for clock in 0..2000u32 {
+            with_select_bit.clock();
+            without_select_bit.clock();
+            assert_eq!(
+                with_select_bit.channel_output(0),
+                without_select_bit.channel_output(0),
+                "envelope select bit changed channel 0 output at clock {clock}"
+            );
         }
-        assert!(saw_output);
-    }
 
-    #[test]
-    fn envelope_shape_write_resets_ramp_position() {
-        let mut psg = Psg::new();
-        psg.write_reg(11, 0x01); // short envelope period
-        psg.write_reg(12, 0x00);
-        psg.write_reg(13, 0b0000_1000); // continue only, attack=0 -> starts at 0x1f, ramps down
-
-        for _ in 0..200 {
-            psg.clock();
-        }
-        assert_ne!(psg.envelope.ptr, 0x1f, "envelope should have ramped away from its reset position");
-
-        // Rewriting the shape register should fully restart the ramp.
-        psg.write_reg(13, 0b0000_1000);
-        assert_eq!(psg.envelope.ptr, 0x1f);
+        // The raw bytes still round-trip through the register file.
+        assert_eq!(with_select_bit.reg(11), 0x10);
+        assert_eq!(with_select_bit.reg(12), 0x00);
+        assert_eq!(with_select_bit.reg(13), 0b0000_1100);
     }
 
     #[test]
@@ -1042,9 +938,10 @@ mod tests {
     /// get the /16 prescaler `Sunsoft` uses (the ratio the fast path exists
     /// to exploit) and the same register script, mixing in every write that
     /// can change channel 0's output without a counter advancing: period,
-    /// duty, volume, mute, mixer, and the shared envelope — including the
-    /// degenerate zero-period envelope/noise states the fast path has to
-    /// decline to take.
+    /// duty, volume, mute, and mixer — including the degenerate zero-period
+    /// noise state the fast path has to decline to take. The script also
+    /// still writes the (unmodeled) envelope registers and select bit, as a
+    /// regression check that they stay harmless on both paths.
     #[test]
     fn clock_channel0_matches_full_clock_on_channel_zero() {
         let mut reference = Psg::new();
@@ -1065,11 +962,11 @@ mod tests {
             (1100, 6, 0x0B),      // noise period
             (1100, 7, 0b0011_0110), // noise on alongside tone
             (1900, 6, 0x00),      // degenerate: noise period 0
-            (2600, 11, 0x40),     // envelope period lo
-            (2600, 12, 0x00),     // envelope period hi
-            (2600, 13, 0b0000_1100), // continue+attack shape
-            (2600, 8, 0x10),      // channel 0 now gated by the envelope
-            (3800, 11, 0x00),     // degenerate: envelope period 0
+            (2600, 11, 0x40),     // envelope period lo (unmodeled, must stay inert)
+            (2600, 12, 0x00),     // envelope period hi (unmodeled, must stay inert)
+            (2600, 13, 0b0000_1100), // envelope shape (unmodeled, must stay inert)
+            (2600, 8, 0x10),      // envelope select bit set (unmodeled, must stay inert)
+            (3800, 11, 0x00),     // envelope period rewritten to 0 (still inert)
         ];
 
         for clock in 0..6000u32 {
@@ -1145,7 +1042,8 @@ mod tests {
                     match next() % 8 {
                         0..=4 => {
                             // Registers that matter here: periods, noise
-                            // period, mixer, volume, envelope period/shape.
+                            // period, mixer, volume, plus the (unmodeled)
+                            // envelope period/shape as a should-stay-inert check.
                             let reg = [0, 1, 6, 7, 8, 11, 12, 13][(next() % 8) as usize];
                             reference.write_reg(reg, val);
                             fast.write_reg(reg, val);
@@ -1580,3 +1478,4 @@ mod tests {
         assert_eq!(sunsoft.output(), 0);
     }
 }
+
