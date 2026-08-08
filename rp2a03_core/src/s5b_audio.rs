@@ -434,8 +434,13 @@ impl Psg {
 
             if self.mask & (1 << i) != 0 {
                 self.ch_out[i] = 0;
-            } else if (!self.tone_disable[i] || self.edge[i])
-                && (!self.noise_disable[i] || noise)
+            // Both terms are *disable* bits, so a disabled source contributes
+            // an unconditional `true` and lets the other one gate alone
+            // (emu2149's `(tmask||edge) && (nmask||noise)`). Negating them
+            // instead swaps the two sources: tone-enabled/noise-disabled would
+            // be gated by the noise bit and vice versa.
+            } else if (self.tone_disable[i] || self.edge[i])
+                && (self.noise_disable[i] || noise)
             {
                 self.ch_out[i] = if self.volume[i] & 0x20 == 0 {
                     (table[usize::from(self.volume[i] & 0x1f)] as i16) << 4
@@ -517,6 +522,15 @@ impl Sunsoft {
             shadow_regs: [None; 16],
         };
         sunsoft.reset();
+        // On the NES the 5B's PSG is fed the CPU clock through a divide-by-2
+        // prescaler and its own divide-by-8 tone prescaler, so one internal
+        // PSG step is 16 CPU cycles — that is what makes the tone register
+        // mean `f = clk / (32 * TP)`. Callers clock us once per CPU cycle
+        // (`Sunsoft::clock`), so the /16 lives here rather than in `Psg`,
+        // which stays a rate-agnostic chip model. FamiStudio does the same
+        // split: `PSG_setRate(psg, psg_clock / 16)` plus `t += 16` in
+        // `Nes_Sunsoft::run_until`.
+        sunsoft.psg.set_step_increment((1 << GETA_BITS) / 16);
         sunsoft
     }
 
@@ -938,6 +952,73 @@ mod tests {
         assert!(sunsoft.psg.tone_disable[2]);
         assert!(sunsoft.psg.noise_disable[1]);
         assert!(sunsoft.psg.noise_disable[2]);
+    }
+
+    #[test]
+    fn tone_and_noise_flags_gate_their_own_source() {
+        // Tone enabled, noise disabled: the slowest possible noise period must
+        // not stall the square. (With the mixer's disable bits negated, this
+        // channel would be gated by the noise LFSR instead.)
+        let mut tone = Sunsoft::new();
+        tone.write_timer_lo(8);
+        tone.write_timer_hi(0);
+        tone.write_noise_period(0x1F);
+        tone.write_volume_envelope(0x0F, false);
+        tone.set_tone_noise_enable(true, false);
+
+        let mut toggled = false;
+        for _ in 0..512 {
+            tone.clock();
+            if tone.output() != 0 {
+                toggled = true;
+                break;
+            }
+        }
+        assert!(toggled, "tone-only must follow the tone edge");
+
+        // Noise enabled, tone disabled, tone period parked at its maximum so
+        // the square edge cannot toggle inside the window — any output at all
+        // therefore comes from the LFSR.
+        let mut noise = Sunsoft::new();
+        noise.write_timer_lo(0xFF);
+        noise.write_timer_hi(0x0F);
+        noise.write_noise_period(1);
+        noise.write_volume_envelope(0x0F, false);
+        noise.set_tone_noise_enable(false, true);
+
+        let mut changed = false;
+        for _ in 0..4096 {
+            noise.clock();
+            if noise.output() != 0 {
+                changed = true;
+                break;
+            }
+        }
+        assert!(changed, "noise-only must follow the noise LFSR");
+    }
+
+    #[test]
+    fn one_psg_step_is_sixteen_cpu_cycles() {
+        let mut sunsoft = Sunsoft::new();
+        sunsoft.write_timer_lo(8); // TP = 8
+        sunsoft.write_timer_hi(0);
+        sunsoft.write_volume_envelope(0x0F, false);
+        sunsoft.set_tone_noise_enable(true, false);
+
+        // TP=8 toggles the square edge every 8 internal steps. At 16 CPU
+        // cycles per step that is one toggle per 128 CPU cycles, i.e. a
+        // 256-cycle wave — `f = clk / (32 * TP)`.
+        let mut transitions = 0;
+        let mut prev = sunsoft.output();
+        for _ in 0..1024 {
+            sunsoft.clock();
+            let now = sunsoft.output();
+            if now != prev {
+                transitions += 1;
+            }
+            prev = now;
+        }
+        assert_eq!(transitions, 1024 / 128);
     }
 
     #[test]
