@@ -656,8 +656,9 @@ mod tests {
             patch.sequences.duty[0].values = vec![value];
             patch.sequences.duty[0].loop_point = None;
             let bytes = patch.to_bytes();
-            let restored = Patch::from_bytes(&bytes)
-                .unwrap_or_else(|e| panic!("duty index {duty_index} (value {value}) must save: {e}"));
+            let restored = Patch::from_bytes(&bytes).unwrap_or_else(|e| {
+                panic!("duty index {duty_index} (value {value}) must save: {e}")
+            });
             assert_eq!(restored.sequences.duty[0].values, vec![value]);
         }
     }

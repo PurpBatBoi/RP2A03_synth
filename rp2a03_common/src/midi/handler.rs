@@ -14,8 +14,8 @@ use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::s5b_audio::Sunsoft;
 use rp2a03_core::sequencer::Sequence;
 use rp2a03_core::sequencer::{
-    ArpMode, PitchMode, S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK,
-    SeqState, SequencePlayer, VolMode, VolMode5B, s5b_duty_index,
+    ArpMode, PitchMode, S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK, SeqState, SequencePlayer,
+    VolMode, VolMode5B, s5b_duty_index,
 };
 use rp2a03_core::software_lfo::SoftwareLfo;
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
@@ -333,9 +333,10 @@ impl Default for MidiHandler {
 impl MidiHandler {
     pub(super) fn max_macro_period(&self) -> i32 {
         match self.channel_mode {
-            ChannelMode::Triangle | ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw | ChannelMode::S5B => {
-                0x0FFF
-            }
+            ChannelMode::Triangle
+            | ChannelMode::Vrc6Pulse
+            | ChannelMode::Vrc6Saw
+            | ChannelMode::S5B => 0x0FFF,
             _ => 0x07FF,
         }
     }
@@ -1133,8 +1134,8 @@ impl MidiHandler {
             vol_ceiling
         };
 
-        let hardware_scaled = (u32::from(vol_val) * self.hardware_volume as u32 / 15)
-            .min(u32::from(vol_ceiling));
+        let hardware_scaled =
+            (u32::from(vol_val) * self.hardware_volume as u32 / 15).min(u32::from(vol_ceiling));
         let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
         // The tremolo delta is in 4-bit units, so it scales with the step
         // range — same as the saw's `* 4` for its 64-step mode.

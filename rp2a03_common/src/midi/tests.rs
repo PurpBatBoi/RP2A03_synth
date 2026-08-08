@@ -11,8 +11,7 @@ use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::s5b_audio::Sunsoft;
 use rp2a03_core::sequencer::{
-    ArpMode, PitchMode, S5B_MODE_NOISE, S5B_MODE_SQUARE, SeqState, Sequence,
-    VolMode, VolMode5B,
+    ArpMode, PitchMode, S5B_MODE_NOISE, S5B_MODE_SQUARE, SeqState, Sequence, VolMode, VolMode5B,
 };
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
 use rp2a03_core::vrc6_saw::Vrc6Saw;
@@ -1263,7 +1262,11 @@ fn s5b_noise_period_not_written_when_noise_flag_clear() {
     handler.note_on(60, 127, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
     handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
 
-    assert_eq!(sunsoft.psg().reg(6), 0, "noise period must not be written when the noise flag is clear");
+    assert_eq!(
+        sunsoft.psg().reg(6),
+        0,
+        "noise period must not be written when the noise flag is clear"
+    );
     // Tone enabled (bit 0 clear), noise stays disabled (bit 3 set).
     assert_eq!(sunsoft.psg().reg(7) & 0x09, 0x08);
 }
@@ -1294,7 +1297,11 @@ fn s5b_volume_reg_for(vol_text: &str, vol_mode: VolMode5B) -> u8 {
 #[test]
 fn s5b_volume_clamps_to_15_in_16_step_mode() {
     assert_eq!(s5b_volume_reg_for("15", VolMode5B::Steps16), 31);
-    assert_eq!(s5b_volume_reg_for("31", VolMode5B::Steps16), 31, "clamped to 15");
+    assert_eq!(
+        s5b_volume_reg_for("31", VolMode5B::Steps16),
+        31,
+        "clamped to 15"
+    );
     assert_eq!(s5b_volume_reg_for("0", VolMode5B::Steps16), 0);
 }
 
@@ -1383,7 +1390,11 @@ fn s5b_note_on_off_cycle_gates_tone_and_returns_to_silence() {
 
     handler.note_on(60, 127, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
     handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
-    assert_eq!(sunsoft.psg().reg(7) & 0x01, 0, "tone must be enabled while gated");
+    assert_eq!(
+        sunsoft.psg().reg(7) & 0x01,
+        0,
+        "tone must be enabled while gated"
+    );
 
     handler.note_off(60, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
     for _ in 0..8 {
@@ -1391,7 +1402,10 @@ fn s5b_note_on_off_cycle_gates_tone_and_returns_to_silence() {
         handler.clock_sequences_one_frame(&seqs);
     }
 
-    assert!(!handler.gate(), "volume release tail must not hang the note");
+    assert!(
+        !handler.gate(),
+        "volume release tail must not hang the note"
+    );
     assert_eq!(
         sunsoft.psg().reg(7) & 0x01,
         0x01,

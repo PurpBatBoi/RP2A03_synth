@@ -434,8 +434,15 @@ pub fn draw_envelope_bar_graph(
             let p1 = pointer_pos;
 
             for_each_step_between(graph_rect, step_width, num_steps, p0, p1, 0.0, |s, y| {
-                let clamped_val =
-                    pos_y_to_val(y, graph_rect, is_arpeggio, vis_min, vis_max, min_val, max_val);
+                let clamped_val = pos_y_to_val(
+                    y,
+                    graph_rect,
+                    is_arpeggio,
+                    vis_min,
+                    vis_max,
+                    min_val,
+                    max_val,
+                );
 
                 if seq.values[s] != clamped_val {
                     seq.values[s] = clamped_val;
@@ -490,7 +497,13 @@ pub fn draw_envelope_bar_graph(
                 state.tension,
                 |s, y| {
                     let clamped_val = pos_y_to_val(
-                        y, graph_rect, is_arpeggio, vis_min, vis_max, min_val, max_val,
+                        y,
+                        graph_rect,
+                        is_arpeggio,
+                        vis_min,
+                        vis_max,
+                        min_val,
+                        max_val,
                     );
 
                     if seq.values[s] != clamped_val {
@@ -1378,14 +1391,15 @@ pub fn draw_s5b_duty_noise_graph(
     let toggling = flag_response.dragged_by(egui::PointerButton::Primary)
         || flag_response.clicked_by(egui::PointerButton::Primary);
 
-    if toggling
-        && let Some(pointer_pos) = flag_response.interact_pointer_pos()
-    {
+    if toggling && let Some(pointer_pos) = flag_response.interact_pointer_pos() {
         let rel_x =
             (pointer_pos.x - flag_rect.min.x).clamp(0.0, (flag_rect.width() - 0.001).max(0.0));
         let step = (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize;
 
-        let state: S5BFlagDragState = ui.ctx().data_mut(|d| d.get_temp(drag_id)).unwrap_or_default();
+        let state: S5BFlagDragState = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(drag_id))
+            .unwrap_or_default();
 
         if state.last_step != Some(step) {
             let rel_y = (pointer_pos.y - flag_rect.min.y).clamp(0.0, flag_rect.height() - 0.001);
@@ -1426,7 +1440,11 @@ pub fn draw_s5b_duty_noise_graph(
             );
 
             let is_set = value & bit != 0;
-            let color = if is_set { *on_color } else { theme::S5B_FLAG_OFF };
+            let color = if is_set {
+                *on_color
+            } else {
+                theme::S5B_FLAG_OFF
+            };
             painter.rect_filled(btn_rect, 1.0f32, color);
 
             if is_set {
@@ -1441,10 +1459,7 @@ pub fn draw_s5b_duty_noise_graph(
         }
     }
 
-    draw_line_draw_preview(
-        &painter,
-        ui.ctx().data(|d| d.get_temp(period_line_draw_id)),
-    );
+    draw_line_draw_preview(&painter, ui.ctx().data(|d| d.get_temp(period_line_draw_id)));
 
     // Render loop/release region headers — ported from `draw_envelope_bar_graph`.
     painter.rect_filled(header_rect, 0.0f32, Color32::from_rgb(25, 25, 25));

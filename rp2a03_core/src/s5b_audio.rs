@@ -58,23 +58,20 @@ impl VolumeMode {
 
 /// YM2149 - 32 steps. Source: emu2149 (shifted forward by 1 by alexmush).
 const VOLTBL_YM2149: [u32; 32] = [
-    0x00, 0x00, 0x01, 0x01, 0x02, 0x02, 0x03, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09, 0x0B, 0x0D,
-    0x0F, 0x12, 0x16, 0x1A, 0x1F, 0x25, 0x2D, 0x35, 0x3F, 0x4C, 0x5A, 0x6A, 0x7F, 0x97, 0xB4,
-    0xD6, 0xFF,
+    0x00, 0x00, 0x01, 0x01, 0x02, 0x02, 0x03, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09, 0x0B, 0x0D, 0x0F,
+    0x12, 0x16, 0x1A, 0x1F, 0x25, 0x2D, 0x35, 0x3F, 0x4C, 0x5A, 0x6A, 0x7F, 0x97, 0xB4, 0xD6, 0xFF,
 ];
 
 /// AY-3-8910 - 16 steps, each duplicated. Source: emu2149.
 const VOLTBL_AY8910: [u32; 32] = [
-    0x00, 0x00, 0x03, 0x03, 0x04, 0x04, 0x06, 0x06, 0x09, 0x09, 0x0D, 0x0D, 0x12, 0x12, 0x1D,
-    0x1D, 0x22, 0x22, 0x37, 0x37, 0x4D, 0x4D, 0x62, 0x62, 0x82, 0x82, 0xA6, 0xA6, 0xD0, 0xD0,
-    0xFF, 0xFF,
+    0x00, 0x00, 0x03, 0x03, 0x04, 0x04, 0x06, 0x06, 0x09, 0x09, 0x0D, 0x0D, 0x12, 0x12, 0x1D, 0x1D,
+    0x22, 0x22, 0x37, 0x37, 0x4D, 0x4D, 0x62, 0x62, 0x82, 0x82, 0xA6, 0xA6, 0xD0, 0xD0, 0xFF, 0xFF,
 ];
 
 /// Per-register write masks ($0..$F), matching what real PSG hardware
 /// ignores on write. Indexed by register number.
 const REG_MASK: [u8; 16] = [
-    0xff, 0x0f, 0xff, 0x0f, 0xff, 0x0f, 0x1f, 0x3f, 0x1f, 0x1f, 0x1f, 0xff, 0xff, 0x0f, 0xff,
-    0xff,
+    0xff, 0x0f, 0xff, 0x0f, 0xff, 0x0f, 0x1f, 0x3f, 0x1f, 0x1f, 0x1f, 0xff, 0xff, 0x0f, 0xff, 0xff,
 ];
 
 // ─────────────────────────────────────────────
@@ -703,10 +700,15 @@ impl Sunsoft {
         // u16 (it lands exactly at $10000), so the range check has to run
         // in a type that can represent that.
         let addr = u32::from(addr);
-        if addr >= u32::from(REG_SELECT_BASE) && addr < u32::from(REG_SELECT_BASE) + u32::from(REG_RANGE) {
+        if addr >= u32::from(REG_SELECT_BASE)
+            && addr < u32::from(REG_SELECT_BASE) + u32::from(REG_RANGE)
+        {
             self.selected_reg = data;
-        } else if addr >= u32::from(REG_WRITE_BASE) && addr < u32::from(REG_WRITE_BASE) + u32::from(REG_RANGE) {
-            self.psg.write_reg(u32::from(self.selected_reg), u32::from(data));
+        } else if addr >= u32::from(REG_WRITE_BASE)
+            && addr < u32::from(REG_WRITE_BASE) + u32::from(REG_RANGE)
+        {
+            self.psg
+                .write_reg(u32::from(self.selected_reg), u32::from(data));
             if let Some(slot) = self.ages.get_mut(self.selected_reg as usize & 0x0f) {
                 *slot = 0;
             }
@@ -750,7 +752,9 @@ impl Sunsoft {
     /// [`Self::stop_seeking`].
     pub fn write_shadow_register(&mut self, addr: u16, data: u8) {
         let addr = u32::from(addr);
-        if addr >= u32::from(REG_SELECT_BASE) && addr < u32::from(REG_SELECT_BASE) + u32::from(REG_RANGE) {
+        if addr >= u32::from(REG_SELECT_BASE)
+            && addr < u32::from(REG_SELECT_BASE) + u32::from(REG_RANGE)
+        {
             self.selected_reg = data;
         } else if addr >= u32::from(REG_WRITE_BASE)
             && addr < u32::from(REG_WRITE_BASE) + u32::from(REG_RANGE)
@@ -842,7 +846,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_output, "channel A should produce nonzero output once its edge goes high");
+        assert!(
+            saw_output,
+            "channel A should produce nonzero output once its edge goes high"
+        );
     }
 
     #[test]
@@ -953,20 +960,20 @@ mod tests {
         // (clock at which to apply, register, value); `None` register means a
         // non-register setter, applied via the closure below.
         let script: [(u32, u32, u32); 14] = [
-            (0, 7, 0b0011_1110),  // channel 0 tone on, noise off
-            (0, 0, 0x40),         // period lo
-            (0, 1, 0x01),         // period hi
-            (0, 8, 0x0F),         // constant volume, max
-            (300, 8, 0x07),       // volume change mid-wave
-            (700, 0, 0x11),       // period change mid-wave
-            (1100, 6, 0x0B),      // noise period
-            (1100, 7, 0b0011_0110), // noise on alongside tone
-            (1900, 6, 0x00),      // degenerate: noise period 0
-            (2600, 11, 0x40),     // envelope period lo (unmodeled, must stay inert)
-            (2600, 12, 0x00),     // envelope period hi (unmodeled, must stay inert)
+            (0, 7, 0b0011_1110),     // channel 0 tone on, noise off
+            (0, 0, 0x40),            // period lo
+            (0, 1, 0x01),            // period hi
+            (0, 8, 0x0F),            // constant volume, max
+            (300, 8, 0x07),          // volume change mid-wave
+            (700, 0, 0x11),          // period change mid-wave
+            (1100, 6, 0x0B),         // noise period
+            (1100, 7, 0b0011_0110),  // noise on alongside tone
+            (1900, 6, 0x00),         // degenerate: noise period 0
+            (2600, 11, 0x40),        // envelope period lo (unmodeled, must stay inert)
+            (2600, 12, 0x00),        // envelope period hi (unmodeled, must stay inert)
             (2600, 13, 0b0000_1100), // envelope shape (unmodeled, must stay inert)
-            (2600, 8, 0x10),      // envelope select bit set (unmodeled, must stay inert)
-            (3800, 11, 0x00),     // envelope period rewritten to 0 (still inert)
+            (2600, 8, 0x10),         // envelope select bit set (unmodeled, must stay inert)
+            (3800, 11, 0x00),        // envelope period rewritten to 0 (still inert)
         ];
 
         for clock in 0..6000u32 {
@@ -1423,9 +1430,8 @@ mod tests {
         // comment in the source). Generous tolerance: this counts raw
         // clocks, not phase samples, so period/incr rounding shifts the
         // measured edge by up to a couple of percent either way.
-        const EXPECTED_PERCENT: [f64; 9] = [
-            3.125, 6.25, 12.5, 25.0, 50.0, 75.0, 87.5, 93.75, 96.875,
-        ];
+        const EXPECTED_PERCENT: [f64; 9] =
+            [3.125, 6.25, 12.5, 25.0, 50.0, 75.0, 87.5, 93.75, 96.875];
 
         for (index, &expected) in EXPECTED_PERCENT.iter().enumerate() {
             let mut sunsoft = Sunsoft::new();
@@ -1478,4 +1484,3 @@ mod tests {
         assert_eq!(sunsoft.output(), 0);
     }
 }
-

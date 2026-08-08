@@ -2,7 +2,9 @@
 //! Layout rendering logic for the reusable sequence editor window.
 
 use super::state::{MAX_SEQUENCES, SequencePlayheads, SharedSequences};
-use super::widgets::{draw_envelope_bar_graph, draw_s5b_duty_noise_graph, group_box, repeating_button};
+use super::widgets::{
+    draw_envelope_bar_graph, draw_s5b_duty_noise_graph, group_box, repeating_button,
+};
 use crate::ChannelMode;
 use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence, VolMode, VolMode5B};
 
@@ -197,7 +199,9 @@ fn parse_s5b_duty_text(input: &str) -> (Sequence, String) {
                 text_tokens.push("/".to_string());
             }
             _ => {
-                let digits_end = token.find(|c: char| !c.is_ascii_digit()).unwrap_or(token.len());
+                let digits_end = token
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(token.len());
                 let (digits, flags) = token.split_at(digits_end);
                 if digits.is_empty() {
                     continue;
@@ -1591,7 +1595,8 @@ mod tests {
             source.channel_mode = ChannelMode::S5B;
             source.set_slot_waveform(0, ChannelMode::S5B);
 
-            let base = 5 | rp2a03_core::sequencer::S5B_MODE_SQUARE
+            let base = 5
+                | rp2a03_core::sequencer::S5B_MODE_SQUARE
                 | rp2a03_core::sequencer::S5B_MODE_NOISE;
             let value = match duty_index {
                 Some(index) => rp2a03_core::sequencer::s5b_set_duty_index(base, index),
@@ -1944,11 +1949,21 @@ mod tests {
         // dn defaults the VRC6 saw volume sequence to SETTING_VOL_16_STEPS; the 6-bit
         // range is only reachable through SETTING_VOL_64_STEPS.
         assert_eq!(
-            sequence_range(0, ChannelMode::Vrc6Saw, VolMode::Steps16, VolMode5B::Steps16),
+            sequence_range(
+                0,
+                ChannelMode::Vrc6Saw,
+                VolMode::Steps16,
+                VolMode5B::Steps16
+            ),
             (0, 15)
         );
         assert_eq!(
-            sequence_range(0, ChannelMode::Vrc6Saw, VolMode::Steps64, VolMode5B::Steps16),
+            sequence_range(
+                0,
+                ChannelMode::Vrc6Saw,
+                VolMode::Steps64,
+                VolMode5B::Steps16
+            ),
             (0, 63)
         );
 
@@ -1958,7 +1973,12 @@ mod tests {
             (0, 15)
         );
         assert_eq!(
-            sequence_range(0, ChannelMode::Vrc6Pulse, VolMode::Steps64, VolMode5B::Steps16),
+            sequence_range(
+                0,
+                ChannelMode::Vrc6Pulse,
+                VolMode::Steps64,
+                VolMode5B::Steps16
+            ),
             (0, 15)
         );
     }
@@ -1983,7 +2003,12 @@ mod tests {
             (0, 15)
         );
         assert_eq!(
-            sequence_range(0, ChannelMode::Vrc6Pulse, VolMode::Steps16, VolMode5B::Steps32),
+            sequence_range(
+                0,
+                ChannelMode::Vrc6Pulse,
+                VolMode::Steps16,
+                VolMode5B::Steps32
+            ),
             (0, 15)
         );
     }
@@ -1992,11 +2017,21 @@ mod tests {
     fn vrc6_saw_duty_range_is_one_bit() {
         // dn `CVRC6Sawtooth::MAX_DUTY = 0x01` — the saw's duty is the $B000 rate MSB.
         assert_eq!(
-            sequence_range(4, ChannelMode::Vrc6Saw, VolMode::Steps16, VolMode5B::Steps16),
+            sequence_range(
+                4,
+                ChannelMode::Vrc6Saw,
+                VolMode::Steps16,
+                VolMode5B::Steps16
+            ),
             (0, 1)
         );
         assert_eq!(
-            sequence_range(4, ChannelMode::Vrc6Pulse, VolMode::Steps16, VolMode5B::Steps16),
+            sequence_range(
+                4,
+                ChannelMode::Vrc6Pulse,
+                VolMode::Steps16,
+                VolMode5B::Steps16
+            ),
             (0, 7)
         );
         assert_eq!(
@@ -2247,8 +2282,7 @@ mod tests {
     #[test]
     fn s5b_duty_text_round_trips_width() {
         let value = rp2a03_core::sequencer::s5b_set_duty_index(
-            5 | rp2a03_core::sequencer::S5B_MODE_SQUARE
-                | rp2a03_core::sequencer::S5B_MODE_NOISE,
+            5 | rp2a03_core::sequencer::S5B_MODE_SQUARE | rp2a03_core::sequencer::S5B_MODE_NOISE,
             2,
         );
         let seq = Sequence {
@@ -2317,6 +2351,9 @@ mod tests {
         // dn's parser is permissive — unrecognized letters are dropped, not
         // rejected, since text-field edits happen keystroke-by-keystroke.
         let (reparsed, _) = parse_s5b_duty_text("5tzq");
-        assert_eq!(reparsed.values, vec![5 | rp2a03_core::sequencer::S5B_MODE_SQUARE]);
+        assert_eq!(
+            reparsed.values,
+            vec![5 | rp2a03_core::sequencer::S5B_MODE_SQUARE]
+        );
     }
 }
