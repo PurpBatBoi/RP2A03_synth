@@ -10,7 +10,7 @@ pub use theme::style;
 
 pub use editor::{
     EditorResult, EditorUiState, cleanup_tab_sequence, render_editor_ui, sanitize_sequence_text,
-    sequence_to_text,
+    sequence_to_text, sequence_to_text_for_tab,
 };
 
 pub use state::{

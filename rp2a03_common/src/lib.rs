@@ -13,7 +13,8 @@ pub use format::patch::{
 pub use gui::{
     EditorResult, EditorUiState, MAX_SEQUENCES, NO_PLAYHEAD_STEP, SEQUENCE_TYPE_COUNT,
     SequenceBank, SequencePlayheads, SequenceSlot, SharedSequences, cleanup_tab_sequence,
-    draw_envelope_bar_graph, render_editor_ui, sanitize_sequence_text, sequence_to_text, style,
+    draw_envelope_bar_graph, render_editor_ui, sanitize_sequence_text, sequence_to_text,
+    sequence_to_text_for_tab, style,
 };
 pub use midi::{
     ActiveSequences, AnyChannel, ChannelMode, HostAutomationControls, MidiHandler, SequenceReload,

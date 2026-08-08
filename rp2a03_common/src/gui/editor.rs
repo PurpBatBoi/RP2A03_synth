@@ -1578,6 +1578,79 @@ mod tests {
     }
 
     #[test]
+    fn s5b_duty_slots_reload_as_token_text_not_raw_integers() {
+        // A packed S5B duty step is a bitfield, so it must come back out of a
+        // save/load as `"5tnw2"`. Rendering it with the plain numeric
+        // formatter yields `"3781"`, which then reparses as period 3781
+        // (clamped to 31) with every flag and the duty width lost — silent
+        // data loss the moment the text box is touched after a load. The
+        // second case is the one that was already broken before duty width
+        // existed: the noise flag alone puts the value past 127.
+        for (duty_index, expected_text) in [(Some(2), "5tnw2"), (None, "5tn")] {
+            let mut source = SharedSequences::default();
+            source.channel_mode = ChannelMode::S5B;
+            source.set_slot_waveform(0, ChannelMode::S5B);
+
+            let base = 5 | rp2a03_core::sequencer::S5B_MODE_SQUARE
+                | rp2a03_core::sequencer::S5B_MODE_NOISE;
+            let value = match duty_index {
+                Some(index) => rp2a03_core::sequencer::s5b_set_duty_index(base, index),
+                None => base,
+            };
+            source.selected_sequence_mut(4).1.values = vec![value];
+
+            let patch = crate::Patch::from_shared_sequences(&source, 60);
+            let bytes = patch.to_bytes();
+            let restored_patch =
+                crate::Patch::from_bytes(&bytes).expect("packed S5B duty patch must decode");
+
+            let mut data = SharedSequences::default();
+            let mut result = EditorResult::default();
+            apply_loaded_patch(&mut data, &mut result, &restored_patch);
+
+            assert_eq!(
+                data.selected_sequence(4).values,
+                vec![value],
+                "packed S5B duty value must survive the load"
+            );
+            assert_eq!(
+                data.sequence_bank(4).slot(0).text,
+                expected_text,
+                "reloaded text must be the S5B token form, not raw integers"
+            );
+
+            // The text is what the next edit reparses, so round-trip it the
+            // way the text box would and confirm nothing is lost.
+            let (reparsed, _) = parse_s5b_duty_text(&data.sequence_bank(4).slot(0).text);
+            assert_eq!(
+                reparsed.values,
+                vec![value],
+                "reloaded text must reparse back to the same packed value"
+            );
+        }
+    }
+
+    #[test]
+    fn non_s5b_duty_slots_still_reload_as_plain_numbers() {
+        // The tab-aware formatter must not change how every other channel's
+        // duty lane round-trips.
+        let mut source = SharedSequences::default();
+        source.channel_mode = ChannelMode::Vrc6Pulse;
+        source.set_slot_waveform(0, ChannelMode::Vrc6Pulse);
+        source.selected_sequence_mut(4).1.values = vec![3, 5, 7];
+
+        let patch = crate::Patch::from_shared_sequences(&source, 60);
+        let restored_patch =
+            crate::Patch::from_bytes(&patch.to_bytes()).expect("patch must decode");
+
+        let mut data = SharedSequences::default();
+        let mut result = EditorResult::default();
+        apply_loaded_patch(&mut data, &mut result, &restored_patch);
+
+        assert_eq!(data.sequence_bank(4).slot(0).text, "3 5 7");
+    }
+
+    #[test]
     fn loading_moves_off_a_tab_the_loaded_waveform_does_not_have() {
         let mut source = SharedSequences::default();
         source.set_selected_sequence_index(4, 1);

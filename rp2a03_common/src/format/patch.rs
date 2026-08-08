@@ -7,7 +7,8 @@
 //! Format spec: docs\format.md — read it before changing the wire format.
 
 use crate::{
-    ChannelMode, MAX_SEQUENCES, SequenceBank, SequenceSlot, SharedSequences, sequence_to_text,
+    ChannelMode, MAX_SEQUENCES, SequenceBank, SequenceSlot, SharedSequences,
+    sequence_to_text_for_tab,
 };
 use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence, VolMode, VolMode5B};
 use std::fmt;
@@ -514,8 +515,20 @@ impl Patch {
             let bank = shared.sequence_bank_mut(tab);
             for entry in entries {
                 let sequence = entry.to_sequence();
+                // The duty lane's text form depends on the channel that
+                // authored the slot: an S5B duty step is a packed bitfield
+                // that renders as `"5tnw2"`, not as the raw integer 3781.
+                // The waveform comes from the patch's own `slot_waveforms`
+                // rather than the live `shared.channel_mode`, so each slot
+                // is rendered as whatever channel actually wrote it.
+                let slot_waveform = self
+                    .slot_waveforms
+                    .iter()
+                    .find(|w| w.index == entry.index)
+                    .map_or(ChannelMode::default(), |w| w.waveform);
+                let text = sequence_to_text_for_tab(tab, slot_waveform, &sequence);
                 let slot = bank.slot_mut(entry.index);
-                slot.text = sequence_to_text(&sequence);
+                slot.text = text;
                 slot.enabled = entry.enabled;
                 slot.sequence = sequence;
             }
@@ -585,6 +598,7 @@ pub fn load_from_path(path: &std::path::Path) -> Result<Patch, PatchFileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sequence_to_text;
 
     fn sample_entry(index: usize) -> PatchSequenceEntry {
         PatchSequenceEntry {
