@@ -1011,6 +1011,82 @@ mod tests {
         );
     }
 
+    /// `slot_waveforms_round_trip_through_shared_sequences` covers
+    /// Triangle/Noise/Vrc6Saw/Pulse but not `ChannelMode::S5B` — the
+    /// mechanism is generic and shared across every variant, so that's not a
+    /// real gap, but S5B is also the one waveform whose duty lane is a packed
+    /// bitfield rather than a plain number, so it's worth its own round trip
+    /// through actual bytes with real content instead of an empty sequence.
+    ///
+    /// The text is a real "Noise/Mode" sequence authored in the editor,
+    /// covering every token shape the format supports: bare period,
+    /// tone-only, noise-only, tone+noise, and both default and non-default
+    /// duty width. The values below encode it with the same public helpers
+    /// `parse_s5b_duty_text` uses internally (that function itself is
+    /// private to `gui::editor`, not reachable from here).
+    #[test]
+    fn s5b_duty_sequence_with_waveform_round_trips_through_bytes() {
+        const ORIGINAL_TEXT: &str = "31tnw5 17w6 16tw6 15tnw5 18 20n 21 21nw5 26tw7";
+        // (period, tone flag, noise flag, duty index); duty 4 is the default
+        // width, which renders bare (no `w` suffix) — see `18`/`20n`/`21`.
+        let steps: [(i16, bool, bool, i16); 9] = [
+            (31, true, true, 5),
+            (17, false, false, 6),
+            (16, true, false, 6),
+            (15, true, true, 5),
+            (18, false, false, 4),
+            (20, false, true, 4),
+            (21, false, false, 4),
+            (21, false, true, 5),
+            (26, true, false, 7),
+        ];
+        let values: Vec<i16> = steps
+            .iter()
+            .map(|&(period, tone, noise, duty)| {
+                let mut value = period;
+                if tone {
+                    value |= rp2a03_core::sequencer::S5B_MODE_SQUARE;
+                }
+                if noise {
+                    value |= rp2a03_core::sequencer::S5B_MODE_NOISE;
+                }
+                rp2a03_core::sequencer::s5b_set_duty_index(value, duty)
+            })
+            .collect();
+
+        const SLOT: usize = 7;
+        let mut original = SharedSequences::default();
+        original.set_slot_waveform(SLOT, ChannelMode::S5B);
+        original.set_selected_sequence_index(4, SLOT); // duty tab
+        original.selected_sequence_mut(4).1.values = values.clone();
+
+        let patch = Patch::from_shared_sequences(&original, 60);
+        assert!(
+            patch.slot_waveforms.contains(&PatchSlotWaveform {
+                index: SLOT,
+                waveform: ChannelMode::S5B,
+            }),
+            "an S5B slot must be recorded in slot_waveforms, same as every other non-default waveform"
+        );
+
+        let bytes = patch.to_bytes();
+        let restored_patch =
+            Patch::from_bytes(&bytes).expect("S5B patch must round-trip through bytes");
+
+        let mut restored = SharedSequences::default();
+        restored_patch.apply_to_shared_sequences(&mut restored);
+
+        assert_eq!(restored.slot_waveform(SLOT), ChannelMode::S5B);
+        assert_eq!(restored.selected_sequence_index(4), SLOT);
+        assert_eq!(restored.selected_sequence(4).values, values);
+
+        // Round-tripping the packed bits is necessary but not sufficient —
+        // the point of the packing is that it renders back to what the user
+        // typed.
+        let rendered = sequence_to_text_for_tab(4, ChannelMode::S5B, restored.selected_sequence(4));
+        assert_eq!(rendered, ORIGINAL_TEXT);
+    }
+
     #[test]
     fn rejects_sequence_value_out_of_range() {
         let mut patch = sample_patch();
