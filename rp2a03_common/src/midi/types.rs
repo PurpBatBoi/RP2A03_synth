@@ -12,6 +12,7 @@ pub enum ChannelMode {
     Noise = 2,
     Vrc6Pulse = 3,
     Vrc6Saw = 4,
+    S5B = 5,
 }
 
 impl ChannelMode {
@@ -21,6 +22,7 @@ impl ChannelMode {
             2 => ChannelMode::Noise,
             3 => ChannelMode::Vrc6Pulse,
             4 => ChannelMode::Vrc6Saw,
+            5 => ChannelMode::S5B,
             _ => ChannelMode::Pulse,
         }
     }

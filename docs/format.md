@@ -105,8 +105,8 @@ this format:
 > instead).
 
 This format also embeds several unit-only enums (`slot_waveforms`'s
-`ChannelMode`, and `pitch_mode`/`arp_mode`/`vol_mode`'s
-`PitchMode`/`ArpMode`/`VolMode`).
+`ChannelMode`, and `pitch_mode`/`arp_mode`/`vol_mode`/`vol_mode_5b`'s
+`PitchMode`/`ArpMode`/`VolMode`/`VolMode5B`).
 `rmp-serde` writes unit enum variants as their **name string**, not their
 numeric discriminant — the exact **inverse** of the struct-field rule above:
 
@@ -224,7 +224,8 @@ load-bearing — see "Schema evolution rule" above):
   "pitch_mode": "Relative",
   "arp_mode": "Absolute",
   "vol_mode": "Steps16",
-  "enabled": true
+  "enabled": true,
+  "vol_mode_5b": "Steps16"
 }
 ```
 
@@ -237,7 +238,8 @@ load-bearing — see "Schema evolution rule" above):
 | `pitch_mode`     | `"Relative"` \| `"Absolute"` | Only meaningful when this entry is a pitch sequence; carried uniformly on every entry for 1:1 correspondence with `Sequence`, ignored otherwise. |
 | `arp_mode`       | `"Absolute"` \| `"Relative"` | Only meaningful when this entry is an arpeggio sequence; ignored otherwise. No third value is defined — see note below. |
 | `vol_mode`       | `"Steps16"` \| `"Steps64"` | Only meaningful when this entry is a volume sequence on the VRC6 sawtooth; ignored otherwise. Absent/omitted on older files defaults to `"Steps16"` (`#[serde(default)]`), matching `Sequence`'s own back-compat rule. |
-| `enabled`        | boolean           | Whether `SequenceSlot::enabled` was set for this numbered slot when saved — see above. Absent/omitted on older files defaults to `true` (`#[serde(default = "default_enabled")]`; deliberately *not* a bare `#[serde(default)]`, which would default to `false` and disable every pre-existing envelope on load). This field must stay last in the struct — any future field is appended after it. |
+| `enabled`        | boolean           | Whether `SequenceSlot::enabled` was set for this numbered slot when saved — see above. Absent/omitted on older files defaults to `true` (`#[serde(default = "default_enabled")]`; deliberately *not* a bare `#[serde(default)]`, which would default to `false` and disable every pre-existing envelope on load). |
+| `vol_mode_5b`    | `"Steps16"` \| `"Steps32"` | Only meaningful when this entry is a volume sequence on the Sunsoft 5B; ignored otherwise. Absent/omitted on older files defaults to `"Steps16"` (`#[serde(default)]`), same back-compat rule as `vol_mode`. This field must stay last in the struct — any future field is appended after it. |
 
 Every field except `index` and `enabled` is a direct mirror of
 `rp2a03_core::sequencer::Sequence` — no renaming, no derived/cached fields.
@@ -293,7 +295,7 @@ Slots nobody set are omitted entirely and decode back to `"Pulse"`.
 | Field      | Type               | Notes |
 |------------|--------------------|-------|
 | `index`    | integer, `0..=127` | The numbered slot this entry describes. Unique within the array. |
-| `waveform` | `ChannelMode` name | `"Pulse"` \| `"Triangle"` \| `"Noise"` \| `"Vrc6Pulse"` \| `"Vrc6Saw"`. |
+| `waveform` | `ChannelMode` name | `"Pulse"` \| `"Triangle"` \| `"Noise"` \| `"Vrc6Pulse"` \| `"Vrc6Saw"` \| `"S5B"`. |
 
 This is also where the instrument's *live* channel selection comes from on
 load — there is no separate top-level field for it. Loading a patch sets the
@@ -337,7 +339,8 @@ for readability — see "Wire format" for the actual binary encoding:
         "pitch_mode": "Relative",
         "arp_mode": "Absolute",
         "vol_mode": "Steps16",
-        "enabled": true
+        "enabled": true,
+        "vol_mode_5b": "Steps16"
       }
     ],
     "arp": [],
@@ -352,7 +355,8 @@ for readability — see "Wire format" for the actual binary encoding:
         "pitch_mode": "Relative",
         "arp_mode": "Absolute",
         "vol_mode": "Steps16",
-        "enabled": true
+        "enabled": true,
+        "vol_mode_5b": "Steps16"
       }
     ]
   },

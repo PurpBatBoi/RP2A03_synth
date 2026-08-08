@@ -48,6 +48,30 @@ pub enum VolMode {
     Steps64 = 1,
 }
 
+/// S5B duty/mode sequence volume resolution — parallel to [`VolMode`] but scoped
+/// to `ChannelMode::S5B`. Not a reuse of `VolMode`: the rescale math there is
+/// hardcoded to the 16<->64 relationship for VRC6's 6-bit accumulator, whereas
+/// the S5B's hardware volume register is 5-bit (0..=31), a 16<->32 relationship.
+/// This is a deliberate hardware-fidelity addition beyond stock DnFamiTracker,
+/// which has no S5B equivalent of `SETTING_VOL_64_STEPS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum VolMode5B {
+    #[default]
+    Steps16 = 0,
+    Steps32 = 1,
+}
+
+/// Bit flags packed into an S5B duty/mode sequence step value, mirroring dn's
+/// `S5B_MODE_ENVELOPE`/`S5B_MODE_SQUARE`/`S5B_MODE_NOISE` (`Sequence.h`).
+/// Bits 0-4 (`0x1F`) hold the noise period (0..=31); these three flag bits sit
+/// above it in the same `i16` step value.
+pub const S5B_MODE_ENVELOPE: i16 = 0x20;
+pub const S5B_MODE_SQUARE: i16 = 0x40;
+pub const S5B_MODE_NOISE: i16 = 0x80;
+/// Mask for the noise-period bits of an S5B duty/mode step value.
+pub const S5B_PERIOD_MASK: i16 = 0x1F;
+
 #[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
@@ -71,6 +95,14 @@ pub struct Sequence {
     /// loadable; they deserialize as [`VolMode::Steps16`].
     #[serde(default)]
     pub vol_mode: VolMode,
+    /// Volume resolution for the S5B duty/mode sequence — only meaningful when
+    /// this sequence is used as a volume envelope on `ChannelMode::S5B`.
+    /// Ignored for all other sequence types.
+    ///
+    /// `#[serde(default)]` keeps saved states written before this field existed
+    /// loadable; they deserialize as [`VolMode5B::Steps16`].
+    #[serde(default)]
+    pub vol_mode_5b: VolMode5B,
 }
 
 impl Clone for Sequence {
@@ -82,6 +114,7 @@ impl Clone for Sequence {
             pitch_mode: self.pitch_mode,
             arp_mode: self.arp_mode,
             vol_mode: self.vol_mode,
+            vol_mode_5b: self.vol_mode_5b,
         }
     }
 
@@ -95,6 +128,7 @@ impl Clone for Sequence {
         self.pitch_mode = source.pitch_mode;
         self.arp_mode = source.arp_mode;
         self.vol_mode = source.vol_mode;
+        self.vol_mode_5b = source.vol_mode_5b;
     }
 }
 
@@ -108,6 +142,7 @@ impl Sequence {
             pitch_mode: PitchMode::default(),
             arp_mode: ArpMode::default(),
             vol_mode: VolMode::default(),
+            vol_mode_5b: VolMode5B::default(),
         }
     }
 
@@ -163,6 +198,7 @@ impl Sequence {
             pitch_mode: PitchMode::default(),
             arp_mode: ArpMode::default(),
             vol_mode: VolMode::default(),
+            vol_mode_5b: VolMode5B::default(),
         };
 
         (sequence, normalized_text)

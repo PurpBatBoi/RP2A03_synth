@@ -9,7 +9,7 @@
 use crate::{
     ChannelMode, MAX_SEQUENCES, SequenceBank, SequenceSlot, SharedSequences, sequence_to_text,
 };
-use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence, VolMode};
+use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence, VolMode, VolMode5B};
 use std::fmt;
 
 /// Fixed file-identity prefix, never bumped — see "Wire format" in the spec.
@@ -88,8 +88,8 @@ pub struct PatchSequences {
 }
 
 /// One populated numbered slot within an envelope type's bank. Field order is
-/// load-bearing (see `Patch`'s doc comment); `enabled` must stay last — any
-/// future field is appended after it.
+/// load-bearing (see `Patch`'s doc comment); `vol_mode_5b` is now the last
+/// field — any future field is appended after it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PatchSequenceEntry {
     pub index: usize,
@@ -108,6 +108,11 @@ pub struct PatchSequenceEntry {
     /// was always enabled in practice.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Volume resolution for the S5B duty/mode sequence. Appended after
+    /// `enabled` to preserve field order for existing patches — see
+    /// `Patch`'s doc comment.
+    #[serde(default)]
+    pub vol_mode_5b: VolMode5B,
 }
 
 /// One numbered slot's remembered waveform. Field order is load-bearing — see
@@ -137,6 +142,7 @@ impl PatchSequenceEntry {
             arp_mode: seq.arp_mode,
             vol_mode: seq.vol_mode,
             enabled: slot.enabled,
+            vol_mode_5b: seq.vol_mode_5b,
         })
     }
 
@@ -148,6 +154,7 @@ impl PatchSequenceEntry {
             pitch_mode: self.pitch_mode,
             arp_mode: self.arp_mode,
             vol_mode: self.vol_mode,
+            vol_mode_5b: self.vol_mode_5b,
         }
     }
 }
@@ -560,6 +567,7 @@ mod tests {
             arp_mode: ArpMode::Absolute,
             vol_mode: VolMode::Steps16,
             enabled: true,
+            vol_mode_5b: VolMode5B::Steps16,
         }
     }
 
@@ -1137,6 +1145,7 @@ mod tests {
             arp_mode: ArpMode::Relative,
             vol_mode: VolMode::Steps64,
             enabled: false,
+            vol_mode_5b: VolMode5B::Steps16,
         };
         assert_eq!(patch.sequences.pitch, vec![expected_pitch_entry]);
 
@@ -1160,6 +1169,7 @@ mod tests {
             pitch_mode: PitchMode::Absolute,
             arp_mode: ArpMode::Relative,
             vol_mode: VolMode::Steps64,
+            vol_mode_5b: VolMode5B::Steps16,
         });
 
         let mut restored = SharedSequences::default();
@@ -1303,12 +1313,19 @@ mod tests {
     // it was skipped anyway because the project is unreleased, so there is no
     // real `.rp2a03patch` file on any disk this could orphan, and no
     // pre-removal golden bytes are kept around for the same reason.
+    //
+    // Regenerated again when `vol_mode_5b` was appended to `PatchSequenceEntry`
+    // (S5B UI support). Append-only + `#[serde(default)]`, so old files still
+    // decode (see the decode-direction test below); this only changes what
+    // *new* files look like, which is exactly the case this const exists to
+    // let a deliberate append update.
     const GOLDEN_V1: &[u8] = &[
-        82, 80, 50, 80, 149, 1, 60, 149, 3, 0, 0, 0, 3, 149, 145, 152, 3, 147, 15, 12, 8, 1, 192,
+        82, 80, 50, 80, 149, 1, 60, 149, 3, 0, 0, 0, 3, 149, 145, 153, 3, 147, 15, 12, 8, 1, 192,
         168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115, 111, 108, 117, 116, 101, 167,
-        83, 116, 101, 112, 115, 49, 54, 195, 144, 144, 144, 145, 152, 3, 147, 15, 12, 8, 1, 192,
-        168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65, 98, 115, 111, 108, 117, 116, 101, 167,
-        83, 116, 101, 112, 115, 49, 54, 195, 145, 146, 3, 167, 86, 114, 99, 54, 83, 97, 119,
+        83, 116, 101, 112, 115, 49, 54, 195, 167, 83, 116, 101, 112, 115, 49, 54, 144, 144, 144,
+        145, 153, 3, 147, 15, 12, 8, 1, 192, 168, 82, 101, 108, 97, 116, 105, 118, 101, 168, 65,
+        98, 115, 111, 108, 117, 116, 101, 167, 83, 116, 101, 112, 115, 49, 54, 195, 167, 83, 116,
+        101, 112, 115, 49, 54, 145, 146, 3, 167, 86, 114, 99, 54, 83, 97, 119,
     ];
 
     #[test]

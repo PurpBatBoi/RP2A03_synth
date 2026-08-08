@@ -21,6 +21,14 @@ pub const PLAYHEAD_BOTTOM: Color32 = Color32::from_rgba_premultiplied(53, 86, 53
 pub const PLAYHEAD_EDGE_TOP: Color32 = Color32::from_rgba_premultiplied(116, 142, 116, 150);
 pub const PLAYHEAD_EDGE_BOTTOM: Color32 = Color32::from_rgba_premultiplied(62, 131, 62, 150);
 
+/// S5B duty/mode graph flag-toggle colors, lit when the corresponding bit is
+/// set. Dim gray (`FLAG_OFF`) when clear, mirroring dn's `CNoiseEditor` intent
+/// (`GraphEditor.cpp`) but with this project's own palette instead of its raw hex.
+pub const S5B_ENVELOPE_FLAG: Color32 = Color32::from_rgb(230, 190, 40);
+pub const S5B_TONE_FLAG: Color32 = Color32::from_rgb(100, 200, 220);
+pub const S5B_NOISE_FLAG: Color32 = Color32::from_rgb(200, 120, 220);
+pub const S5B_FLAG_OFF: Color32 = Color32::from_rgb(80, 80, 80);
+
 pub fn style() -> Arc<Style> {
     let mut style = Style::default();
 

@@ -256,6 +256,9 @@ impl Voice {
                     0
                 }
             }
+            // UI-only for now — no `Sunsoft` instance wired into `Voice` yet.
+            // See `.references/Implement-Plans-S5B/CoreHook.md`.
+            ChannelMode::S5B => 0,
         }
     }
 
@@ -315,5 +318,13 @@ fn select_channel<'a>(
         ChannelMode::Noise => AnyChannel::Noise(noise),
         ChannelMode::Vrc6Pulse => AnyChannel::Vrc6Pulse(vrc6_pulse),
         ChannelMode::Vrc6Saw => AnyChannel::Vrc6Saw(vrc6_saw),
+        // UI-only for now — no `Sunsoft` instance wired into `Voice` yet (see
+        // `.references/Implement-Plans-S5B/CoreHook.md`). Register writes land
+        // on `pulse` as a dead sink; `clock_channel_output`'s `S5B` arm always
+        // returns 0 regardless of what this channel holds, and — same as any
+        // other same-voice mode switch today — the next real NoteOn on
+        // whichever channel gets selected next overwrites its stale registers
+        // before it is heard.
+        ChannelMode::S5B => AnyChannel::Pulse(pulse),
     }
 }

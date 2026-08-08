@@ -3,7 +3,7 @@
 //! Custom painter elements for sequence visualization and interactive envelope editing.
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use rp2a03_core::sequencer::Sequence;
+use rp2a03_core::sequencer::{S5B_MODE_ENVELOPE, S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK, Sequence};
 
 use super::theme;
 
@@ -36,6 +36,83 @@ struct LineDrawState {
 /// or away from the line's start.
 fn apply_tension(t: f32, tension: f32) -> f32 {
     (t + tension * t * (1.0 - t)).clamp(0.0, 1.0)
+}
+
+/// Walks every step column between `p0.x` and `p1.x` (inclusive), calling
+/// `set_value` with each step index and the y position interpolated between
+/// `p0`/`p1` at that column's x-center (optionally warped by `tension` via
+/// [`apply_tension`] for a curved ramp instead of a straight one).
+///
+/// Shared by every click-and-drag graph editor in this module so a fast drag
+/// that jumps several step columns between two frames doesn't skip the ones
+/// the pointer passed over — filling only the single column under the current
+/// pointer position (no interpolation) is the bug this fixes when `p0 != p1`.
+/// `p0` is normally the previous frame's pointer position and `p1` the
+/// current one; passing `p0 == p1` degenerates to touching just one step,
+/// which is also the correct behavior for a plain (non-dragged) click.
+fn for_each_step_between(
+    region: Rect,
+    step_width: f32,
+    num_steps: usize,
+    p0: Pos2,
+    p1: Pos2,
+    tension: f32,
+    mut set_value: impl FnMut(usize, f32),
+) {
+    let step_of = |x: f32| -> usize {
+        let rel_x = (x - region.min.x).clamp(0.0, (region.width() - 0.001).max(0.0));
+        (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize
+    };
+
+    let step0 = step_of(p0.x);
+    let step1 = step_of(p1.x);
+    let min_step = step0.min(step1);
+    let max_step = step0.max(step1);
+    let dx = p1.x - p0.x;
+
+    for s in min_step..=max_step {
+        let target_y = if dx.abs() < 1e-4 {
+            p1.y
+        } else {
+            let s_x = region.min.x + (s as f32 + 0.5) * step_width;
+            let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
+            let curved_t = apply_tension(t, tension);
+            p0.y + curved_t * (p1.y - p0.y)
+        };
+        set_value(s, target_y);
+    }
+}
+
+/// Draws the in-progress right-click line-draw preview (a curved or straight
+/// stroke from `state.start` to `state.last`, plus a tension readout once
+/// bowed away from straight). Shared by every graph editor's line-draw
+/// feature; no-op when `state` is `None` (no line draw in progress).
+fn draw_line_draw_preview(painter: &egui::Painter, state: Option<LineDrawState>) {
+    let Some(state) = state else { return };
+
+    let preview_stroke = Stroke::new(4.0f32, Color32::from_rgba_unmultiplied(255, 255, 255, 200));
+    const PREVIEW_SEGMENTS: u32 = 24;
+    let mut prev = state.start;
+    for i in 1..=PREVIEW_SEGMENTS {
+        let t = i as f32 / PREVIEW_SEGMENTS as f32;
+        let curved_t = apply_tension(t, state.tension);
+        let next = Pos2::new(
+            state.start.x + (state.last.x - state.start.x) * t,
+            state.start.y + (state.last.y - state.start.y) * curved_t,
+        );
+        painter.line_segment([prev, next], preview_stroke);
+        prev = next;
+    }
+
+    if state.tension.abs() > 0.01f32 {
+        painter.text(
+            state.last + Vec2::new(8.0f32, -8.0f32),
+            egui::Align2::LEFT_BOTTOM,
+            format!("tension {:+.2}", state.tension),
+            egui::FontId::proportional(11.0f32),
+            Color32::from_rgb(255, 220, 120),
+        );
+    }
 }
 
 /// Renders a FamiTracker-style envelope bar graph and handles interactive mouse editing.
@@ -354,43 +431,15 @@ pub fn draw_envelope_bar_graph(
             let p0 = last_pos.unwrap_or(pointer_pos);
             let p1 = pointer_pos;
 
-            let step_of = |x: f32| -> usize {
-                let rel_x =
-                    (x - graph_rect.min.x).clamp(0.0, (graph_rect.width() - 0.001).max(0.0));
-                (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize
-            };
-
-            let step0 = step_of(p0.x);
-            let step1 = step_of(p1.x);
-            let min_step = step0.min(step1);
-            let max_step = step0.max(step1);
-
-            let dx = p1.x - p0.x;
-
-            for s in min_step..=max_step {
-                let target_y = if dx.abs() < 1e-4 {
-                    p1.y
-                } else {
-                    let s_x = graph_rect.min.x + (s as f32 + 0.5) * step_width;
-                    let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
-                    p0.y + t * (p1.y - p0.y)
-                };
-
-                let clamped_val = pos_y_to_val(
-                    target_y,
-                    graph_rect,
-                    is_arpeggio,
-                    vis_min,
-                    vis_max,
-                    min_val,
-                    max_val,
-                );
+            for_each_step_between(graph_rect, step_width, num_steps, p0, p1, 0.0, |s, y| {
+                let clamped_val =
+                    pos_y_to_val(y, graph_rect, is_arpeggio, vis_min, vis_max, min_val, max_val);
 
                 if seq.values[s] != clamped_val {
                     seq.values[s] = clamped_val;
                     text_needs_sync = true;
                 }
-            }
+            });
 
             ui.ctx()
                 .data_mut(|d| d.insert_temp(draw_drag_id, pointer_pos));
@@ -430,43 +479,24 @@ pub fn draw_envelope_bar_graph(
             let p0 = state.start;
             let p1 = state.last;
 
-            let step_of = |x: f32| -> usize {
-                let rel_x =
-                    (x - graph_rect.min.x).clamp(0.0, (graph_rect.width() - 0.001).max(0.0));
-                (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize
-            };
+            for_each_step_between(
+                graph_rect,
+                step_width,
+                num_steps,
+                p0,
+                p1,
+                state.tension,
+                |s, y| {
+                    let clamped_val = pos_y_to_val(
+                        y, graph_rect, is_arpeggio, vis_min, vis_max, min_val, max_val,
+                    );
 
-            let step0 = step_of(p0.x);
-            let step1 = step_of(p1.x);
-            let min_step = step0.min(step1);
-            let max_step = step0.max(step1);
-            let dx = p1.x - p0.x;
-
-            for s in min_step..=max_step {
-                let target_y = if dx.abs() < 1e-4 {
-                    p1.y
-                } else {
-                    let s_x = graph_rect.min.x + (s as f32 + 0.5) * step_width;
-                    let t = ((s_x - p0.x) / dx).clamp(0.0, 1.0);
-                    let curved_t = apply_tension(t, state.tension);
-                    p0.y + curved_t * (p1.y - p0.y)
-                };
-
-                let clamped_val = pos_y_to_val(
-                    target_y,
-                    graph_rect,
-                    is_arpeggio,
-                    vis_min,
-                    vis_max,
-                    min_val,
-                    max_val,
-                );
-
-                if seq.values[s] != clamped_val {
-                    seq.values[s] = clamped_val;
-                    text_needs_sync = true;
-                }
-            }
+                    if seq.values[s] != clamped_val {
+                        seq.values[s] = clamped_val;
+                        text_needs_sync = true;
+                    }
+                },
+            );
         }
 
         if graph_response.drag_stopped_by(egui::PointerButton::Secondary)
@@ -710,35 +740,11 @@ pub fn draw_envelope_bar_graph(
         draw_playhead_rect(&painter, col_rect);
     }
 
-    if let Some(state) = ui
-        .ctx()
-        .data(|d| d.get_temp::<LineDrawState>(ui.make_persistent_id("envelope_line_draw_state")))
-    {
-        let preview_stroke =
-            Stroke::new(4.0f32, Color32::from_rgba_unmultiplied(255, 255, 255, 200));
-        const PREVIEW_SEGMENTS: u32 = 24;
-        let mut prev = state.start;
-        for i in 1..=PREVIEW_SEGMENTS {
-            let t = i as f32 / PREVIEW_SEGMENTS as f32;
-            let curved_t = apply_tension(t, state.tension);
-            let next = Pos2::new(
-                state.start.x + (state.last.x - state.start.x) * t,
-                state.start.y + (state.last.y - state.start.y) * curved_t,
-            );
-            painter.line_segment([prev, next], preview_stroke);
-            prev = next;
-        }
-
-        if state.tension.abs() > 0.01f32 {
-            painter.text(
-                state.last + Vec2::new(8.0f32, -8.0f32),
-                egui::Align2::LEFT_BOTTOM,
-                format!("tension {:+.2}", state.tension),
-                egui::FontId::proportional(11.0f32),
-                Color32::from_rgb(255, 220, 120),
-            );
-        }
-    }
+    draw_line_draw_preview(
+        &painter,
+        ui.ctx()
+            .data(|d| d.get_temp(ui.make_persistent_id("envelope_line_draw_state"))),
+    );
 
     // Render loop/release region headers
     painter.rect_filled(header_rect, 0.0f32, Color32::from_rgb(25, 25, 25));
@@ -826,6 +832,540 @@ pub fn draw_envelope_bar_graph(
     );
 
     text_needs_sync
+}
+
+/// S5B-specific state for the duty/mode graph's flag row: which step column
+/// the last toggle landed on, so a drag across the row doesn't rapid-fire
+/// toggle the same column repeatedly (mirrors dn's `m_iLastIndex` guard,
+/// `GraphEditor.cpp`).
+#[derive(Clone, Copy, Default)]
+struct S5BFlagDragState {
+    last_step: Option<usize>,
+}
+
+/// Renders the S5B duty/mode graph: a period bar (upper region, 0..=31) plus
+/// three Envelope/Tone/Noise toggle buttons per step (lower region), packed
+/// into one `i16` step value the way dn's `CNoiseEditor` does. Returns `true`
+/// when any step value changes so the caller can regenerate `text` via
+/// `sequence_to_text`, same contract as [`draw_envelope_bar_graph`].
+pub fn draw_s5b_duty_noise_graph(
+    ui: &mut egui::Ui,
+    seq: &mut Sequence,
+    playhead_step: Option<usize>,
+    graph_height: f32,
+) -> bool {
+    let desired_size = Vec2::new(ui.available_width(), graph_height);
+    let (rect, _response) = ui.allocate_at_least(desired_size, Sense::hover());
+
+    let painter = ui.painter_at(rect);
+
+    painter.rect_filled(rect, 2.0f32, theme::PANEL);
+    painter.rect_stroke(
+        rect,
+        2.0f32,
+        Stroke::new(1.0f32, theme::BORDER),
+        egui::StrokeKind::Outside,
+    );
+
+    let num_steps = seq.len();
+
+    if num_steps == 0 {
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Empty Sequence (0 steps)",
+            egui::FontId::proportional(13.0f32),
+            theme::TEXT_DIM,
+        );
+        return false;
+    }
+
+    const FLAG_ROW_HEIGHT: f32 = 44.0f32;
+    // Leaves the panel's own bottom border visible below the flag row instead
+    // of the last row of buttons sitting flush against it.
+    const BOTTOM_MARGIN: f32 = 4.0f32;
+    // Reserves a Loop/Release marker strip below the flag row, same idea as
+    // `draw_envelope_bar_graph`'s `header_rect`.
+    const HEADER_HEIGHT: f32 = 20.0f32;
+
+    let content_rect = Rect::from_min_max(
+        rect.min,
+        Pos2::new(rect.max.x, rect.max.y - HEADER_HEIGHT - BOTTOM_MARGIN),
+    );
+    let header_rect = Rect::from_min_max(
+        Pos2::new(rect.min.x, rect.max.y - HEADER_HEIGHT - BOTTOM_MARGIN),
+        Pos2::new(rect.max.x, rect.max.y - BOTTOM_MARGIN),
+    );
+    let period_rect = Rect::from_min_max(
+        content_rect.min,
+        Pos2::new(content_rect.max.x, content_rect.max.y - FLAG_ROW_HEIGHT),
+    );
+    let flag_rect = Rect::from_min_max(
+        Pos2::new(content_rect.min.x, content_rect.max.y - FLAG_ROW_HEIGHT),
+        content_rect.max,
+    );
+
+    let header_response = ui.interact(
+        header_rect,
+        ui.make_persistent_id("s5b_header_area"),
+        Sense::click_and_drag(),
+    );
+
+    let step_width = rect.width() / num_steps as f32;
+    let mut changed = false;
+
+    // Step column backgrounds, spanning the period bar and flag row (not the
+    // header strip, which paints its own background).
+    for i in 0..num_steps {
+        let bar_x_min = content_rect.min.x + i as f32 * step_width;
+        let bar_x_max = bar_x_min + step_width - 1.0f32;
+        let col_rect = Rect::from_min_max(
+            Pos2::new(bar_x_min, content_rect.min.y),
+            Pos2::new(bar_x_max, content_rect.max.y),
+        );
+        let bg_color = if i % 2 == 0 {
+            theme::BG
+        } else {
+            theme::PANEL_ALT
+        };
+        painter.rect_filled(col_rect, 0.0f32, bg_color);
+    }
+
+    // Header interaction (Loop / Release points) — ported from
+    // `draw_envelope_bar_graph`'s header block.
+    let loop_drag_id = ui.make_persistent_id("s5b_loop_drag_state");
+    let rel_drag_id = ui.make_persistent_id("s5b_release_drag_state");
+
+    {
+        let pointer_pos = header_response
+            .interact_pointer_pos()
+            .or_else(|| ui.input(|i| i.pointer.hover_pos()));
+
+        if let Some(pos) = pointer_pos {
+            let x = pos.x.clamp(header_rect.min.x, header_rect.max.x - 1.0f32);
+            let current_step =
+                (((x - header_rect.min.x) / step_width).floor() as usize).clamp(0, num_steps - 1);
+
+            if header_response.drag_started_by(egui::PointerButton::Primary) {
+                let was_existing = seq.loop_point == Some(current_step);
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        loop_drag_id,
+                        MarkerDragState {
+                            start_step: current_step,
+                            was_existing,
+                        },
+                    );
+                });
+                if !was_existing {
+                    seq.loop_point = Some(current_step);
+                    changed = true;
+                }
+            } else if header_response.dragged_by(egui::PointerButton::Primary) {
+                let state: Option<MarkerDragState> =
+                    ui.ctx().data_mut(|d| d.get_temp(loop_drag_id));
+                if let Some(st) = state
+                    && (current_step != st.start_step || !st.was_existing)
+                    && seq.loop_point != Some(current_step)
+                {
+                    seq.loop_point = Some(current_step);
+                    changed = true;
+                }
+            }
+
+            if header_response.clicked_by(egui::PointerButton::Primary) {
+                let state: Option<MarkerDragState> =
+                    ui.ctx().data_mut(|d| d.get_temp(loop_drag_id));
+                if let Some(st) = state {
+                    if current_step == st.start_step && st.was_existing {
+                        seq.loop_point = None;
+                        changed = true;
+                    } else if !st.was_existing {
+                        seq.loop_point = Some(current_step);
+                        changed = true;
+                    }
+                } else if seq.loop_point == Some(current_step) {
+                    seq.loop_point = None;
+                    changed = true;
+                } else {
+                    seq.loop_point = Some(current_step);
+                    changed = true;
+                }
+                ui.ctx()
+                    .data_mut(|d| d.remove_temp::<MarkerDragState>(loop_drag_id));
+            }
+
+            if header_response.drag_started_by(egui::PointerButton::Secondary) {
+                let was_existing = seq.release_point == Some(current_step);
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        rel_drag_id,
+                        MarkerDragState {
+                            start_step: current_step,
+                            was_existing,
+                        },
+                    );
+                });
+                if !was_existing {
+                    seq.release_point = Some(current_step);
+                    changed = true;
+                }
+            } else if header_response.dragged_by(egui::PointerButton::Secondary) {
+                let state: Option<MarkerDragState> = ui.ctx().data_mut(|d| d.get_temp(rel_drag_id));
+                if let Some(st) = state
+                    && (current_step != st.start_step || !st.was_existing)
+                    && seq.release_point != Some(current_step)
+                {
+                    seq.release_point = Some(current_step);
+                    changed = true;
+                }
+            }
+
+            if header_response.clicked_by(egui::PointerButton::Secondary)
+                || header_response.secondary_clicked()
+            {
+                let state: Option<MarkerDragState> = ui.ctx().data_mut(|d| d.get_temp(rel_drag_id));
+                if let Some(st) = state {
+                    if current_step == st.start_step && st.was_existing {
+                        seq.release_point = None;
+                        changed = true;
+                    } else if !st.was_existing {
+                        seq.release_point = Some(current_step);
+                        changed = true;
+                    }
+                } else if seq.release_point == Some(current_step) {
+                    seq.release_point = None;
+                    changed = true;
+                } else {
+                    seq.release_point = Some(current_step);
+                    changed = true;
+                }
+                ui.ctx()
+                    .data_mut(|d| d.remove_temp::<MarkerDragState>(rel_drag_id));
+            }
+        }
+    }
+
+    //------------------------------------------------------
+    // Upper region: noise-period bar graph (0..=31).
+    //------------------------------------------------------
+    let period_response = ui.interact(
+        period_rect,
+        ui.make_persistent_id("s5b_period_area"),
+        Sense::click_and_drag(),
+    );
+
+    // Interpolates between last frame's pointer position and this frame's,
+    // filling every step column in between — same fix `draw_envelope_bar_graph`
+    // uses (`draw_drag_id`) so a fast drag across several step columns between
+    // two frames doesn't skip the ones the pointer jumped over. Shared via
+    // `for_each_step_between`, same helper the plain graph's left-drag and
+    // right-click line both use.
+    let period_draw_drag_id = ui.make_persistent_id("s5b_period_draw_last_pos");
+    let period_line_draw_id = ui.make_persistent_id("s5b_period_line_draw_state");
+
+    let period_y_to_value = |value: i16, y: f32| -> i16 {
+        let rel_y = (y - period_rect.min.y).clamp(0.0, period_rect.height());
+        let norm_y = if period_rect.height() > 0.0 {
+            1.0 - rel_y / period_rect.height()
+        } else {
+            0.0
+        };
+        let new_period = ((norm_y * 32.0).floor() as i16).clamp(0, 31);
+        (value & !S5B_PERIOD_MASK) | new_period
+    };
+
+    if (period_response.dragged_by(egui::PointerButton::Primary)
+        || period_response.clicked_by(egui::PointerButton::Primary))
+        && let Some(pointer_pos) = period_response.interact_pointer_pos()
+    {
+        let last_pos: Option<Pos2> = ui.ctx().data_mut(|d| d.get_temp(period_draw_drag_id));
+        let p0 = last_pos.unwrap_or(pointer_pos);
+        let p1 = pointer_pos;
+
+        for_each_step_between(period_rect, step_width, num_steps, p0, p1, 0.0, |s, y| {
+            let new_value = period_y_to_value(seq.values[s], y);
+            if new_value != seq.values[s] {
+                seq.values[s] = new_value;
+                changed = true;
+            }
+        });
+
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(period_draw_drag_id, pointer_pos));
+    }
+
+    // Right-click line draw — same feature and interaction as the plain
+    // graph's (drag a straight or curved ramp across several steps at once),
+    // scoped to the period bar.
+    if period_response.drag_started_by(egui::PointerButton::Secondary)
+        && let Some(pointer_pos) = period_response.interact_pointer_pos()
+    {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                period_line_draw_id,
+                LineDrawState {
+                    start: pointer_pos,
+                    last: pointer_pos,
+                    tension: 0.0,
+                },
+            );
+        });
+    }
+
+    if period_response.dragged_by(egui::PointerButton::Secondary)
+        && let Some(pointer_pos) = period_response.interact_pointer_pos()
+        && let Some(mut state) = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<LineDrawState>(period_line_draw_id))
+    {
+        state.last = pointer_pos;
+
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll_delta.abs() > 0.0f32 {
+            state.tension = (state.tension + scroll_delta * 0.003f32).clamp(-1.0, 1.0);
+        }
+
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(period_line_draw_id, state));
+
+        for_each_step_between(
+            period_rect,
+            step_width,
+            num_steps,
+            state.start,
+            state.last,
+            state.tension,
+            |s, y| {
+                let new_value = period_y_to_value(seq.values[s], y);
+                if new_value != seq.values[s] {
+                    seq.values[s] = new_value;
+                    changed = true;
+                }
+            },
+        );
+    }
+
+    if period_response.drag_stopped_by(egui::PointerButton::Secondary)
+        || period_response.lost_focus()
+        || !period_response.hovered()
+        || !ui.input(|i| i.pointer.secondary_down())
+    {
+        ui.ctx()
+            .data_mut(|d| d.remove_temp::<LineDrawState>(period_line_draw_id));
+    }
+
+    if period_response.drag_stopped_by(egui::PointerButton::Primary)
+        || !ui.input(|i| i.pointer.primary_down())
+    {
+        ui.ctx().data_mut(|d| {
+            d.remove_temp::<Pos2>(period_draw_drag_id);
+        });
+    }
+
+    for i in 0..num_steps {
+        let period = (seq.values[i] & S5B_PERIOD_MASK).clamp(0, 31);
+
+        let bar_x_min = period_rect.min.x + i as f32 * step_width;
+        let bar_x_max = bar_x_min + step_width - 1.0f32;
+        let norm_val = period as f32 / 31.0f32;
+        let bar_y_min = period_rect.max.y - (norm_val * period_rect.height());
+        let bar_rect = Rect::from_min_max(
+            Pos2::new(bar_x_min, bar_y_min),
+            Pos2::new(bar_x_max, period_rect.max.y),
+        );
+        // Matches `draw_envelope_bar_graph`'s unmarked-step bar color.
+        painter.rect_filled(bar_rect, 1.0f32, Color32::from_rgb(220, 220, 220));
+    }
+
+    //------------------------------------------------------
+    // Lower region: Envelope / Tone / Noise toggle buttons.
+    //------------------------------------------------------
+    let flag_response = ui.interact(
+        flag_rect,
+        ui.make_persistent_id("s5b_flag_area"),
+        Sense::click_and_drag(),
+    );
+
+    const FLAGS: [(i16, Color32); 3] = [
+        (S5B_MODE_ENVELOPE, theme::S5B_ENVELOPE_FLAG),
+        (S5B_MODE_SQUARE, theme::S5B_TONE_FLAG),
+        (S5B_MODE_NOISE, theme::S5B_NOISE_FLAG),
+    ];
+    const FLAG_LABELS: [&str; 3] = ["E", "T", "N"];
+    let button_h = flag_rect.height() / FLAGS.len() as f32;
+
+    let drag_id = ui.make_persistent_id("s5b_flag_drag_state");
+
+    let toggling = flag_response.dragged_by(egui::PointerButton::Primary)
+        || flag_response.clicked_by(egui::PointerButton::Primary);
+
+    if toggling
+        && let Some(pointer_pos) = flag_response.interact_pointer_pos()
+    {
+        let rel_x =
+            (pointer_pos.x - flag_rect.min.x).clamp(0.0, (flag_rect.width() - 0.001).max(0.0));
+        let step = (((rel_x / step_width).floor() as i32).clamp(0, num_steps as i32 - 1)) as usize;
+
+        let state: S5BFlagDragState = ui.ctx().data_mut(|d| d.get_temp(drag_id)).unwrap_or_default();
+
+        if state.last_step != Some(step) {
+            let rel_y = (pointer_pos.y - flag_rect.min.y).clamp(0.0, flag_rect.height() - 0.001);
+            let row = ((rel_y / button_h).floor() as usize).min(FLAGS.len() - 1);
+            let (bit, _) = FLAGS[row];
+
+            seq.values[step] ^= bit;
+            changed = true;
+
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(
+                    drag_id,
+                    S5BFlagDragState {
+                        last_step: Some(step),
+                    },
+                );
+            });
+        }
+    }
+
+    if flag_response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+        ui.ctx().data_mut(|d| {
+            d.remove_temp::<S5BFlagDragState>(drag_id);
+        });
+    }
+
+    for i in 0..num_steps {
+        let value = seq.values[i];
+        let bar_x_min = flag_rect.min.x + i as f32 * step_width;
+        let bar_x_max = bar_x_min + step_width - 1.0f32;
+
+        for (row, (bit, on_color)) in FLAGS.iter().enumerate() {
+            let y_min = flag_rect.min.y + row as f32 * button_h;
+            let y_max = y_min + button_h - 1.0f32;
+            let btn_rect = Rect::from_min_max(
+                Pos2::new(bar_x_min + 1.0f32, y_min + 1.0f32),
+                Pos2::new(bar_x_max - 1.0f32, y_max - 1.0f32),
+            );
+
+            let is_set = value & bit != 0;
+            let color = if is_set { *on_color } else { theme::S5B_FLAG_OFF };
+            painter.rect_filled(btn_rect, 1.0f32, color);
+
+            if is_set {
+                painter.text(
+                    btn_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    FLAG_LABELS[row],
+                    egui::FontId::proportional(10.0f32),
+                    theme::TEXT,
+                );
+            }
+        }
+    }
+
+    draw_line_draw_preview(
+        &painter,
+        ui.ctx().data(|d| d.get_temp(period_line_draw_id)),
+    );
+
+    // Render loop/release region headers — ported from `draw_envelope_bar_graph`.
+    painter.rect_filled(header_rect, 0.0f32, Color32::from_rgb(25, 25, 25));
+
+    let loop_idx = seq.loop_point.unwrap_or(usize::MAX);
+    let rel_idx = seq.release_point.unwrap_or(usize::MAX);
+    let has_loop = loop_idx < num_steps;
+    let has_release = rel_idx < num_steps;
+
+    if has_loop && has_release && loop_idx == rel_idx {
+        let x_min = header_rect.min.x + loop_idx as f32 * step_width;
+        let x_max = header_rect.max.x;
+        let lr_rect = Rect::from_min_max(
+            Pos2::new(x_min, header_rect.min.y),
+            Pos2::new(x_max, header_rect.max.y),
+        );
+        painter.rect_filled(lr_rect, 0.0f32, Color32::from_rgb(180, 140, 20));
+        painter.text(
+            Pos2::new(x_min + 4.0f32, header_rect.min.y + 2.0f32),
+            egui::Align2::LEFT_TOP,
+            "Loop, Release",
+            egui::FontId::proportional(12.0f32),
+            Color32::WHITE,
+        );
+    } else {
+        if has_loop {
+            let loop_start = loop_idx;
+            let loop_end = if has_release && loop_idx < rel_idx {
+                rel_idx
+            } else {
+                num_steps
+            };
+            let x_min = header_rect.min.x + loop_start as f32 * step_width;
+            let x_max = header_rect.min.x + loop_end as f32 * step_width;
+            let l_rect = Rect::from_min_max(
+                Pos2::new(x_min, header_rect.min.y),
+                Pos2::new(x_max, header_rect.max.y),
+            );
+            painter.rect_filled(l_rect, 0.0f32, Color32::from_rgb(0, 120, 130));
+            painter.text(
+                Pos2::new(x_min + 4.0f32, header_rect.min.y + 2.0f32),
+                egui::Align2::LEFT_TOP,
+                "Loop",
+                egui::FontId::proportional(12.0f32),
+                Color32::WHITE,
+            );
+        }
+
+        if has_release {
+            let rel_start = rel_idx;
+            let rel_end = if has_loop && rel_idx < loop_idx {
+                loop_idx
+            } else {
+                num_steps
+            };
+            let x_min = header_rect.min.x + rel_start as f32 * step_width;
+            let x_max = header_rect.min.x + rel_end as f32 * step_width;
+            let r_rect = Rect::from_min_max(
+                Pos2::new(x_min, header_rect.min.y),
+                Pos2::new(x_max, header_rect.max.y),
+            );
+            painter.rect_filled(r_rect, 0.0f32, Color32::from_rgb(120, 0, 130));
+            painter.text(
+                Pos2::new(x_min + 4.0f32, header_rect.min.y + 2.0f32),
+                egui::Align2::LEFT_TOP,
+                "Release",
+                egui::FontId::proportional(12.0f32),
+                Color32::WHITE,
+            );
+        }
+    }
+
+    if let Some(step) = playhead_step.filter(|step| *step < num_steps) {
+        let bar_x_min = content_rect.min.x + step as f32 * step_width;
+        let bar_x_max = bar_x_min + step_width - 1.0f32;
+        let col_rect = Rect::from_min_max(
+            Pos2::new(bar_x_min, content_rect.min.y),
+            Pos2::new(bar_x_max, content_rect.max.y),
+        );
+        draw_playhead_rect(&painter, col_rect);
+    }
+
+    // Min / Max labels for the period bar, same style as `draw_envelope_bar_graph`.
+    painter.text(
+        Pos2::new(period_rect.min.x + 6.0f32, period_rect.min.y + 2.0f32),
+        egui::Align2::LEFT_TOP,
+        "31",
+        egui::FontId::proportional(11.0f32),
+        Color32::from_rgb(160, 160, 160),
+    );
+    painter.text(
+        Pos2::new(period_rect.min.x + 6.0f32, period_rect.max.y - 14.0f32),
+        egui::Align2::LEFT_TOP,
+        "0",
+        egui::FontId::proportional(11.0f32),
+        Color32::from_rgb(160, 160, 160),
+    );
+
+    changed
 }
 
 pub fn group_box<R>(

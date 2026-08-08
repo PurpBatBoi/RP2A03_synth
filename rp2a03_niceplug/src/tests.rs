@@ -378,6 +378,7 @@ fn waveform_parameter_maps_onto_every_channel_mode() {
         (2, ChannelMode::Noise),
         (3, ChannelMode::Vrc6Pulse),
         (4, ChannelMode::Vrc6Saw),
+        (5, ChannelMode::S5B),
     ] {
         set_int(&params.waveform, value);
         assert_eq!(params.channel_mode(), expected);

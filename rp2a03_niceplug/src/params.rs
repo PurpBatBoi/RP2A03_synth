@@ -99,7 +99,7 @@ impl Default for Rp2a03Params {
             // the host what exists, and apply incoming events by hash without
             // checking them. Hiding does not remove the parameter from saved
             // host state, and does not stop the editor writing it.
-            waveform: IntParam::new("Waveform", 0, linear(0, 4)).hide(),
+            waveform: IntParam::new("Waveform", 0, linear(0, 5)).hide(),
             polyphony: BoolParam::new("Polyphony", false),
             max_voices: IntParam::new("Max Voices", 8, linear(1, MAX_VOICES as i32)),
             portamento_enabled: BoolParam::new("Portamento", false),

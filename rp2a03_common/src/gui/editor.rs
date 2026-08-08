@@ -2,9 +2,9 @@
 //! Layout rendering logic for the reusable sequence editor window.
 
 use super::state::{MAX_SEQUENCES, SequencePlayheads, SharedSequences};
-use super::widgets::{draw_envelope_bar_graph, group_box, repeating_button};
+use super::widgets::{draw_envelope_bar_graph, draw_s5b_duty_noise_graph, group_box, repeating_button};
 use crate::ChannelMode;
-use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence, VolMode};
+use rp2a03_core::sequencer::{ArpMode, PitchMode, Sequence, VolMode, VolMode5B};
 
 /// Result returned by [`render_editor_ui`] to communicate parameter changes back
 /// to the host plugin wrapper.
@@ -102,11 +102,135 @@ pub fn sequence_to_text(seq: &Sequence) -> String {
     tokens.join(" ")
 }
 
+/// Same as [`sequence_to_text`], but uses the S5B-specific MML-style duty/mode
+/// text form (e.g. `"5tne"`: period 5, tone+noise+envelope) when `tab == 4`
+/// and `channel_mode == ChannelMode::S5B`. Every other tab/channel combination
+/// falls through to the plain numeric form.
+pub fn sequence_to_text_for_tab(tab: usize, channel_mode: ChannelMode, seq: &Sequence) -> String {
+    if tab != 4 || channel_mode != ChannelMode::S5B {
+        return sequence_to_text(seq);
+    }
+
+    if seq.values.is_empty() {
+        return String::new();
+    }
+
+    let mut tokens = Vec::with_capacity(seq.values.len() * 2);
+    for (i, value) in seq.values.iter().enumerate() {
+        if seq.loop_point == Some(i) {
+            tokens.push("|".to_string());
+        }
+        if seq.release_point == Some(i) {
+            tokens.push("/".to_string());
+        }
+
+        let period = value & rp2a03_core::sequencer::S5B_PERIOD_MASK;
+        let mut token = period.to_string();
+        if value & rp2a03_core::sequencer::S5B_MODE_SQUARE != 0 {
+            token.push('t');
+        }
+        if value & rp2a03_core::sequencer::S5B_MODE_NOISE != 0 {
+            token.push('n');
+        }
+        if value & rp2a03_core::sequencer::S5B_MODE_ENVELOPE != 0 {
+            token.push('e');
+        }
+        tokens.push(token);
+    }
+    if seq.loop_point == Some(seq.values.len()) {
+        tokens.push("|".to_string());
+    }
+    if seq.release_point == Some(seq.values.len()) {
+        tokens.push("/".to_string());
+    }
+    tokens.join(" ")
+}
+
 /// Strips non-sequence characters from raw text input.
+///
+/// `t`/`n`/`e` (case-insensitive) are S5B duty/mode flag letters (see
+/// [`sequence_to_text_for_tab`]); harmless to allow through unconditionally
+/// since plain-numeric parsing (`Sequence::parse_clamped`) already ignores any
+/// token that doesn't parse as an integer.
 pub fn sanitize_sequence_text(text: &str) -> String {
     text.chars()
-        .filter(|c| c.is_ascii_digit() || matches!(*c, '|' | '/' | '-') || c.is_ascii_whitespace())
+        .filter(|c| {
+            c.is_ascii_digit()
+                || matches!(*c, '|' | '/' | '-')
+                || matches!(c.to_ascii_lowercase(), 't' | 'n' | 'e')
+                || c.is_ascii_whitespace()
+        })
         .collect()
+}
+
+/// Parses an S5B duty/mode sequence text string (e.g. `"5tne"`) into a
+/// `Sequence`, mirroring dn's `CSeqConversion5B::ToValue`
+/// (`SequenceParser.cpp`). Each token is a period (0..=31) followed by
+/// optional flag letters `t`/`n`/`e` (case-insensitive, any order); malformed
+/// or unrecognized flag letters are ignored rather than rejected, matching
+/// dn's permissive `[TtNnEe]*` regex — text-field edits happen
+/// keystroke-by-keystroke and can't hard-error mid-edit.
+fn parse_s5b_duty_text(input: &str) -> (Sequence, String) {
+    let mut values = Vec::new();
+    let mut loop_point = None;
+    let mut release_point = None;
+    let mut text_tokens = Vec::new();
+
+    for token in input.split_whitespace() {
+        match token {
+            "|" | "L" | "l" => {
+                loop_point = Some(values.len());
+                text_tokens.push("|".to_string());
+            }
+            "/" | "R" | "r" => {
+                release_point = Some(values.len());
+                text_tokens.push("/".to_string());
+            }
+            _ => {
+                let digits_end = token.find(|c: char| !c.is_ascii_digit()).unwrap_or(token.len());
+                let (digits, flags) = token.split_at(digits_end);
+                if digits.is_empty() {
+                    continue;
+                }
+                let Ok(period) = digits.parse::<i16>() else {
+                    continue;
+                };
+                let period = period.clamp(0, 31);
+
+                let mut value = period;
+                let mut out_token = period.to_string();
+                if flags.contains(['t', 'T']) {
+                    value |= rp2a03_core::sequencer::S5B_MODE_SQUARE;
+                    out_token.push('t');
+                }
+                if flags.contains(['n', 'N']) {
+                    value |= rp2a03_core::sequencer::S5B_MODE_NOISE;
+                    out_token.push('n');
+                }
+                if flags.contains(['e', 'E']) {
+                    value |= rp2a03_core::sequencer::S5B_MODE_ENVELOPE;
+                    out_token.push('e');
+                }
+
+                values.push(value);
+                text_tokens.push(out_token);
+            }
+        }
+    }
+
+    if values.is_empty() {
+        values.push(0);
+        text_tokens.push("0".to_string());
+    }
+
+    let normalized_text = text_tokens.join(" ");
+    let sequence = Sequence {
+        values,
+        loop_point,
+        release_point,
+        ..Sequence::default()
+    };
+    (sequence, normalized_text)
 }
 
 /// dnFamiTracker keeps all sequence items as `signed char`; the editor clamps each
@@ -116,11 +240,23 @@ pub fn sanitize_sequence_text(text: &str) -> String {
 /// `vol_mode` only matters for tab 0 on the VRC6 sawtooth: dn stores the
 /// 16-step/64-step setting per volume sequence (`CSequence::GetSetting`), and the
 /// bar graph max follows it (SequenceEditor.cpp: `0x0F` vs `0x3F`).
-fn sequence_range(tab: usize, channel_mode: ChannelMode, vol_mode: VolMode) -> (i16, i16) {
+///
+/// `vol_mode_5b` is the same idea scoped to `ChannelMode::S5B`'s duty/mode
+/// sequence, which is a 16-step/32-step split instead of 16/64 — the S5B's
+/// hardware volume register is 5-bit, not 6-bit. See UI.md §1 for why this is
+/// a separate enum from `VolMode` rather than a reused one.
+fn sequence_range(
+    tab: usize,
+    channel_mode: ChannelMode,
+    vol_mode: VolMode,
+    vol_mode_5b: VolMode5B,
+) -> (i16, i16) {
     match tab {
         0 => {
             if channel_mode == ChannelMode::Vrc6Saw && vol_mode == VolMode::Steps64 {
                 (0, 63)
+            } else if channel_mode == ChannelMode::S5B && vol_mode_5b == VolMode5B::Steps32 {
+                (0, 31)
             } else {
                 (0, 15)
             }
@@ -132,6 +268,9 @@ fn sequence_range(tab: usize, channel_mode: ChannelMode, vol_mode: VolMode) -> (
             // dn `CVRC6Sawtooth::MAX_DUTY = 0x01` — the saw's duty is a single bit
             // that becomes bit 5 of the $B000 accumulator rate.
             ChannelMode::Vrc6Saw => (0, 1),
+            // Noise period is the graph's Y-axis; mode flags (envelope/tone/
+            // noise) are drawn separately by `draw_s5b_duty_noise_graph`.
+            ChannelMode::S5B => (0, 31),
             _ => (0, 3),
         },
     }
@@ -148,7 +287,7 @@ fn set_volume_step_mode(text: &mut String, sequence: &mut Sequence, next: VolMod
     }
 
     let scale_up = next == VolMode::Steps64;
-    let (min_val, max_val) = sequence_range(0, ChannelMode::Vrc6Saw, next);
+    let (min_val, max_val) = sequence_range(0, ChannelMode::Vrc6Saw, next, sequence.vol_mode_5b);
 
     for value in &mut sequence.values {
         *value = if scale_up { *value * 4 } else { *value / 4 };
@@ -156,6 +295,27 @@ fn set_volume_step_mode(text: &mut String, sequence: &mut Sequence, next: VolMod
     }
 
     sequence.vol_mode = next;
+    *text = sequence_to_text(sequence);
+}
+
+/// Switches an S5B duty/mode-as-volume sequence between the 4-bit and 5-bit
+/// step ranges. Same shape as [`set_volume_step_mode`], but the S5B's
+/// hardware volume register is 5-bit, so the scale factor is `*2`/`/2`
+/// (16<->32) instead of `*4`/`/4` (16<->64).
+fn set_volume_step_mode_5b(text: &mut String, sequence: &mut Sequence, next: VolMode5B) {
+    if sequence.vol_mode_5b == next {
+        return;
+    }
+
+    let scale_up = next == VolMode5B::Steps32;
+    let (min_val, max_val) = sequence_range(0, ChannelMode::S5B, sequence.vol_mode, next);
+
+    for value in &mut sequence.values {
+        *value = if scale_up { *value * 2 } else { *value / 2 };
+        *value = (*value).clamp(min_val, max_val);
+    }
+
+    sequence.vol_mode_5b = next;
     *text = sequence_to_text(sequence);
 }
 
@@ -176,18 +336,32 @@ fn sync_volume_step_mode_to_channel(data: &mut SharedSequences) {
     set_volume_step_mode(text, sequence, VolMode::Steps16);
 }
 
+/// Same idea as [`sync_volume_step_mode_to_channel`], but for the S5B's
+/// 16/32-step volume setting: brings the selected volume sequence back to the
+/// 4-bit range once the editor is no longer on `ChannelMode::S5B`.
+fn sync_volume_step_mode_5b_to_channel(data: &mut SharedSequences) {
+    if data.channel_mode == ChannelMode::S5B {
+        return;
+    }
+
+    let (text, sequence) = data.selected_sequence_mut(0);
+    set_volume_step_mode_5b(text, sequence, VolMode5B::Steps16);
+}
+
 /// Sanitizes the selected numbered sequence for an envelope type.
 pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
-    let (sanitized, prev_pitch_mode, prev_arp_mode, prev_vol_mode) = {
+    let (sanitized, prev_pitch_mode, prev_arp_mode, prev_vol_mode, prev_vol_mode_5b) = {
         let (text, sequence) = data.selected_sequence_mut(tab);
         (
             sanitize_sequence_text(text),
             sequence.pitch_mode,
             sequence.arp_mode,
             sequence.vol_mode,
+            sequence.vol_mode_5b,
         )
     };
-    let (min_val, max_val) = sequence_range(tab, data.channel_mode, prev_vol_mode);
+    let channel_mode = data.channel_mode;
+    let (min_val, max_val) = sequence_range(tab, channel_mode, prev_vol_mode, prev_vol_mode_5b);
     let (text, sequence) = data.selected_sequence_mut(tab);
 
     if sanitized.trim().is_empty() {
@@ -195,12 +369,18 @@ pub fn cleanup_tab_sequence(data: &mut SharedSequences, tab: usize) {
         sequence.pitch_mode = prev_pitch_mode;
         sequence.arp_mode = prev_arp_mode;
         sequence.vol_mode = prev_vol_mode;
+        sequence.vol_mode_5b = prev_vol_mode_5b;
         text.clear();
     } else {
-        let (mut parsed, normalized) = Sequence::parse_clamped(&sanitized, min_val, max_val);
+        let (mut parsed, normalized) = if tab == 4 && channel_mode == ChannelMode::S5B {
+            parse_s5b_duty_text(&sanitized)
+        } else {
+            Sequence::parse_clamped(&sanitized, min_val, max_val)
+        };
         parsed.pitch_mode = prev_pitch_mode;
         parsed.arp_mode = prev_arp_mode;
         parsed.vol_mode = prev_vol_mode;
+        parsed.vol_mode_5b = prev_vol_mode_5b;
         let len = parsed.len();
         if parsed.loop_point.is_some_and(|point| point >= len) {
             parsed.loop_point = None;
@@ -425,9 +605,9 @@ fn apply_channel_mode_change(
             }
         }
         // The saw keeps its Duty tab: in 16-step mode duty bit 0 is the $B000
-        // rate MSB, so tab 4 stays selectable. Pulse and VRC6 pulse support
-        // every tab, so neither needs cleanup either.
-        ChannelMode::Pulse | ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw => {}
+        // rate MSB, so tab 4 stays selectable. Pulse, VRC6 pulse, and S5B
+        // support every tab, so none of them need cleanup either.
+        ChannelMode::Pulse | ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw | ChannelMode::S5B => {}
     }
 
     data.channel_mode = new_mode;
@@ -551,14 +731,16 @@ fn draw_header(
                         ChannelMode::Noise => "2A03 | Noise",
                         ChannelMode::Vrc6Pulse => "VRC6 | Pulse",
                         ChannelMode::Vrc6Saw => "VRC6 | Saw",
+                        ChannelMode::S5B => "S5B | PSG",
                     })
                     .show_ui(ui, |ui| {
-                        const WAVEFORMS: [(i32, ChannelMode, &str); 5] = [
+                        const WAVEFORMS: [(i32, ChannelMode, &str); 6] = [
                             (0, ChannelMode::Pulse, "2A03 | Pulse"),
                             (1, ChannelMode::Triangle, "2A03 | Triangle"),
                             (2, ChannelMode::Noise, "2A03 | Noise"),
                             (3, ChannelMode::Vrc6Pulse, "VRC6 | Pulse"),
                             (4, ChannelMode::Vrc6Saw, "VRC6 | Saw"),
+                            (5, ChannelMode::S5B, "S5B | PSG"),
                         ];
                         for (id, new_mode, label) in WAVEFORMS {
                             if ui.selectable_value(&mut waveform_id, id, label).clicked() {
@@ -703,6 +885,11 @@ fn draw_instrument_settings_panel(
 
                 for &(name, tab) in seq_types {
                     let enabled = tab_is_available(tab, data.channel_mode);
+                    let name = if tab == 4 && data.channel_mode == ChannelMode::S5B {
+                        "Noise / Mode"
+                    } else {
+                        name
+                    };
 
                     ui.add_enabled(
                         enabled,
@@ -832,6 +1019,7 @@ fn draw_sequence_editor_panel(
         1 => "Arpeggio",
         2 => "Pitch",
         3 => "Hi-pitch",
+        _ if data.channel_mode == ChannelMode::S5B => "Noise / Mode",
         _ => "Duty / Noise",
     };
 
@@ -845,22 +1033,28 @@ fn draw_sequence_editor_panel(
         // borrow of `data` below.
         let channel_mode = data.channel_mode;
         let vol_mode = data.selected_sequence(tab).vol_mode;
-        let (min_val, max_val) = sequence_range(tab, channel_mode, vol_mode);
+        let vol_mode_5b = data.selected_sequence(tab).vol_mode_5b;
+        let (min_val, max_val) = sequence_range(tab, channel_mode, vol_mode, vol_mode_5b);
 
         {
             let (text, sequence) = data.selected_sequence_mut(tab);
 
             let is_arpeggio = tab == 1;
-            if draw_envelope_bar_graph(
-                ui,
-                sequence,
-                min_val,
-                max_val,
-                is_arpeggio,
-                playheads.step(tab),
-                graph_height,
-            ) {
-                *text = sequence_to_text(sequence);
+            let graph_changed = if tab == 4 && channel_mode == ChannelMode::S5B {
+                draw_s5b_duty_noise_graph(ui, sequence, playheads.step(tab), graph_height)
+            } else {
+                draw_envelope_bar_graph(
+                    ui,
+                    sequence,
+                    min_val,
+                    max_val,
+                    is_arpeggio,
+                    playheads.step(tab),
+                    graph_height,
+                )
+            };
+            if graph_changed {
+                *text = sequence_to_text_for_tab(tab, channel_mode, sequence);
                 auto_enable = true;
             }
 
@@ -900,7 +1094,7 @@ fn draw_sequence_editor_panel(
                         sequence.release_point = None;
                     }
 
-                    *text = sequence_to_text(sequence);
+                    *text = sequence_to_text_for_tab(tab, channel_mode, sequence);
                 }
 
                 ui.add_space(15.0);
@@ -948,6 +1142,26 @@ fn draw_sequence_editor_panel(
                         }
                     });
                 }
+
+                // Same idea, scoped to S5B's 5-bit hardware volume register
+                // (16-step vs 32-step) instead of VRC6's 6-bit one. The two
+                // checkboxes are mutually exclusive by construction since
+                // they're gated on different channel modes.
+                if tab == 0 && channel_mode == ChannelMode::S5B {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut is_32 = sequence.vol_mode_5b == VolMode5B::Steps32;
+
+                        if ui.checkbox(&mut is_32, "32-Step").changed() {
+                            let next = if is_32 {
+                                VolMode5B::Steps32
+                            } else {
+                                VolMode5B::Steps16
+                            };
+                            set_volume_step_mode_5b(text, sequence, next);
+                            auto_enable = true;
+                        }
+                    });
+                }
             });
 
             ui.add_space(6.0);
@@ -968,9 +1182,12 @@ fn draw_sequence_editor_panel(
                 let prev_pitch_mode = sequence.pitch_mode;
                 let prev_arp_mode = sequence.arp_mode;
                 let prev_vol_mode = sequence.vol_mode;
+                let prev_vol_mode_5b = sequence.vol_mode_5b;
 
                 *sequence = if sanitized.trim().is_empty() {
                     Sequence::default()
+                } else if tab == 4 && channel_mode == ChannelMode::S5B {
+                    parse_s5b_duty_text(&sanitized).0
                 } else {
                     Sequence::parse_clamped(&sanitized, min_val, max_val).0
                 };
@@ -978,10 +1195,11 @@ fn draw_sequence_editor_panel(
                 sequence.pitch_mode = prev_pitch_mode;
                 sequence.arp_mode = prev_arp_mode;
                 sequence.vol_mode = prev_vol_mode;
+                sequence.vol_mode_5b = prev_vol_mode_5b;
             }
 
             if enter_pressed || edit.lost_focus() {
-                *text = sequence_to_text(sequence);
+                *text = sequence_to_text_for_tab(tab, channel_mode, sequence);
             }
         }
 
@@ -1088,6 +1306,8 @@ pub fn render_editor_ui(
     // channel. Runs after the recall above so it sees the recalled channel mode,
     // matching the ordering `apply_loaded_patch` documents.
     sync_volume_step_mode_to_channel(data);
+    // Same idea for S5B's 32-step volume option.
+    sync_volume_step_mode_5b_to_channel(data);
 
     draw_header(
         ui,
@@ -1392,6 +1612,27 @@ mod tests {
         }
         assert!(tab_is_available(0, ChannelMode::Noise));
         assert!(tab_is_available(1, ChannelMode::Noise));
+
+        // S5B is a tone channel with pitch, hi-pitch, and a duty/mode tab,
+        // same shape as Pulse/Vrc6Pulse — no exclusions.
+        for tab in 0..crate::SEQUENCE_TYPE_COUNT {
+            assert!(tab_is_available(tab, ChannelMode::S5B));
+        }
+    }
+
+    #[test]
+    fn switching_slots_recalls_an_s5b_waveform() {
+        // Parallel to `switching_slots_recalls_that_slots_remembered_waveform`.
+        let mut data = SharedSequences::default();
+        data.set_slot_waveform(5, ChannelMode::S5B);
+        data.channel_mode = ChannelMode::Pulse;
+
+        let mut last = Some(0);
+        let mut result = EditorResult::default();
+        recall_slot_waveform(&mut data, 5, &mut last, &mut result);
+
+        assert_eq!(data.channel_mode, ChannelMode::S5B);
+        assert_eq!(result.new_channel_mode, Some(ChannelMode::S5B));
     }
 
     #[test]
@@ -1579,11 +1820,11 @@ mod tests {
         // dnFamiTracker's CPitchGraphEditor serves both tabs with a 127..-128 axis, and
         // both the graph and the text box must agree on it.
         assert_eq!(
-            sequence_range(2, ChannelMode::Pulse, VolMode::Steps16),
+            sequence_range(2, ChannelMode::Pulse, VolMode::Steps16, VolMode5B::Steps16),
             (-128, 127)
         );
         assert_eq!(
-            sequence_range(3, ChannelMode::Pulse, VolMode::Steps16),
+            sequence_range(3, ChannelMode::Pulse, VolMode::Steps16, VolMode5B::Steps16),
             (-128, 127)
         );
 
@@ -1603,21 +1844,46 @@ mod tests {
         // dn defaults the VRC6 saw volume sequence to SETTING_VOL_16_STEPS; the 6-bit
         // range is only reachable through SETTING_VOL_64_STEPS.
         assert_eq!(
-            sequence_range(0, ChannelMode::Vrc6Saw, VolMode::Steps16),
+            sequence_range(0, ChannelMode::Vrc6Saw, VolMode::Steps16, VolMode5B::Steps16),
             (0, 15)
         );
         assert_eq!(
-            sequence_range(0, ChannelMode::Vrc6Saw, VolMode::Steps64),
+            sequence_range(0, ChannelMode::Vrc6Saw, VolMode::Steps64, VolMode5B::Steps16),
             (0, 63)
         );
 
         // The step mode is saw-only — every other channel stays 4-bit either way.
         assert_eq!(
-            sequence_range(0, ChannelMode::Pulse, VolMode::Steps64),
+            sequence_range(0, ChannelMode::Pulse, VolMode::Steps64, VolMode5B::Steps16),
             (0, 15)
         );
         assert_eq!(
-            sequence_range(0, ChannelMode::Vrc6Pulse, VolMode::Steps64),
+            sequence_range(0, ChannelMode::Vrc6Pulse, VolMode::Steps64, VolMode5B::Steps16),
+            (0, 15)
+        );
+    }
+
+    #[test]
+    fn s5b_volume_range_follows_the_step_mode() {
+        // Parallel to `vrc6_saw_volume_range_follows_the_step_mode`, but the
+        // S5B's hardware volume register is 5-bit (16<->32) instead of the
+        // saw's 6-bit (16<->64).
+        assert_eq!(
+            sequence_range(0, ChannelMode::S5B, VolMode::Steps16, VolMode5B::Steps16),
+            (0, 15)
+        );
+        assert_eq!(
+            sequence_range(0, ChannelMode::S5B, VolMode::Steps16, VolMode5B::Steps32),
+            (0, 31)
+        );
+
+        // The step mode is S5B-only — every other channel stays 4-bit either way.
+        assert_eq!(
+            sequence_range(0, ChannelMode::Pulse, VolMode::Steps16, VolMode5B::Steps32),
+            (0, 15)
+        );
+        assert_eq!(
+            sequence_range(0, ChannelMode::Vrc6Pulse, VolMode::Steps16, VolMode5B::Steps32),
             (0, 15)
         );
     }
@@ -1626,16 +1892,26 @@ mod tests {
     fn vrc6_saw_duty_range_is_one_bit() {
         // dn `CVRC6Sawtooth::MAX_DUTY = 0x01` — the saw's duty is the $B000 rate MSB.
         assert_eq!(
-            sequence_range(4, ChannelMode::Vrc6Saw, VolMode::Steps16),
+            sequence_range(4, ChannelMode::Vrc6Saw, VolMode::Steps16, VolMode5B::Steps16),
             (0, 1)
         );
         assert_eq!(
-            sequence_range(4, ChannelMode::Vrc6Pulse, VolMode::Steps16),
+            sequence_range(4, ChannelMode::Vrc6Pulse, VolMode::Steps16, VolMode5B::Steps16),
             (0, 7)
         );
         assert_eq!(
-            sequence_range(4, ChannelMode::Pulse, VolMode::Steps16),
+            sequence_range(4, ChannelMode::Pulse, VolMode::Steps16, VolMode5B::Steps16),
             (0, 3)
+        );
+    }
+
+    #[test]
+    fn s5b_duty_noise_range_is_five_bit_period() {
+        // Parallel to `vrc6_saw_duty_range_is_one_bit`. Tab 4's Y-axis is the
+        // noise period (0..=31); mode flags aren't part of the graph's range.
+        assert_eq!(
+            sequence_range(4, ChannelMode::S5B, VolMode::Steps16, VolMode5B::Steps16),
+            (0, 31)
         );
     }
 
@@ -1710,5 +1986,171 @@ mod tests {
         cleanup_tab_sequence(&mut data, 0);
         assert_eq!(data.selected_sequence(0).vol_mode, VolMode::Steps16);
         assert_eq!(data.selected_sequence(0).values, vec![15, 15, 0]);
+    }
+
+    #[test]
+    fn leaving_s5b_rescales_a_32_step_volume_sequence() {
+        // Parallel to `leaving_the_saw_waveform_rescales_a_64_step_volume_sequence`.
+        for channel_mode in [
+            ChannelMode::Pulse,
+            ChannelMode::Triangle,
+            ChannelMode::Noise,
+            ChannelMode::Vrc6Pulse,
+            ChannelMode::Vrc6Saw,
+        ] {
+            let mut data = SharedSequences::default();
+            data.channel_mode = ChannelMode::S5B;
+            data.selected_sequence_mut(0).0.push_str("31 16 4 0");
+            cleanup_tab_sequence(&mut data, 0);
+
+            {
+                let (text, sequence) = data.selected_sequence_mut(0);
+                set_volume_step_mode_5b(text, sequence, VolMode5B::Steps32);
+            }
+            // "31 16 4 0" was authored under 16-step, so cleanup clamped it to
+            // [15, 15, 4, 0] before the x2 promotion.
+            assert_eq!(data.selected_sequence(0).values, vec![30, 30, 8, 0]);
+
+            data.channel_mode = channel_mode;
+            sync_volume_step_mode_5b_to_channel(&mut data);
+
+            assert_eq!(data.selected_sequence(0).vol_mode_5b, VolMode5B::Steps16);
+            assert_eq!(
+                data.selected_sequence(0).values,
+                vec![15, 15, 4, 0],
+                "{channel_mode:?} must see 4-bit steps"
+            );
+            assert_eq!(data.selected_sequence_mut(0).0, "15 15 4 0");
+
+            // Idempotent — a second frame on the same channel changes nothing.
+            sync_volume_step_mode_5b_to_channel(&mut data);
+            assert_eq!(data.selected_sequence(0).values, vec![15, 15, 4, 0]);
+        }
+    }
+
+    #[test]
+    fn staying_on_s5b_keeps_32_step_values() {
+        // Parallel to `staying_on_the_saw_waveform_keeps_64_step_values`.
+        let mut data = SharedSequences::default();
+        data.channel_mode = ChannelMode::S5B;
+        data.selected_sequence_mut(0).0.push_str("15 8 0");
+        cleanup_tab_sequence(&mut data, 0);
+
+        {
+            let (text, sequence) = data.selected_sequence_mut(0);
+            set_volume_step_mode_5b(text, sequence, VolMode5B::Steps32);
+        }
+
+        sync_volume_step_mode_5b_to_channel(&mut data);
+        assert_eq!(data.selected_sequence(0).vol_mode_5b, VolMode5B::Steps32);
+        assert_eq!(data.selected_sequence(0).values, vec![30, 16, 0]);
+    }
+
+    #[test]
+    fn cleanup_preserves_the_s5b_step_mode_and_clamps_to_it() {
+        // Parallel to `cleanup_preserves_the_saw_step_mode_and_clamps_to_it`.
+        let mut data = SharedSequences::default();
+        data.channel_mode = ChannelMode::S5B;
+        data.selected_sequence_mut(0).1.vol_mode_5b = VolMode5B::Steps32;
+        data.selected_sequence_mut(0).0.push_str("31 16 0");
+        cleanup_tab_sequence(&mut data, 0);
+        assert_eq!(data.selected_sequence(0).vol_mode_5b, VolMode5B::Steps32);
+        assert_eq!(data.selected_sequence(0).values, vec![31, 16, 0]);
+
+        // Back to 16-step: the same text now clamps to the 4-bit range.
+        data.selected_sequence_mut(0).1.vol_mode_5b = VolMode5B::Steps16;
+        cleanup_tab_sequence(&mut data, 0);
+        assert_eq!(data.selected_sequence(0).vol_mode_5b, VolMode5B::Steps16);
+        assert_eq!(data.selected_sequence(0).values, vec![15, 15, 0]);
+    }
+
+    /// An S5B instrument whose volume envelope uses the 32-step range — the
+    /// only data shape the load-ordering hazard can destroy. Parallel to
+    /// `saw_patch_with_64_step_volume`.
+    fn s5b_patch_with_32_step_volume() -> crate::Patch {
+        let mut source = SharedSequences::default();
+        source.channel_mode = ChannelMode::S5B;
+        source.set_selected_sequence_index(0, 7);
+        source.set_slot_waveform(7, ChannelMode::S5B);
+        {
+            let (text, sequence) = source.selected_sequence_mut(0);
+            sequence.values = vec![31, 20, 10];
+            sequence.vol_mode_5b = VolMode5B::Steps32;
+            *text = sequence_to_text(sequence);
+        }
+        crate::Patch::from_shared_sequences(&source, 60)
+    }
+
+    #[test]
+    fn loading_an_s5b_patch_survives_the_next_frames_volume_sync() {
+        // Parallel to `loading_a_saw_patch_survives_the_next_frames_volume_sync`.
+        let patch = s5b_patch_with_32_step_volume();
+        let mut data = SharedSequences::default();
+        let mut result = EditorResult::default();
+
+        apply_loaded_patch(&mut data, &mut result, &patch);
+
+        assert_eq!(data.selected_sequence(0).vol_mode_5b, VolMode5B::Steps32);
+        assert_eq!(data.selected_sequence(0).values, vec![31, 20, 10]);
+    }
+
+    #[test]
+    fn s5b_duty_period_set_preserves_flags() {
+        // Widget-level: setting the period must not disturb the flag bits
+        // already set on that step.
+        let mut seq = Sequence {
+            values: vec![
+                5 | rp2a03_core::sequencer::S5B_MODE_SQUARE
+                    | rp2a03_core::sequencer::S5B_MODE_NOISE,
+            ],
+            ..Sequence::default()
+        };
+        let value = seq.values[0];
+        let new_period: i16 = 12;
+        seq.values[0] = (value & !rp2a03_core::sequencer::S5B_PERIOD_MASK) | new_period;
+
+        assert_eq!(seq.values[0] & rp2a03_core::sequencer::S5B_PERIOD_MASK, 12);
+        assert_ne!(seq.values[0] & rp2a03_core::sequencer::S5B_MODE_SQUARE, 0);
+        assert_ne!(seq.values[0] & rp2a03_core::sequencer::S5B_MODE_NOISE, 0);
+    }
+
+    #[test]
+    fn s5b_duty_flag_toggle_preserves_period() {
+        // Widget-level: toggling a flag bit must not disturb the period bits.
+        let mut value: i16 = 9;
+        value ^= rp2a03_core::sequencer::S5B_MODE_ENVELOPE;
+
+        assert_eq!(value & rp2a03_core::sequencer::S5B_PERIOD_MASK, 9);
+        assert_ne!(value & rp2a03_core::sequencer::S5B_MODE_ENVELOPE, 0);
+
+        value ^= rp2a03_core::sequencer::S5B_MODE_ENVELOPE;
+        assert_eq!(value, 9);
+    }
+
+    #[test]
+    fn s5b_duty_text_round_trips_period_and_flags() {
+        let value: i16 = 5
+            | rp2a03_core::sequencer::S5B_MODE_SQUARE
+            | rp2a03_core::sequencer::S5B_MODE_NOISE
+            | rp2a03_core::sequencer::S5B_MODE_ENVELOPE;
+        let seq = Sequence {
+            values: vec![value],
+            ..Sequence::default()
+        };
+
+        let text = sequence_to_text_for_tab(4, ChannelMode::S5B, &seq);
+        assert_eq!(text, "5tne");
+
+        let (reparsed, normalized) = parse_s5b_duty_text(&text);
+        assert_eq!(normalized, "5tne");
+        assert_eq!(reparsed.values, vec![value]);
+    }
+
+    #[test]
+    fn s5b_duty_text_ignores_malformed_flag_letters() {
+        // dn's parser is permissive — unrecognized letters are dropped, not
+        // rejected, since text-field edits happen keystroke-by-keystroke.
+        let (reparsed, _) = parse_s5b_duty_text("5tzq");
+        assert_eq!(reparsed.values, vec![5 | rp2a03_core::sequencer::S5B_MODE_SQUARE]);
     }
 }
