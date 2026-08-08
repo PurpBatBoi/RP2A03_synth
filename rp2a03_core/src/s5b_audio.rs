@@ -256,6 +256,12 @@ pub struct Psg {
     base_incr: u32,
 
     trigger_mask: TriggerMask,
+
+    /// Set by a write that moves a tone channel's `edge` without any counter
+    /// advancing (a period or duty change). Read only by
+    /// [`Psg::clock_channel0`], whose fast path is otherwise entitled to
+    /// assume nothing can have changed since the previous step.
+    tone_dirty: bool,
 }
 
 const GETA_BITS: u32 = 24;
@@ -288,6 +294,7 @@ impl Psg {
             base_count: 0,
             base_incr: 1 << GETA_BITS,
             trigger_mask: 0,
+            tone_dirty: false,
         }
     }
 
@@ -367,6 +374,7 @@ impl Psg {
     /// see `AY8930-TONE-BEHAVIOR-REPORT.md` in `.references/`.
     pub fn set_duty_index(&mut self, idx: usize, duty_index: u8) {
         self.duty_index[idx] = duty_index.min(8);
+        self.tone_dirty = true;
     }
 
     /// Tone channel `idx`'s current duty-cycle preset index (0..=8).
@@ -425,6 +433,7 @@ impl Psg {
                 let c = reg >> 1;
                 self.freq[c] =
                     (u16::from(self.reg[c * 2 + 1] & 0x0f) << 8) | u16::from(self.reg[c * 2]);
+                self.tone_dirty = true;
             }
             6 => {
                 self.noise_freq = val & 0x1f;
@@ -472,11 +481,74 @@ impl Psg {
     /// granularity.
     pub fn clock(&mut self) {
         self.trigger_mask = 0;
+        let incr = self.take_step_increment();
+        let (noise, env_trigger) = self.clock_shared(incr);
+        for i in 0..3 {
+            self.clock_tone(i, incr, noise, env_trigger);
+        }
+        self.tone_dirty = false;
+    }
 
+    /// Advances the PSG by one internal step, computing tone channel 0 only.
+    ///
+    /// For callers that drive channel 0 alone — this crate's [`Sunsoft`]
+    /// voice helpers do, since each polyphonic voice owns a private chip and
+    /// only ever addresses its first tone channel. Channels 1 and 2 keep
+    /// whatever [`Self::channel_output`] and [`Self::trigger_mask`] bits the
+    /// last full [`Self::clock`] left them (silence, on a chip that has never
+    /// been given a period or volume for them). Channel 0's output is
+    /// bit-identical to what [`Self::clock`] would have produced.
+    ///
+    /// Worth having because the NES feeds this chip through a divide-by-16
+    /// prescaler (see [`Sunsoft::new`]), so 15 of every 16 calls only advance
+    /// `base_count` and produce no tone step at all — yet the general path
+    /// still runs a tone body costing two integer divisions *per channel* on
+    /// every one of them. Both the swallowed steps and the two unused
+    /// channels are pure overhead for a polyphonic voice pool, where this is
+    /// clocked once per CPU cycle per sounding voice.
+    pub fn clock_channel0(&mut self) {
+        let incr = self.take_step_increment();
+
+        // The shared generators always run: they are a handful of integer ops
+        // with no division, and they are *not* inert on a swallowed step —
+        // both `EnvelopeGen::advance` and the noise LFSR guard against a
+        // period of 0, which `x >= 0` makes true unconditionally, and 0 is
+        // this chip's reset value for both. Only the tone body is skipped.
+        self.trigger_mask = 0;
+        let (noise, env_trigger) = self.clock_shared(incr);
+
+        if incr == 0 && !self.tone_dirty {
+            // Nothing the tone body reads has moved: `count[0]` is below
+            // `full_cycle` (the previous `clock_tone` left it there, and
+            // `tone_dirty` would be set had a period or duty write happened
+            // since), so it would wrap to itself, leaving `phase` and
+            // `edge[0]` exactly as they are. The output gate still has to
+            // run — `noise` and `envelope.ptr` above may have moved, as may
+            // a volume, mute, or mixer register written between two clocks.
+            self.update_ch_out(0, noise);
+            self.trigger_mask = self.trigger_bits(0, env_trigger, false);
+            return;
+        }
+
+        self.clock_tone(0, incr, noise, env_trigger);
+        self.tone_dirty = false;
+    }
+
+    /// Advances the sub-sample accumulator, returning the number of whole
+    /// internal steps this call produces — 0 on a call the caller's step
+    /// increment swallows.
+    #[inline]
+    fn take_step_increment(&mut self) -> u32 {
         self.base_count += self.base_incr;
         let incr = self.base_count >> GETA_BITS;
         self.base_count &= (1 << GETA_BITS) - 1;
+        incr
+    }
 
+    /// Advances the two chip-wide generators by `incr` steps, returning the
+    /// current noise gate level and whether the envelope reported a trigger.
+    #[inline]
+    fn clock_shared(&mut self, incr: u32) -> (bool, bool) {
         let env_trigger = self.envelope.advance(incr);
 
         // Noise: shared 17-bit LFSR, advances at half the rate of its own
@@ -498,58 +570,68 @@ impl Psg {
                 self.noise_count = 0;
             }
         }
-        let noise = self.noise_seed & 1 == 0;
 
-        let table = self.voltbl.table();
+        (self.noise_seed & 1 == 0, env_trigger)
+    }
 
-        for i in 0..3 {
-            let mut tone_trigger = false;
+    /// Advances tone channel `i` by `incr` steps and folds its new edge into
+    /// [`Self::channel_output`] and [`Self::trigger_mask`].
+    #[inline]
+    fn clock_tone(&mut self, i: usize, incr: u32, noise: bool, env_trigger: bool) {
+        // `count[i]` free-runs across a full wave (`2*freq[i]` count units —
+        // the register period historically covered a half-cycle, two toggles
+        // per wave) and wraps every cycle. Its position within that span maps
+        // directly onto the 32-wide `DUTY_CYCLE_TABLE` pattern, so resolution
+        // is exact at any tone period instead of stepping in fixed increments
+        // that would underflow at low periods.
+        let full_cycle = u32::from(self.freq[i]).saturating_mul(2).max(1);
+        self.count[i] = ((u32::from(self.count[i]) + incr) % full_cycle) as u16;
+        let phase = ((u32::from(self.count[i]) * 32) / full_cycle) as u8 & 0x1f;
 
-            // `count[i]` free-runs across a full wave (`2*freq[i]` count
-            // units — the register period historically covered a
-            // half-cycle, two toggles per wave) and wraps every cycle. Its
-            // position within that span maps directly onto the 32-wide
-            // `DUTY_CYCLE_TABLE` pattern, so resolution is exact at any tone
-            // period instead of stepping in fixed increments that would
-            // underflow at low periods.
-            let full_cycle = u32::from(self.freq[i]).saturating_mul(2).max(1);
-            self.count[i] = ((u32::from(self.count[i]) + incr) % full_cycle) as u16;
-            let phase = ((u32::from(self.count[i]) * 32) / full_cycle) as u8 & 0x1f;
+        let pattern = DUTY_CYCLE_TABLE[usize::from(self.duty_index[i])];
+        let new_edge = pattern & (1 << phase) != 0;
+        let tone_trigger = new_edge != self.edge[i];
+        self.edge[i] = new_edge;
 
-            let pattern = DUTY_CYCLE_TABLE[usize::from(self.duty_index[i])];
-            let new_edge = pattern & (1 << phase) != 0;
-            if new_edge != self.edge[i] {
-                tone_trigger = true;
-            }
-            self.edge[i] = new_edge;
+        self.update_ch_out(i, noise);
+        self.trigger_mask |= self.trigger_bits(i, env_trigger, tone_trigger);
+    }
 
-            if self.mask & (1 << i) != 0 {
-                self.ch_out[i] = 0;
-            // Both terms are *disable* bits, so a disabled source contributes
-            // an unconditional `true` and lets the other one gate alone
-            // (emu2149's `(tmask||edge) && (nmask||noise)`). Negating them
-            // instead swaps the two sources: tone-enabled/noise-disabled would
-            // be gated by the noise bit and vice versa.
-            } else if (self.tone_disable[i] || self.edge[i])
-                && (self.noise_disable[i] || noise)
-            {
-                self.ch_out[i] = if self.volume[i] & 0x20 == 0 {
-                    (table[usize::from(self.volume[i] & 0x1f)] as i16) << 4
-                } else {
-                    (table[usize::from(self.envelope.ptr)] as i16) << 4
-                };
+    /// Recomputes tone channel `i`'s output level from the current mute,
+    /// mixer, edge, and volume/envelope state.
+    #[inline]
+    fn update_ch_out(&mut self, i: usize, noise: bool) {
+        self.ch_out[i] = if self.mask & (1 << i) != 0 {
+            0
+        // Both terms are *disable* bits, so a disabled source contributes an
+        // unconditional `true` and lets the other one gate alone (emu2149's
+        // `(tmask||edge) && (nmask||noise)`). Negating them instead swaps the
+        // two sources: tone-enabled/noise-disabled would be gated by the
+        // noise bit and vice versa.
+        } else if (self.tone_disable[i] || self.edge[i]) && (self.noise_disable[i] || noise) {
+            let table = self.voltbl.table();
+            if self.volume[i] & 0x20 == 0 {
+                (table[usize::from(self.volume[i] & 0x1f)] as i16) << 4
             } else {
-                self.ch_out[i] = 0;
+                (table[usize::from(self.envelope.ptr)] as i16) << 4
             }
+        } else {
+            0
+        };
+    }
 
-            // If this channel is gated by a repeating (non-hold) envelope,
-            // report the envelope's trigger; otherwise report the tone
-            // edge, provided the tone isn't disabled.
-            if self.envelope.is_fast_repeating() && self.volume[i] & 0x20 != 0 {
-                self.trigger_mask |= (0x08 << i) | (u8::from(env_trigger) << i);
-            } else if !self.tone_disable[i] && self.freq[i] != 0 {
-                self.trigger_mask |= (0x08 << i) | (u8::from(tone_trigger) << i);
-            }
+    /// Tone channel `i`'s contribution to [`Self::trigger_mask`]. If the
+    /// channel is gated by a repeating (non-hold) envelope, report the
+    /// envelope's trigger; otherwise report the tone edge, provided the tone
+    /// isn't disabled.
+    #[inline]
+    fn trigger_bits(&self, i: usize, env_trigger: bool, tone_trigger: bool) -> TriggerMask {
+        if self.envelope.is_fast_repeating() && self.volume[i] & 0x20 != 0 {
+            (0x08 << i) | (u8::from(env_trigger) << i)
+        } else if !self.tone_disable[i] && self.freq[i] != 0 {
+            (0x08 << i) | (u8::from(tone_trigger) << i)
+        } else {
+            0
         }
     }
 
@@ -631,9 +713,13 @@ impl Sunsoft {
         &self.psg
     }
 
-    /// Advances the PSG by one internal step. See [`Psg::clock`].
+    /// Advances the PSG by one internal step. See [`Psg::clock_channel0`] —
+    /// only tone channel 0 is computed, because only tone channel 0 is ever
+    /// driven (see the channel-0-scoped helpers below). Channels 1 and 2 stay
+    /// silent, which is what the full three-channel path produces for them
+    /// anyway: nothing gives them a period or a volume.
     pub fn clock(&mut self) {
-        self.psg.clock();
+        self.psg.clock_channel0();
     }
 
     /// Sum of all three tone channels, matching the chip's mono mix.
@@ -949,6 +1035,287 @@ mod tests {
         assert_eq!(psg.reg(0), 0);
         assert_eq!(psg.output(), 0);
         assert_eq!(psg.voltbl, VolumeMode::Ay8910);
+    }
+
+    /// `clock_channel0` is an optimization of `clock`, so the only thing that
+    /// keeps it honest is agreeing with `clock` clock-for-clock. Both chips
+    /// get the /16 prescaler `Sunsoft` uses (the ratio the fast path exists
+    /// to exploit) and the same register script, mixing in every write that
+    /// can change channel 0's output without a counter advancing: period,
+    /// duty, volume, mute, mixer, and the shared envelope — including the
+    /// degenerate zero-period envelope/noise states the fast path has to
+    /// decline to take.
+    #[test]
+    fn clock_channel0_matches_full_clock_on_channel_zero() {
+        let mut reference = Psg::new();
+        let mut fast = Psg::new();
+        let step = (1 << GETA_BITS) / 16;
+        reference.set_step_increment(step);
+        fast.set_step_increment(step);
+
+        // (clock at which to apply, register, value); `None` register means a
+        // non-register setter, applied via the closure below.
+        let script: [(u32, u32, u32); 14] = [
+            (0, 7, 0b0011_1110),  // channel 0 tone on, noise off
+            (0, 0, 0x40),         // period lo
+            (0, 1, 0x01),         // period hi
+            (0, 8, 0x0F),         // constant volume, max
+            (300, 8, 0x07),       // volume change mid-wave
+            (700, 0, 0x11),       // period change mid-wave
+            (1100, 6, 0x0B),      // noise period
+            (1100, 7, 0b0011_0110), // noise on alongside tone
+            (1900, 6, 0x00),      // degenerate: noise period 0
+            (2600, 11, 0x40),     // envelope period lo
+            (2600, 12, 0x00),     // envelope period hi
+            (2600, 13, 0b0000_1100), // continue+attack shape
+            (2600, 8, 0x10),      // channel 0 now gated by the envelope
+            (3800, 11, 0x00),     // degenerate: envelope period 0
+        ];
+
+        for clock in 0..6000u32 {
+            for &(at, reg, val) in &script {
+                if at == clock {
+                    reference.write_reg(reg, val);
+                    fast.write_reg(reg, val);
+                }
+            }
+            // Setters that bypass the register file, on their own schedule.
+            if clock == 500 {
+                reference.set_duty_index(0, 2);
+                fast.set_duty_index(0, 2);
+            }
+            if clock == 1500 {
+                reference.set_volume_level(0, 22);
+                fast.set_volume_level(0, 22);
+            }
+            if clock == 2000 {
+                reference.set_channel_mask(0, true);
+                fast.set_channel_mask(0, true);
+            }
+            if clock == 2200 {
+                reference.set_channel_mask(0, false);
+                fast.set_channel_mask(0, false);
+            }
+
+            reference.clock();
+            fast.clock_channel0();
+
+            assert_eq!(
+                fast.channel_output(0),
+                reference.channel_output(0),
+                "channel 0 output diverged at clock {clock}"
+            );
+            assert_eq!(
+                fast.trigger_mask() & 0b0100_1001,
+                reference.trigger_mask() & 0b0100_1001,
+                "channel 0 trigger bits diverged at clock {clock}"
+            );
+        }
+    }
+
+    /// The scripted equivalence test above fixes *when* each write lands, and
+    /// the fast path's whole premise is a 16-clock prescaler — so a bug in it
+    /// would most plausibly hide at one particular write phase relative to
+    /// that boundary. This walks the same comparison over 400 pseudo-random
+    /// scripts (fixed seed, so a failure is reproducible), scattering writes
+    /// across every phase and interleaving with the degenerate zero-period
+    /// states the two chips start in.
+    #[test]
+    fn clock_channel0_matches_full_clock_under_random_register_traffic() {
+        // xorshift32: deterministic, no dev-dependency.
+        let mut seed = 0x5B_5B_5B_5Bu32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+
+        for script in 0..400 {
+            let mut reference = Psg::new();
+            let mut fast = Psg::new();
+            let step = (1 << GETA_BITS) / 16;
+            reference.set_step_increment(step);
+            fast.set_step_increment(step);
+
+            for clock in 0..400u32 {
+                // ~1 write every 8 clocks, landing on arbitrary phases.
+                if next() % 8 == 0 {
+                    let val = next() & 0xFF;
+                    match next() % 8 {
+                        0..=4 => {
+                            // Registers that matter here: periods, noise
+                            // period, mixer, volume, envelope period/shape.
+                            let reg = [0, 1, 6, 7, 8, 11, 12, 13][(next() % 8) as usize];
+                            reference.write_reg(reg, val);
+                            fast.write_reg(reg, val);
+                        }
+                        5 => {
+                            let level = (val & 0x1f) as u8;
+                            reference.set_volume_level(0, level);
+                            fast.set_volume_level(0, level);
+                        }
+                        6 => {
+                            let duty = (val % 9) as u8;
+                            reference.set_duty_index(0, duty);
+                            fast.set_duty_index(0, duty);
+                        }
+                        _ => {
+                            let muted = val & 1 != 0;
+                            reference.set_channel_mask(0, muted);
+                            fast.set_channel_mask(0, muted);
+                        }
+                    }
+                }
+
+                reference.clock();
+                fast.clock_channel0();
+
+                assert_eq!(
+                    fast.channel_output(0),
+                    reference.channel_output(0),
+                    "script {script}: channel 0 output diverged at clock {clock}"
+                );
+                assert_eq!(
+                    fast.trigger_mask() & 0b0100_1001,
+                    reference.trigger_mask() & 0b0100_1001,
+                    "script {script}: channel 0 trigger bits diverged at clock {clock}"
+                );
+            }
+        }
+    }
+
+    /// `Sunsoft::clock` computes tone channel 0 alone, so `output()` — the
+    /// only thing the synth's audio path reads — is only unchanged if
+    /// channels 1 and 2 really do contribute nothing. They are never given a
+    /// period, volume, or duty, and `set_tone_noise_enable` forces their
+    /// mixer bits off, so both routes through the output gate land on
+    /// `table[0]`, which is 0 in both volume curves. Driven here through the
+    /// same helpers `apply_s5b_modulation` calls, including a gate-off.
+    #[test]
+    fn sunsoft_output_comes_entirely_from_channel_zero() {
+        for mode in [VolumeMode::Ym2149, VolumeMode::Ay8910] {
+            let mut sunsoft = Sunsoft::new();
+            sunsoft.psg.set_volume_mode(mode);
+
+            for clock in 0..8000u32 {
+                match clock {
+                    0 => {
+                        sunsoft.write_timer_lo(0x40);
+                        sunsoft.write_timer_hi(0x01);
+                        sunsoft.write_volume_level(31);
+                        sunsoft.set_tone_noise_enable(true, false);
+                    }
+                    2000 => {
+                        // Noise on alongside tone, as a noise-flagged duty
+                        // step does.
+                        sunsoft.write_noise_period(0x0B);
+                        sunsoft.set_tone_noise_enable(true, true);
+                    }
+                    4000 => {
+                        sunsoft.write_duty_index(7);
+                        sunsoft.write_volume_level(18);
+                    }
+                    6000 => sunsoft.set_tone_noise_enable(false, false), // gate off
+                    _ => {}
+                }
+
+                sunsoft.clock();
+
+                assert_eq!(
+                    sunsoft.psg.channel_output(1),
+                    0,
+                    "{mode:?}: channel 1 spoke at clock {clock}"
+                );
+                assert_eq!(
+                    sunsoft.psg.channel_output(2),
+                    0,
+                    "{mode:?}: channel 2 spoke at clock {clock}"
+                );
+                assert_eq!(
+                    sunsoft.output(),
+                    sunsoft.psg.channel_output(0),
+                    "{mode:?}: mix diverged from channel 0 at clock {clock}"
+                );
+            }
+        }
+    }
+
+    /// Not an assertion — a stopwatch. Run with
+    /// `cargo test --release -p rp2a03_core -- --ignored --nocapture`
+    /// to compare the two paths at the clock rate a sounding voice uses.
+    /// Alternates the two and reports the best of several rounds, so a cold
+    /// cache or a clock-speed ramp in the first round cannot decide the
+    /// result.
+    #[test]
+    #[ignore = "timing measurement, not a correctness check"]
+    fn clock_channel0_throughput_report() {
+        use std::time::{Duration, Instant};
+
+        const CLOCKS: u32 = 20_000_000;
+        const ROUNDS: usize = 3;
+
+        // Set up as `apply_s5b_modulation` leaves a sounding voice: a tone
+        // period, a constant volume, tone on / noise off, and the envelope
+        // and noise periods left at their reset value of 0 (nothing in this
+        // project writes them).
+        fn armed() -> Psg {
+            let mut psg = Psg::new();
+            psg.set_step_increment((1 << GETA_BITS) / 16);
+            psg.write_reg(7, 0b0011_1110);
+            psg.write_reg(0, 0x40);
+            psg.write_reg(1, 0x01);
+            psg.write_reg(8, 0x0F);
+            psg
+        }
+
+        fn time(mut step: impl FnMut(&mut Psg)) -> Duration {
+            let mut psg = armed();
+            let start = Instant::now();
+            for _ in 0..CLOCKS {
+                step(&mut psg);
+                std::hint::black_box(psg.output());
+            }
+            start.elapsed()
+        }
+
+        // Reference point: the 2A03 pulse, clocked and read exactly as
+        // `Voice::clock_channel_output` does. Everything wrapped around the
+        // chip model per clock is identical between the two channel modes, so
+        // this is what "S5B costs the same as any other waveform" means.
+        fn time_pulse() -> Duration {
+            use crate::apu_pulse::{Pulse, PulseChannel};
+            let mut pulse = Pulse::new(PulseChannel::One);
+            pulse.set_enabled(true);
+            pulse.write_sweep(0x08);
+            pulse.write_timer_lo(0x40);
+            pulse.write_timer_hi(0x01);
+            pulse.write_ctrl(0x9F);
+            let start = Instant::now();
+            for _ in 0..CLOCKS {
+                pulse.clock();
+                std::hint::black_box(pulse.output());
+            }
+            start.elapsed()
+        }
+
+        let mut full = Duration::MAX;
+        let mut fast = Duration::MAX;
+        let mut pulse = Duration::MAX;
+        for _ in 0..ROUNDS {
+            full = full.min(time(Psg::clock));
+            fast = fast.min(time(Psg::clock_channel0));
+            pulse = pulse.min(time_pulse());
+        }
+
+        println!("clock():          {full:?} for {CLOCKS} clocks");
+        println!("clock_channel0(): {fast:?} for {CLOCKS} clocks");
+        println!("Pulse::clock():   {pulse:?} for {CLOCKS} clocks (reference)");
+        println!(
+            "speedup: {:.2}x, now {:.2}x the cost of a pulse channel",
+            full.as_secs_f64() / fast.as_secs_f64().max(f64::EPSILON),
+            fast.as_secs_f64() / pulse.as_secs_f64().max(f64::EPSILON),
+        );
     }
 
     // ── Sunsoft wrapper tests ──
