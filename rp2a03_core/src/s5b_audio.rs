@@ -179,6 +179,25 @@ impl EnvelopeGen {
 /// waveform restarted.
 pub type TriggerMask = u8;
 
+/// AY8930 "expanded mode" tone duty-cycle presets, ported from Furnace's
+/// `ay8910.cpp` (`duty_cycle[9]`, 3.125% .. 96.875%). Each entry is a 32-bit
+/// pattern; a 5-bit phase counter indexes one bit per phase step, so the
+/// pattern's population count sets the mark/space ratio over a full cycle.
+/// Index 4 (`0xffff0000`, 50%) is bit-for-bit the same alternating pattern a
+/// plain half-period toggle produces, so it reproduces this chip's original
+/// fixed-50%-duty output exactly.
+const DUTY_CYCLE_TABLE: [u32; 9] = [
+    0x8000_0000, // 3.125 %
+    0xc000_0000, // 6.25 %
+    0xf000_0000, // 12.50 %
+    0xff00_0000, // 25.00 %
+    0xffff_0000, // 50.00 %
+    0xffff_ff00, // 75.00 %
+    0xffff_fff0, // 87.50 %
+    0xffff_fffc, // 93.75 %
+    0xffff_fffe, // 96.875 %
+];
+
 /// Sunsoft 5B PSG core: three tone generators, one shared noise generator,
 /// one shared envelope generator, and the register file that drives them.
 ///
@@ -196,10 +215,16 @@ pub struct Psg {
 
     reg: [u8; 16],
 
-    /// Tone period, current down-counter, and square edge, per channel.
+    /// Tone period and free-running full-wave position counter, per channel
+    /// (`count[i]` wraps every `2*freq[i]` units — see `Psg::clock`).
     freq: [u16; 3],
     count: [u16; 3],
+    /// Current tone output level, sampled from `DUTY_CYCLE_TABLE` each
+    /// clock via `count[i]`'s position in the wave. Read every clock by the
+    /// mixer gate, same as the plain toggle it replaced.
     edge: [bool; 3],
+    /// Selected duty preset (0..=8) per channel, indexing `DUTY_CYCLE_TABLE`.
+    duty_index: [u8; 3],
     /// Per-channel volume/envelope-select, as derived from $08/$09/$0A.
     /// The CPU write is 5 bits (D4..D0): D4 selects the shared envelope in
     /// place of a constant volume, D3..D0 is the 4-bit constant volume.
@@ -249,6 +274,7 @@ impl Psg {
             freq: [0; 3],
             count: [0; 3],
             edge: [false; 3],
+            duty_index: [4; 3],
             volume: [0; 3],
             tone_disable: [false; 3],
             noise_disable: [false; 3],
@@ -333,6 +359,19 @@ impl Psg {
     /// was set.
     pub fn volume_level(&self, idx: usize) -> u8 {
         self.volume[idx] & 0x1f
+    }
+
+    /// Sets tone channel `idx`'s duty-cycle preset (0..=8, clamped),
+    /// indexing `DUTY_CYCLE_TABLE` (3.125% .. 96.875%; 4 = 50%, this chip's
+    /// stock behavior). Ported from the AY8930's expanded-mode duty select,
+    /// see `AY8930-TONE-BEHAVIOR-REPORT.md` in `.references/`.
+    pub fn set_duty_index(&mut self, idx: usize, duty_index: u8) {
+        self.duty_index[idx] = duty_index.min(8);
+    }
+
+    /// Tone channel `idx`'s current duty-cycle preset index (0..=8).
+    pub fn duty_index(&self, idx: usize) -> u8 {
+        self.duty_index[idx]
     }
 
     /// Volume-table index whose output level is nearest `num`/`den` of full
@@ -466,20 +505,23 @@ impl Psg {
         for i in 0..3 {
             let mut tone_trigger = false;
 
-            self.count[i] = self.count[i].wrapping_add(incr as u16);
-            if self.count[i] >= self.freq[i] {
-                self.edge[i] = !self.edge[i];
+            // `count[i]` free-runs across a full wave (`2*freq[i]` count
+            // units — the register period historically covered a
+            // half-cycle, two toggles per wave) and wraps every cycle. Its
+            // position within that span maps directly onto the 32-wide
+            // `DUTY_CYCLE_TABLE` pattern, so resolution is exact at any tone
+            // period instead of stepping in fixed increments that would
+            // underflow at low periods.
+            let full_cycle = u32::from(self.freq[i]).saturating_mul(2).max(1);
+            self.count[i] = ((u32::from(self.count[i]) + incr) % full_cycle) as u16;
+            let phase = ((u32::from(self.count[i]) * 32) / full_cycle) as u8 & 0x1f;
 
-                if self.freq[i] >= incr as u16 {
-                    self.count[i] -= self.freq[i];
-                } else {
-                    self.count[i] = 0;
-                }
-
-                if self.edge[i] {
-                    tone_trigger = true;
-                }
+            let pattern = DUTY_CYCLE_TABLE[usize::from(self.duty_index[i])];
+            let new_edge = pattern & (1 << phase) != 0;
+            if new_edge != self.edge[i] {
+                tone_trigger = true;
             }
+            self.edge[i] = new_edge;
 
             if self.mask & (1 << i) != 0 {
                 self.ch_out[i] = 0;
@@ -636,6 +678,11 @@ impl Sunsoft {
     /// 4-bit volume `v`.
     pub fn write_volume_level(&mut self, level: u8) {
         self.psg.set_volume_level(0, level);
+    }
+
+    /// Channel 0 tone duty-cycle preset (0..=8). See [`Psg::set_duty_index`].
+    pub fn write_duty_index(&mut self, duty_index: u8) {
+        self.psg.set_duty_index(0, duty_index);
     }
 
     /// Chip-global noise generator period (reg 6, masked to 5 bits).
@@ -1094,6 +1141,61 @@ mod tests {
             prev = now;
         }
         assert_eq!(transitions, 1024 / 128);
+    }
+
+    #[test]
+    fn duty_index_defaults_to_fifty_percent() {
+        let sunsoft = Sunsoft::new();
+        assert_eq!(sunsoft.psg().duty_index(0), 4);
+    }
+
+    #[test]
+    fn duty_presets_produce_expected_mark_space_ratio() {
+        // One preset per table entry; measures the fraction of clocks the
+        // tone output is high over several full waves and checks it lands
+        // near that preset's documented percentage (`DUTY_CYCLE_TABLE`'s
+        // comment in the source). Generous tolerance: this counts raw
+        // clocks, not phase samples, so period/incr rounding shifts the
+        // measured edge by up to a couple of percent either way.
+        const EXPECTED_PERCENT: [f64; 9] = [
+            3.125, 6.25, 12.5, 25.0, 50.0, 75.0, 87.5, 93.75, 96.875,
+        ];
+
+        for (index, &expected) in EXPECTED_PERCENT.iter().enumerate() {
+            let mut sunsoft = Sunsoft::new();
+            sunsoft.write_timer_lo(64);
+            sunsoft.write_timer_hi(0);
+            sunsoft.write_volume_level(31);
+            sunsoft.write_duty_index(index as u8);
+            sunsoft.set_tone_noise_enable(true, false);
+
+            let mut high = 0u32;
+            let mut total = 0u32;
+            // A few full waves' worth of CPU-cycle-granularity clocks
+            // (16 clock() calls per internal step, TP=64 -> one full wave
+            // is `2*64*16` clocks).
+            let wave_clocks = 2 * 64 * 16;
+            for _ in 0..(wave_clocks * 4) {
+                sunsoft.clock();
+                if sunsoft.output() != 0 {
+                    high += 1;
+                }
+                total += 1;
+            }
+
+            let measured_percent = f64::from(high) / f64::from(total) * 100.0;
+            assert!(
+                (measured_percent - expected).abs() < 4.0,
+                "duty index {index}: expected ~{expected}%, measured {measured_percent}%"
+            );
+        }
+    }
+
+    #[test]
+    fn set_duty_index_clamps_to_table_range() {
+        let mut psg = Psg::new();
+        psg.set_duty_index(0, 255);
+        assert_eq!(psg.duty_index(0), 8);
     }
 
     #[test]

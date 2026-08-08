@@ -132,6 +132,14 @@ pub fn sequence_to_text_for_tab(tab: usize, channel_mode: ChannelMode, seq: &Seq
         if value & rp2a03_core::sequencer::S5B_MODE_NOISE != 0 {
             token.push('n');
         }
+        // Duty width is only spelled out when it differs from the 50%
+        // default, so sequences authored before the field existed (and any
+        // that simply never touch it) keep their original text form.
+        let duty = rp2a03_core::sequencer::s5b_duty_index(*value);
+        if duty != rp2a03_core::sequencer::S5B_DUTY_DEFAULT_INDEX {
+            token.push('w');
+            token.push_str(&duty.to_string());
+        }
         tokens.push(token);
     }
     if seq.loop_point == Some(seq.values.len()) {
@@ -145,7 +153,7 @@ pub fn sequence_to_text_for_tab(tab: usize, channel_mode: ChannelMode, seq: &Seq
 
 /// Strips non-sequence characters from raw text input.
 ///
-/// `t`/`n` (case-insensitive) are S5B duty/mode flag letters (see
+/// `t`/`n`/`w` (case-insensitive) are S5B duty/mode letters (see
 /// [`sequence_to_text_for_tab`]); harmless to allow through unconditionally
 /// since plain-numeric parsing (`Sequence::parse_clamped`) already ignores any
 /// token that doesn't parse as an integer. dn's third letter `e` (hardware
@@ -156,7 +164,7 @@ pub fn sanitize_sequence_text(text: &str) -> String {
         .filter(|c| {
             c.is_ascii_digit()
                 || matches!(*c, '|' | '/' | '-')
-                || matches!(c.to_ascii_lowercase(), 't' | 'n')
+                || matches!(c.to_ascii_lowercase(), 't' | 'n' | 'w')
                 || c.is_ascii_whitespace()
         })
         .collect()
@@ -165,7 +173,8 @@ pub fn sanitize_sequence_text(text: &str) -> String {
 /// Parses an S5B duty/mode sequence text string (e.g. `"5tn"`) into a
 /// `Sequence`, mirroring dn's `CSeqConversion5B::ToValue`
 /// (`SequenceParser.cpp`). Each token is a period (0..=31) followed by
-/// optional flag letters `t`/`n` (case-insensitive, any order); malformed
+/// optional flag letters `t`/`n` and an optional `w<digit>` duty width
+/// (case-insensitive, any order); malformed
 /// or unrecognized flag letters are ignored rather than rejected, matching
 /// dn's permissive `[TtNnEe]*` regex — text-field edits happen
 /// keystroke-by-keystroke and can't hard-error mid-edit. dn's `e` (hardware
@@ -207,6 +216,27 @@ fn parse_s5b_duty_text(input: &str) -> (Sequence, String) {
                 if flags.contains(['n', 'N']) {
                     value |= rp2a03_core::sequencer::S5B_MODE_NOISE;
                     out_token.push('n');
+                }
+                // `w<digit>` is the duty width (0..=8). A bare `w`, or one
+                // followed by something that isn't a digit, is dropped like
+                // any other unrecognized letter rather than rejecting the
+                // token mid-keystroke.
+                if let Some(rest) = flags
+                    .split(['w', 'W'])
+                    .nth(1)
+                    .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+                {
+                    let digits_end = rest
+                        .find(|c: char| !c.is_ascii_digit())
+                        .unwrap_or(rest.len());
+                    if let Ok(duty) = rest[..digits_end].parse::<i16>() {
+                        let duty = duty.clamp(0, 8);
+                        value = rp2a03_core::sequencer::s5b_set_duty_index(value, duty);
+                        if duty != rp2a03_core::sequencer::S5B_DUTY_DEFAULT_INDEX {
+                            out_token.push('w');
+                            out_token.push_str(&duty.to_string());
+                        }
+                    }
                 }
 
                 values.push(value);
@@ -2139,6 +2169,61 @@ mod tests {
         let (reparsed, normalized) = parse_s5b_duty_text(&text);
         assert_eq!(normalized, "5tn");
         assert_eq!(reparsed.values, vec![value]);
+    }
+
+    #[test]
+    fn s5b_duty_text_round_trips_width() {
+        let value = rp2a03_core::sequencer::s5b_set_duty_index(
+            5 | rp2a03_core::sequencer::S5B_MODE_SQUARE
+                | rp2a03_core::sequencer::S5B_MODE_NOISE,
+            2,
+        );
+        let seq = Sequence {
+            values: vec![value],
+            ..Sequence::default()
+        };
+
+        let text = sequence_to_text_for_tab(4, ChannelMode::S5B, &seq);
+        assert_eq!(text, "5tnw2");
+
+        let (reparsed, normalized) = parse_s5b_duty_text(&text);
+        assert_eq!(normalized, "5tnw2");
+        assert_eq!(reparsed.values, vec![value]);
+    }
+
+    #[test]
+    fn s5b_duty_text_omits_default_width() {
+        // Width 4 (50%) is the default, so it stays out of the text form and
+        // sequences that never touch the field keep their old spelling.
+        let value = rp2a03_core::sequencer::s5b_set_duty_index(
+            5 | rp2a03_core::sequencer::S5B_MODE_SQUARE,
+            4,
+        );
+        let seq = Sequence {
+            values: vec![value],
+            ..Sequence::default()
+        };
+
+        assert_eq!(sequence_to_text_for_tab(4, ChannelMode::S5B, &seq), "5t");
+
+        let (reparsed, normalized) = parse_s5b_duty_text("5tw4");
+        assert_eq!(normalized, "5t");
+        assert_eq!(
+            rp2a03_core::sequencer::s5b_duty_index(reparsed.values[0]),
+            4
+        );
+    }
+
+    #[test]
+    fn s5b_duty_text_ignores_bare_width_letter() {
+        // Permissive like the flag letters: a `w` with no digit after it is
+        // dropped, leaving the default width, not rejected mid-keystroke.
+        let (reparsed, normalized) = parse_s5b_duty_text("5tw");
+        assert_eq!(normalized, "5t");
+        assert_eq!(
+            rp2a03_core::sequencer::s5b_duty_index(reparsed.values[0]),
+            rp2a03_core::sequencer::S5B_DUTY_DEFAULT_INDEX
+        );
     }
 
     #[test]

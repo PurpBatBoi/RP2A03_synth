@@ -232,7 +232,7 @@ load-bearing — see "Schema evolution rule" above):
 | Field            | Type              | Notes |
 |------------------|-------------------|-------|
 | `index`          | integer, `0..=127`| The numbered slot this entry occupies. Unique within its array. |
-| `values`         | array of integers | Signed step values, mirrors `Sequence::values` (`Vec<i16>`). |
+| `values`         | array of integers | Signed step values, mirrors `Sequence::values` (`Vec<i16>`). Range depends on the envelope type — see "Invariants a loader should validate". |
 | `loop_point`     | integer or `null` | Step index the sequence loops back to while a key is held. `null` = no loop marker. |
 | `release_point`  | integer or `null` | Step index the sequence jumps to on note-off. `null` = no release marker. |
 | `pitch_mode`     | `"Relative"` \| `"Absolute"` | Only meaningful when this entry is a pitch sequence; carried uniformly on every entry for 1:1 correspondence with `Sequence`, ignored otherwise. |
@@ -248,6 +248,36 @@ that `SequenceSlot` itself already round-trips via serde.
 `SequenceSlot::text`, the FamiTracker-string editing cache, is still *not*
 stored; it is regenerated from `values`/`loop_point`/`release_point` on load
 via the existing `sequence_to_text` formatter.
+
+### The `duty` lane's packed step values
+
+For every channel except the Sunsoft 5B, a `duty` entry's step value is a plain
+small integer (the channel's duty-cycle selector). For the S5B it is a packed
+bitfield instead, since that channel's "duty" lane doubles as its noise/mixer
+control:
+
+| Bits  | Meaning | Constant |
+|-------|---------|----------|
+| 0-4   | Noise period, `0..=31` | `S5B_PERIOD_MASK` (`0x001F`) |
+| 5     | Hardware-envelope select | `S5B_MODE_ENVELOPE` (`0x0020`) |
+| 6     | Tone enable | `S5B_MODE_SQUARE` (`0x0040`) |
+| 7     | Noise enable | `S5B_MODE_NOISE` (`0x0080`) |
+| 8-11  | Tone duty width | `S5B_DUTY_MASK` (`0x0F00`) |
+
+All constants live in `rp2a03_core::sequencer`. Two notes for anyone reading or
+writing these values:
+
+- **Bit 5 is inert.** This synth never selects the chip's hardware envelope
+  (there is no period/shape control to drive it), so the flag exists only to
+  document the format and is not offered on either editing surface.
+- **The duty width is a signed offset, not a raw index.** Bits 8-11 store
+  `duty_index - 4` in two's complement, where `duty_index` is `0..=8` selecting
+  one of the AY8930's nine duty presets (3.125% .. 96.875%). Storing the offset
+  means the all-zero bit pattern decodes to index 4 (50%, the stock
+  AY-3-8910/YM2149 behavior), so files written before this field existed — and
+  any step that simply never sets a width — read back as a plain 50% square
+  with no migration pass. Decode with `s5b_duty_index`, encode with
+  `s5b_set_duty_index`; do not sign-extend the field by hand.
 
 ### `arp_mode` and FamiTracker import
 
@@ -393,10 +423,20 @@ make the file self-identifying regardless of name.
 - `step_time_hz` is in `1..=600`.
 - `format_version` is a version the loader understands; otherwise refuse to
   load rather than guess.
-- Every element of a sequence entry's `values` is in `-128..=127`, matching
-  `Sequence::values`' documented range (Dn-FamiTracker stores sequence items
-  as `signed char`). A value outside this range is rejected, not clamped —
-  consistent with this format's "refuse to load rather than guess" stance.
+- Every element of a sequence entry's `values` is in range for its envelope
+  type. A value outside that range is rejected, not clamped — consistent with
+  this format's "refuse to load rather than guess" stance.
+  - `vol`, `arp`, `pitch`, `hipitch`: `-128..=127`, matching
+    `Sequence::values`' documented range (Dn-FamiTracker stores sequence items
+    as `signed char`).
+  - `duty`: `0..=4095` (`0x0FFF`). This lane is a packed bitfield rather than a
+    numeric value when the instrument is a Sunsoft 5B — noise period in bits
+    0-4, envelope/tone/noise mixer flags in bits 5-7, tone duty width in bits
+    8-11 (`S5B_PERIOD_MASK` / `S5B_MODE_*` / `S5B_DUTY_MASK` in
+    `rp2a03_core::sequencer`). The noise flag alone is `0x80` (128), so the
+    `signed char` ceiling never applied to this lane in the first place. The
+    other channels' plain `0..=7` duty values sit inside the same bound, so one
+    range covers both without the entry recording which channel wrote it.
 - `values.len()` does not exceed `MAX_SEQUENCE_LEN` (256, matching the GUI's
   own sequence-length cap). This bounds how large a single sequence a crafted
   file can force the loader to allocate/play.

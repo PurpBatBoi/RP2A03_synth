@@ -32,6 +32,19 @@ const MAX_STEP_TIME_HZ: u16 = 600;
 /// budget the moment it's played.
 pub const MAX_SEQUENCE_LEN: usize = 256;
 
+/// Widest step value the duty envelope can hold. Unlike the four numeric
+/// lanes (which carry dn's `signed char` range), the duty lane is a packed
+/// bitfield when the instrument is an S5B: noise period in bits 0-4, the
+/// envelope/tone/noise mixer flags in bits 5-7, and the tone duty width in
+/// bits 8-11 (`S5B_PERIOD_MASK` / `S5B_MODE_*` / `S5B_DUTY_MASK` in
+/// `rp2a03_core::sequencer`). That packing spans `0..=0x0FFF`, so a step
+/// with the noise flag set (0x80 = 128) or any non-default duty width
+/// already exceeds `-128..=127` legitimately. The lane is shared with the
+/// other channels' plain 0..=7 duty values, which sit inside this range
+/// anyway, so one widened bound covers both without needing the entry to
+/// record which channel wrote it.
+const MAX_DUTY_SEQUENCE_VALUE: i16 = 0x0FFF;
+
 /// Top-level `.rp2a03patch` contents. Field order is load-bearing — see the
 /// "Schema evolution rule" section of the format spec. New fields are always
 /// appended after `sequences`; existing fields are never reordered.
@@ -261,10 +274,17 @@ impl fmt::Display for PatchError {
                 envelope,
                 index,
                 value,
-            } => write!(
-                f,
-                "{envelope} sequence entry index {index} has a step value {value} out of range (-128..=127)"
-            ),
+            } => {
+                let range = if *envelope == "duty" {
+                    format!("0..={MAX_DUTY_SEQUENCE_VALUE}")
+                } else {
+                    "-128..=127".to_string()
+                };
+                write!(
+                    f,
+                    "{envelope} sequence entry index {index} has a step value {value} out of range ({range})"
+                )
+            }
             Self::SequenceTooLong {
                 envelope,
                 index,
@@ -389,8 +409,17 @@ impl Patch {
                         len: entry.values.len(),
                     });
                 }
+                // The duty lane is a packed bitfield for S5B instruments, so
+                // it validates against the packing's own span rather than the
+                // numeric lanes' `signed char` range — see
+                // `MAX_DUTY_SEQUENCE_VALUE`.
+                let allowed = if envelope == "duty" {
+                    0..=MAX_DUTY_SEQUENCE_VALUE
+                } else {
+                    i16::from(i8::MIN)..=i16::from(i8::MAX)
+                };
                 for &value in &entry.values {
-                    if !(i16::from(i8::MIN)..=i16::from(i8::MAX)).contains(&value) {
+                    if !allowed.contains(&value) {
                         return Err(PatchError::SequenceValueOutOfRange {
                             envelope,
                             index: entry.index,
@@ -594,6 +623,70 @@ mod tests {
                 waveform: ChannelMode::Vrc6Saw,
             }],
         }
+    }
+
+    #[test]
+    fn accepts_packed_s5b_duty_steps() {
+        // Every legal S5B duty/mode packing must survive a save: the noise
+        // flag alone is already 0x80 (128), past the numeric lanes'
+        // `signed char` ceiling, and a non-default duty width pushes bits
+        // 8-11 on top of that. Before the duty lane got its own bound, saving
+        // any S5B instrument with noise enabled failed validation outright.
+        for duty_index in 0..=8 {
+            let value = rp2a03_core::sequencer::s5b_set_duty_index(
+                31 | rp2a03_core::sequencer::S5B_MODE_SQUARE
+                    | rp2a03_core::sequencer::S5B_MODE_NOISE,
+                duty_index,
+            );
+            let mut patch = sample_patch();
+            patch.sequences.duty[0].values = vec![value];
+            patch.sequences.duty[0].loop_point = None;
+            let bytes = patch.to_bytes();
+            let restored = Patch::from_bytes(&bytes)
+                .unwrap_or_else(|e| panic!("duty index {duty_index} (value {value}) must save: {e}"));
+            assert_eq!(restored.sequences.duty[0].values, vec![value]);
+        }
+    }
+
+    #[test]
+    fn rejects_duty_value_past_the_packed_span() {
+        let mut patch = sample_patch();
+        patch.sequences.duty[0].values = vec![MAX_DUTY_SEQUENCE_VALUE + 1];
+        patch.sequences.duty[0].loop_point = None;
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PatchError::SequenceValueOutOfRange {
+                    envelope: "duty",
+                    index: 3,
+                    value
+                } if value == MAX_DUTY_SEQUENCE_VALUE + 1
+            ),
+            "expected SequenceValueOutOfRange for the duty lane, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn numeric_lanes_keep_the_signed_char_range() {
+        // The widened duty bound must not leak into the four numeric lanes —
+        // those still carry dn's `signed char` range.
+        let mut patch = sample_patch();
+        patch.sequences.vol[0].values = vec![128];
+        let bytes = patch.to_bytes();
+        let err = Patch::from_bytes(&bytes).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PatchError::SequenceValueOutOfRange {
+                    envelope: "vol",
+                    index: 3,
+                    value: 128
+                }
+            ),
+            "expected the vol lane to still reject 128, got {err:?}"
+        );
     }
 
     #[test]

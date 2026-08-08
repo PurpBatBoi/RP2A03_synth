@@ -15,7 +15,7 @@ use rp2a03_core::s5b_audio::Sunsoft;
 use rp2a03_core::sequencer::Sequence;
 use rp2a03_core::sequencer::{
     ArpMode, PitchMode, S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK,
-    SeqState, SequencePlayer, VolMode, VolMode5B,
+    SeqState, SequencePlayer, VolMode, VolMode5B, s5b_duty_index,
 };
 use rp2a03_core::software_lfo::SoftwareLfo;
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
@@ -1182,6 +1182,13 @@ impl MidiHandler {
         if noise_flag {
             sunsoft.write_noise_period(noise_period ^ S5B_PERIOD_MASK as u8);
         }
+
+        // 3b. Tone duty width — same packed step value, bits 8-11 (signed
+        //     offset from index 4/50%, see `s5b_duty_index`). Independent of
+        //     the tone/noise mixer flags above; written every tick same as
+        //     the noise period so it stays current even without a note
+        //     retrigger.
+        sunsoft.write_duty_index(s5b_duty_index(duty_val) as u8);
 
         // 4. Tone/noise enable bits, gated by the channel's own gate state.
         sunsoft.set_tone_noise_enable(self.gate && square_flag, self.gate && noise_flag);
