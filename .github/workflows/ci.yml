@@ -34,7 +34,7 @@ jobs:
             libasound2-dev libgl1-mesa-dev libjack-jackd2-dev \
             libx11-xcb-dev libxcb-dri2-0-dev libxcb-icccm4-dev \
             libxcursor-dev libxkbcommon-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev
+            libxcb-xfixes0-dev libwayland-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -74,7 +74,7 @@ jobs:
             libasound2-dev libgl1-mesa-dev libjack-jackd2-dev \
             libx11-xcb-dev libxcb-dri2-0-dev libxcb-icccm4-dev \
             libxcursor-dev libxkbcommon-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev
+            libxcb-xfixes0-dev libwayland-dev
 
       # Pinned to `rust-version` in the workspace Cargo.toml, not to `stable`.
       # The two are the same on the day the floor is raised and diverge as
