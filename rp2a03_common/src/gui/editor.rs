@@ -132,9 +132,6 @@ pub fn sequence_to_text_for_tab(tab: usize, channel_mode: ChannelMode, seq: &Seq
         if value & rp2a03_core::sequencer::S5B_MODE_NOISE != 0 {
             token.push('n');
         }
-        if value & rp2a03_core::sequencer::S5B_MODE_ENVELOPE != 0 {
-            token.push('e');
-        }
         tokens.push(token);
     }
     if seq.loop_point == Some(seq.values.len()) {
@@ -148,28 +145,32 @@ pub fn sequence_to_text_for_tab(tab: usize, channel_mode: ChannelMode, seq: &Seq
 
 /// Strips non-sequence characters from raw text input.
 ///
-/// `t`/`n`/`e` (case-insensitive) are S5B duty/mode flag letters (see
+/// `t`/`n` (case-insensitive) are S5B duty/mode flag letters (see
 /// [`sequence_to_text_for_tab`]); harmless to allow through unconditionally
 /// since plain-numeric parsing (`Sequence::parse_clamped`) already ignores any
-/// token that doesn't parse as an integer.
+/// token that doesn't parse as an integer. dn's third letter `e` (hardware
+/// envelope) is deliberately not accepted — this synth never selects the
+/// envelope, so letting it through would set a bit nothing reads.
 pub fn sanitize_sequence_text(text: &str) -> String {
     text.chars()
         .filter(|c| {
             c.is_ascii_digit()
                 || matches!(*c, '|' | '/' | '-')
-                || matches!(c.to_ascii_lowercase(), 't' | 'n' | 'e')
+                || matches!(c.to_ascii_lowercase(), 't' | 'n')
                 || c.is_ascii_whitespace()
         })
         .collect()
 }
 
-/// Parses an S5B duty/mode sequence text string (e.g. `"5tne"`) into a
+/// Parses an S5B duty/mode sequence text string (e.g. `"5tn"`) into a
 /// `Sequence`, mirroring dn's `CSeqConversion5B::ToValue`
 /// (`SequenceParser.cpp`). Each token is a period (0..=31) followed by
-/// optional flag letters `t`/`n`/`e` (case-insensitive, any order); malformed
+/// optional flag letters `t`/`n` (case-insensitive, any order); malformed
 /// or unrecognized flag letters are ignored rather than rejected, matching
 /// dn's permissive `[TtNnEe]*` regex — text-field edits happen
-/// keystroke-by-keystroke and can't hard-error mid-edit.
+/// keystroke-by-keystroke and can't hard-error mid-edit. dn's `e` (hardware
+/// envelope) falls into that ignored set here: this synth has no envelope
+/// period/shape control, so the flag is not offered on either surface.
 fn parse_s5b_duty_text(input: &str) -> (Sequence, String) {
     let mut values = Vec::new();
     let mut loop_point = None;
@@ -206,10 +207,6 @@ fn parse_s5b_duty_text(input: &str) -> (Sequence, String) {
                 if flags.contains(['n', 'N']) {
                     value |= rp2a03_core::sequencer::S5B_MODE_NOISE;
                     out_token.push('n');
-                }
-                if flags.contains(['e', 'E']) {
-                    value |= rp2a03_core::sequencer::S5B_MODE_ENVELOPE;
-                    out_token.push('e');
                 }
 
                 values.push(value);
@@ -2118,32 +2115,43 @@ mod tests {
     fn s5b_duty_flag_toggle_preserves_period() {
         // Widget-level: toggling a flag bit must not disturb the period bits.
         let mut value: i16 = 9;
-        value ^= rp2a03_core::sequencer::S5B_MODE_ENVELOPE;
+        value ^= rp2a03_core::sequencer::S5B_MODE_NOISE;
 
         assert_eq!(value & rp2a03_core::sequencer::S5B_PERIOD_MASK, 9);
-        assert_ne!(value & rp2a03_core::sequencer::S5B_MODE_ENVELOPE, 0);
+        assert_ne!(value & rp2a03_core::sequencer::S5B_MODE_NOISE, 0);
 
-        value ^= rp2a03_core::sequencer::S5B_MODE_ENVELOPE;
+        value ^= rp2a03_core::sequencer::S5B_MODE_NOISE;
         assert_eq!(value, 9);
     }
 
     #[test]
     fn s5b_duty_text_round_trips_period_and_flags() {
-        let value: i16 = 5
-            | rp2a03_core::sequencer::S5B_MODE_SQUARE
-            | rp2a03_core::sequencer::S5B_MODE_NOISE
-            | rp2a03_core::sequencer::S5B_MODE_ENVELOPE;
+        let value: i16 =
+            5 | rp2a03_core::sequencer::S5B_MODE_SQUARE | rp2a03_core::sequencer::S5B_MODE_NOISE;
         let seq = Sequence {
             values: vec![value],
             ..Sequence::default()
         };
 
         let text = sequence_to_text_for_tab(4, ChannelMode::S5B, &seq);
-        assert_eq!(text, "5tne");
+        assert_eq!(text, "5tn");
 
         let (reparsed, normalized) = parse_s5b_duty_text(&text);
-        assert_eq!(normalized, "5tne");
+        assert_eq!(normalized, "5tn");
         assert_eq!(reparsed.values, vec![value]);
+    }
+
+    #[test]
+    fn s5b_duty_text_drops_dns_envelope_letter() {
+        // The envelope flag is not offered on either surface, so `e` is just
+        // another ignored letter rather than a way to set a bit nothing reads.
+        assert_eq!(sanitize_sequence_text("5tne"), "5tn");
+        let (reparsed, normalized) = parse_s5b_duty_text("5tne");
+        assert_eq!(normalized, "5tn");
+        assert_eq!(
+            reparsed.values[0] & rp2a03_core::sequencer::S5B_MODE_ENVELOPE,
+            0
+        );
     }
 
     #[test]

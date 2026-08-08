@@ -14,7 +14,7 @@ use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::s5b_audio::Sunsoft;
 use rp2a03_core::sequencer::Sequence;
 use rp2a03_core::sequencer::{
-    ArpMode, PitchMode, S5B_MODE_ENVELOPE, S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK,
+    ArpMode, PitchMode, S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK,
     SeqState, SequencePlayer, VolMode, VolMode5B,
 };
 use rp2a03_core::software_lfo::SoftwareLfo;
@@ -1136,15 +1136,18 @@ impl MidiHandler {
             self.gate = false;
         }
 
-        // 2. Duty/mode byte: low 5 bits are the noise period, top 3 are the
-        //    Envelope/Square/Noise flags (`CSeqInstHandlerS5B::ProcessSequence`).
+        // 2. Duty/mode byte: low 5 bits are the noise period, the Tone/Noise
+        //    flags sit above them (`CSeqInstHandlerS5B::ProcessSequence`).
+        //    With no duty sequence the default is tone-on, matching dn's
+        //    `m_iDefaultDuty = S5B_MODE_SQUARE` — otherwise an instrument
+        //    without a duty sequence would have both mixer bits disabled and
+        //    play nothing at all.
         let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
             self.duty_seq_player.value()
         } else {
-            0
+            S5B_MODE_SQUARE
         };
         let noise_period = (duty_val & S5B_PERIOD_MASK) as u8;
-        let envelope_flag = duty_val & S5B_MODE_ENVELOPE != 0;
         let square_flag = duty_val & S5B_MODE_SQUARE != 0;
         let noise_flag = duty_val & S5B_MODE_NOISE != 0;
 
@@ -1159,8 +1162,13 @@ impl MidiHandler {
         // 4. Tone/noise enable bits, gated by the channel's own gate state.
         sunsoft.set_tone_noise_enable(self.gate && square_flag, self.gate && noise_flag);
 
-        // 5. Volume/envelope-select.
-        sunsoft.write_volume_envelope(apu_vol, envelope_flag);
+        // 5. Constant volume. The chip's hardware envelope is never selected:
+        //    its period and shape are only reachable through dn's effect
+        //    columns, which a DAW-hosted synth has no equivalent of, so it
+        //    would only ever run as an untunable free-running ramp. The
+        //    duty/mode editor exposes Tone and Noise alone for the same
+        //    reason.
+        sunsoft.write_volume_envelope(apu_vol, false);
 
         // 6. Pitch application.
         self.apply_pitch_registers(&mut AnyChannel::S5B(sunsoft));

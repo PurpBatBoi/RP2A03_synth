@@ -3,7 +3,7 @@
 //! Custom painter elements for sequence visualization and interactive envelope editing.
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use rp2a03_core::sequencer::{S5B_MODE_ENVELOPE, S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK, Sequence};
+use rp2a03_core::sequencer::{S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK, Sequence};
 
 use super::theme;
 
@@ -880,7 +880,10 @@ pub fn draw_s5b_duty_noise_graph(
         return false;
     }
 
-    const FLAG_ROW_HEIGHT: f32 = 44.0f32;
+    // Two lanes at the same ~15px per button the three-lane layout used, so
+    // dropping the Envelope lane gives the period bar the row back instead of
+    // stretching the two that remain.
+    const FLAG_ROW_HEIGHT: f32 = 30.0f32;
     // Leaves the panel's own bottom border visible below the flag row instead
     // of the last row of buttons sitting flush against it.
     const BOTTOM_MARGIN: f32 = 4.0f32;
@@ -1187,12 +1190,15 @@ pub fn draw_s5b_duty_noise_graph(
         Sense::click_and_drag(),
     );
 
-    const FLAGS: [(i16, Color32); 3] = [
-        (S5B_MODE_ENVELOPE, theme::S5B_ENVELOPE_FLAG),
+    // dn has a third Envelope lane here; this synth omits it — the chip's
+    // hardware envelope has no period/shape control in a DAW host, so the
+    // flag could only ever select an untunable free-running ramp. See
+    // `apply_s5b_modulation`, which never sets the envelope-select bit.
+    const FLAGS: [(i16, Color32); 2] = [
         (S5B_MODE_SQUARE, theme::S5B_TONE_FLAG),
         (S5B_MODE_NOISE, theme::S5B_NOISE_FLAG),
     ];
-    const FLAG_LABELS: [&str; 3] = ["E", "T", "N"];
+    const FLAG_LABELS: [&str; 2] = ["T", "N"];
     let button_h = flag_rect.height() / FLAGS.len() as f32;
 
     let drag_id = ui.make_persistent_id("s5b_flag_drag_state");

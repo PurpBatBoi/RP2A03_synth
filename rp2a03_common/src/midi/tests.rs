@@ -10,7 +10,7 @@ use rp2a03_core::apu_pulse::{Pulse, PulseChannel};
 use rp2a03_core::apu_triangle::Triangle;
 use rp2a03_core::s5b_audio::Sunsoft;
 use rp2a03_core::sequencer::{
-    ArpMode, PitchMode, S5B_MODE_ENVELOPE, S5B_MODE_NOISE, S5B_MODE_SQUARE, SeqState, Sequence,
+    ArpMode, PitchMode, S5B_MODE_NOISE, S5B_MODE_SQUARE, SeqState, Sequence,
     VolMode, VolMode5B,
 };
 use rp2a03_core::vrc6_pulse::Vrc6Pulse;
@@ -1143,10 +1143,7 @@ fn s5b_gate_off_disables_tone_and_noise() {
 #[test]
 fn s5b_duty_byte_splits_period_and_flags_to_the_right_registers() {
     let mut seqs = ActiveSequences {
-        duty_seq: Sequence::parse(&format!(
-            "{}",
-            (S5B_MODE_SQUARE | S5B_MODE_NOISE | S5B_MODE_ENVELOPE) | 0x0A
-        )),
+        duty_seq: Sequence::parse(&format!("{}", (S5B_MODE_SQUARE | S5B_MODE_NOISE) | 0x0A)),
         duty_enabled: true,
         vol_seq: Sequence::parse("15"),
         vol_enabled: true,
@@ -1167,8 +1164,31 @@ fn s5b_duty_byte_splits_period_and_flags_to_the_right_registers() {
     assert_eq!(sunsoft.psg().reg(6), 0x0A);
     // Tone (bit 0) and noise (bit 3) both enabled -> both bits clear.
     assert_eq!(sunsoft.psg().reg(7) & 0x09, 0);
-    // Envelope-select bit (D4) set in reg 8.
-    assert_eq!(sunsoft.psg().reg(8) & 0x10, 0x10);
+    // Envelope-select bit (D4) is never set — this synth has no envelope
+    // period/shape control, so constant volume is the only volume source.
+    assert_eq!(sunsoft.psg().reg(8) & 0x10, 0);
+}
+
+#[test]
+fn s5b_without_a_duty_sequence_defaults_to_tone_on() {
+    // dn's `m_iDefaultDuty = S5B_MODE_SQUARE`: an instrument with no duty
+    // sequence plays a plain tone rather than sitting silent with both mixer
+    // bits disabled.
+    let seqs = ActiveSequences {
+        duty_enabled: false,
+        ..default_seqs()
+    };
+
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::S5B;
+    handler.hardware_volume = 15;
+    let mut sunsoft = Sunsoft::new();
+
+    handler.note_on(60, 127, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
+    handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
+
+    // Tone enabled (bit 0 clear), noise still disabled (bit 3 set).
+    assert_eq!(sunsoft.psg().reg(7) & 0x09, 0x08);
 }
 
 #[test]
