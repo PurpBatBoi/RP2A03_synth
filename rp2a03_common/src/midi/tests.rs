@@ -1173,23 +1173,24 @@ fn s5b_duty_byte_splits_period_and_flags_to_the_right_registers() {
 }
 
 #[test]
-fn s5b_period_follows_the_tracker_table_not_the_datasheet() {
-    // dn `CDetuneS5B::FrequencyToPeriod` (`DetuneTable.cpp:245`) is
-    // `lround(BASE_FREQ_NTSC / (Freq * 16))`, and FamiStudio's
-    // `ChannelStateS5B.cs:87` lands on the identical value. The chip then
-    // plays `clk / (32 * TP)`, so S5B sounds an octave below the written note
-    // in both trackers — and here. Using the datasheet's `/ 32` would be
-    // hardware-true but would put this synth an octave above every tracker,
-    // so do not "correct" this. Worked example from the dn report: A-440.
-    assert_eq!(freq_to_s5b_period(440.0), 254);
-    let sounding = NTSC_CPU_CLOCK as f32 / (32.0 * 254.0);
+fn s5b_period_matches_the_written_note_not_the_trackers() {
+    // dn `CDetuneS5B::FrequencyToPeriod` (`DetuneTable.cpp:245`) and
+    // FamiStudio's `ChannelStateS5B.cs:87` both use `TP = round(clk / (16 *
+    // f))`, which — combined with the chip's own `f = clk / (32 * TP)` —
+    // makes S5B sound an octave below the written note in both trackers. This
+    // project deliberately does not follow that: `TP = round(clk / (32 * f))`
+    // is the hardware-true divisor, so S5B plays at the written note, matching
+    // the 2A03 pulse's pitch for the same key. Do not "correct" this back to
+    // `/ 16` — that would reintroduce the tracker octave offset.
+    assert_eq!(freq_to_s5b_period(440.0), 127);
+    let sounding = NTSC_CPU_CLOCK as f32 / (32.0 * 127.0);
     assert!(
-        (sounding - 220.0).abs() < 1.0,
-        "A-440 must sound near 220 Hz, got {sounding}"
+        (sounding - 440.0).abs() < 1.0,
+        "A-440 must sound near 440 Hz, got {sounding}"
     );
 
-    // TP is clamped away from 0 — it is a divisor — and to dn's own 0xFFF
-    // table ceiling.
+    // TP is clamped away from 0 — it is a divisor — and to the register's
+    // 12-bit range.
     assert_eq!(freq_to_s5b_period(0.0), 4095);
     assert_eq!(freq_to_s5b_period(1.0), 4095);
     assert_eq!(freq_to_s5b_period(1_000_000.0), 1);

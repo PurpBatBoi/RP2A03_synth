@@ -69,34 +69,35 @@ pub fn freq_to_vrc6_saw_period(freq: f32) -> u16 {
 
 /// Converts a frequency in Hz to a Sunsoft 5B tone period (12-bit).
 ///
-/// **This deliberately does not match the chip's own datasheet.** The 5B's
+/// **This deliberately does not match DnFamiTracker/FamiStudio.** The 5B's
 /// YM2149-compatible PSG runs at half the NES CPU clock and its tone generator
-/// divides that by a further 8, so the hardware-true relationship is
-/// `tone_freq = cpu_clock / (32 * TP)` — which would make `/ 32` here the
-/// "correct" divisor. Both trackers use `/ 16` instead:
+/// divides that by a further 8, giving the hardware-true relationship
+/// `tone_freq = cpu_clock / (32 * TP)` — used here.
 ///
-/// - DnFamiTracker, `CDetuneS5B::FrequencyToPeriod` (`DetuneTable.cpp:245`):
-///   `lround(BASE_FREQ_NTSC / (Freq * 16.0))`, with the source comment noting
-///   the NSF driver reuses the 2A03 NTSC note LUT for S5B, so the table was
-///   generated to match the driver rather than the chip.
+/// Both trackers instead use `TP = round(clk / (16 * f))`:
+///
+/// - DnFamiTracker, `CDetuneS5B::FrequencyToPeriod` (`DetuneTable.cpp:245`),
+///   with a source comment noting the NSF driver reuses the 2A03 NTSC note
+///   LUT for S5B, so the table was generated to match the driver rather than
+///   the chip.
 /// - FamiStudio, `ChannelStateS5B.cs:87`: takes the shared 2A03-style note
 ///   period (which has the `-1` baked in) and adds 1 back, landing on the
 ///   identical value.
 ///
-/// The consequence is that S5B sounds **one octave below the written note
-/// name** in both trackers, and now here. That is the de-facto standard for
-/// this chip, so content written against either tracker transfers; matching
-/// the datasheet instead would put this synth an octave above everything else.
+/// That makes S5B sound **one octave below the written note name** in both
+/// trackers. This project chose the opposite: S5B plays at the written note,
+/// matching the 2A03 pulse's pitch for the same MIDI key, at the cost of not
+/// matching content authored against either tracker.
 ///
 /// TP is not internally incremented by hardware (TP=0 behaves like TP=1), so
 /// unlike the triangle/VRC6-saw periods above there is no `-0.5` rounding bias
-/// to match a `period + 1` divisor. The 1..=4095 clamp is dn's own table range
-/// (`CDetuneTable(DETUNE_S5B, 0, 0xFFF, …)`); it bottoms out around A0.
+/// to match a `period + 1` divisor. The 1..=4095 clamp keeps TP a valid
+/// divisor and within the register's 12-bit range.
 pub fn freq_to_s5b_period(freq: f32) -> u16 {
     if freq <= 0.0 {
         return 4095;
     }
-    let t = NTSC_CPU_CLOCK as f32 / (16.0 * freq);
+    let t = NTSC_CPU_CLOCK as f32 / (32.0 * freq);
     t.round().clamp(1.0, 4095.0) as u16
 }
 
