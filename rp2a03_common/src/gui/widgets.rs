@@ -910,16 +910,20 @@ pub fn draw_s5b_duty_noise_graph(
         content_rect.max,
     );
     // Period area splits into a duty-width sub-bar (top) and noise-period
-    // sub-bar (bottom), same columns, half the height each.
+    // sub-bar (bottom), same columns, half the remaining height each with a
+    // gap between them so the two lanes read as separate graphs rather than
+    // one bar chart with a seam.
+    const SUB_BAR_GAP: f32 = 6.0f32;
+    let sub_bar_height = ((period_area_rect.height() - SUB_BAR_GAP) * 0.5f32).max(0.0f32);
     let duty_rect = Rect::from_min_max(
         period_area_rect.min,
         Pos2::new(
             period_area_rect.max.x,
-            period_area_rect.min.y + period_area_rect.height() * 0.5f32,
+            period_area_rect.min.y + sub_bar_height,
         ),
     );
     let period_rect = Rect::from_min_max(
-        Pos2::new(period_area_rect.min.x, duty_rect.max.y),
+        Pos2::new(period_area_rect.min.x, duty_rect.max.y + SUB_BAR_GAP),
         period_area_rect.max,
     );
 
@@ -948,6 +952,19 @@ pub fn draw_s5b_duty_noise_graph(
         };
         painter.rect_filled(col_rect, 0.0f32, bg_color);
     }
+
+    // The column stripes above run the full height of the content area, so the
+    // gap between the two sub-bars has to be painted back over in the panel
+    // color — otherwise the "gap" is just more striped background and the two
+    // lanes still read as one continuous graph.
+    painter.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(content_rect.min.x, duty_rect.max.y),
+            Pos2::new(content_rect.max.x, period_rect.min.y),
+        ),
+        0.0f32,
+        theme::PANEL,
+    );
 
     // Header interaction (Loop / Release points) — ported from
     // `draw_envelope_bar_graph`'s header block.
@@ -1503,11 +1520,17 @@ pub fn draw_s5b_duty_noise_graph(
     if let Some(step) = playhead_step.filter(|step| *step < num_steps) {
         let bar_x_min = content_rect.min.x + step as f32 * step_width;
         let bar_x_max = bar_x_min + step_width - 1.0f32;
-        let col_rect = Rect::from_min_max(
-            Pos2::new(bar_x_min, content_rect.min.y),
-            Pos2::new(bar_x_max, content_rect.max.y),
-        );
-        draw_playhead_rect(&painter, col_rect);
+        // Drawn per lane rather than as one full-height column, so the
+        // playhead doesn't paint a bridge back across the sub-bar gap.
+        for lane in [duty_rect, period_rect, flag_rect] {
+            draw_playhead_rect(
+                &painter,
+                Rect::from_min_max(
+                    Pos2::new(bar_x_min, lane.min.y),
+                    Pos2::new(bar_x_max, lane.max.y),
+                ),
+            );
+        }
     }
 
     // Min / Max labels for the period bar, same style as `draw_envelope_bar_graph`.

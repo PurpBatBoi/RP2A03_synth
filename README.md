@@ -9,8 +9,9 @@ directly by MIDI and host automation. So the plugin reproduces the actual quirks
 approximating them — though some deliberate liberties were taken for the sake of
 flexibility, see [Accuracy & Creative Liberties](#accuracy--creative-liberties).
 
-Beyond the stock 2A03 channels, the plugin also
-emulates the Konami **VRC6** (More soon!)
+Beyond the stock 2A03 channels, the plugin also emulates the Konami **VRC6**
+and the Sunsoft **5B** (More soon!) — see
+[Supported Chips](#supported-chips).
 On top of the emulation core sits a FamiTracker-style sequence engine
 (volume / arpeggio / pitch / hi-pitch / duty sequences with loop and release
 points) plus software vibrato/tremolo LFOs (Also from FamiTracker), so the instrument plays and automates
@@ -34,7 +35,8 @@ https://github.com/user-attachments/assets/d7d7984e-a96e-4002-8f1c-d2bf56444ee7
 
 - **Register-level 2A03 emulation** — pulse 1/2, triangle, noise, with real
   envelope, sweep, length counter, linear counter, and frame-counter behavior.
-- **VRC6 expansion audio** — VRC6 pulse and VRC6 sawtooth.
+- **VRC6 and Sunsoft 5B expansion audio** — see
+  [Supported Chips](#supported-chips).
 - **Band-limited output** — Blargg-style `blip_buf` synthesis resamples from the
   APU clock down to the host sample rate without aliasing.
 - **FamiTracker-style sequencer** — 5 sequence types × 128 slots, with loop (`|`)
@@ -55,14 +57,105 @@ https://github.com/user-attachments/assets/d7d7984e-a96e-4002-8f1c-d2bf56444ee7
   wheel takes over from the parameter and the parameter takes it back the moment
   it moves; Reset All Controllers (CC 121) hands both back to the parameters.
 
+## Supported Chips
+
+Each voice picks one waveform from the list below; every waveform gets the same
+sequencer, LFOs, portamento, and automation on top. The 2A03 is the console's
+own APU; the VRC6 and 5B are cartridge expansion chips that a handful of
+Japanese releases shipped with their own sound hardware.
+
+| Chip | Waveforms in this plugin | Where you'd have heard it |
+|---|---|---|
+| **Ricoh 2A03** (stock NES APU) | Pulse (2A03 duties), Triangle, Noise | Essentially every NES game |
+| **Konami VRC6** | VRC6 Pulse, VRC6 Sawtooth | *Akumajō Densetsu* (JP *Castlevania III*), *Madara*, *Esper Dream 2* |
+| **Sunsoft 5B** | S5B (PSG tone + noise) | *Gimmick!*, *Batman: Return of the Joker* |
+
+The 2A03's DPCM/sample channel is **not** implemented — this is a synthesizer,
+and DPCM is a sample-playback channel with nothing to synthesize.
+
+### Ricoh 2A03 — the stock APU
+
+- **Pulse 1 & 2** — 4 duty cycles (12.5% / 25% / 50% / 75%), hardware envelope,
+  length counter, and the real sweep unit including pulse 1's off-by-one negate
+  quirk.
+- **Triangle** — 32-step stepped waveform with the linear counter. On hardware
+  it has no volume control at all; here it responds to volume and volume
+  sequences (see [Accuracy & Creative Liberties](#accuracy--creative-liberties)).
+- **Noise** — 15-bit LFSR with both tap modes (long "hiss" and short "tone"),
+  16 hardware periods. Has no pitch/hi-pitch or duty lanes, matching the chip.
+
+### Konami VRC6
+
+- **VRC6 Pulse** — 8 duty cycles (6.25% .. 50% in 1/16 steps, twice the 2A03's
+  four) plus the "ignore duty" mode that forces the output high for a constant
+  DC level. Unlike the 2A03's fixed waveform table, the duty here is a
+  programmable threshold against a free-running 16-step counter.
+- **VRC6 Sawtooth** — the chip's accumulator-based saw, a waveform the stock
+  2A03 simply cannot make. Its volume lane is 6-bit (64 steps) rather than 4-bit,
+  because the saw's accumulator rate register is wider than a normal volume
+  register.
+
+### Sunsoft 5B — an AY-3-8910 with a bit of AY8930 grafted on
+
+This is the most interesting one, and it is **deliberately not a pure 5B**.
+
+The real Sunsoft 5B is a Yamaha YM2149 (an AY-3-8910 derivative) sitting on the
+cartridge: three square-wave tone channels, one shared noise generator, one
+hardware envelope. Its stock tone generator is a plain 50% square with no duty
+control whatsoever.
+
+The **AY8930** is a later, backward-compatible superset of that same PSG family.
+In its "expanded mode" it adds, among other things, nine selectable tone duty
+widths. It was never the chip on a Sunsoft cartridge — but the two are close
+enough relatives that its duty feature ports cleanly onto the 5B's tone
+generator.
+
+So this plugin's S5B is a hybrid:
+
+| Feature | Behavior here | Source |
+|---|---|---|
+| Tone generator | 12-bit period, three channels | AY-3-8910 / YM2149 (stock 5B) |
+| **Tone duty width** | **9 presets, 3.125% .. 96.875%** | **AY8930 expanded mode** |
+| Noise generator | 17-bit LFSR, 5-bit period, shared | stock 5B |
+| Mixer | Per-step tone/noise enable, active-low | stock 5B |
+| Volume | 5-bit (32-step) logarithmic ladder | stock 5B |
+| Hardware envelope | **not implemented** — see below | — |
+
+**The duty width** is the AY8930 part. It uses that chip's own nine 32-bit duty
+patterns rather than a re-derived approximation, indexed by the tone's position
+in its current wave — so index 4 (50%) reproduces exactly the plain square a
+stock 5B produces, and the other eight are genuine AY8930 ratios. It
+lives in the **Noise / Mode** sequence lane as a second bar graph stacked above
+the noise period, so duty width is per-step and automatable like everything
+else. It only affects the tone generator's mark/space ratio and is fully
+orthogonal to tone/noise mixing.
+
+**The hardware envelope is deliberately absent.** The chip has one, but its
+period and shape are only reachable through tracker effect columns, which a
+DAW-hosted synth has no equivalent of — it could therefore only ever run as an
+untunable free-running ramp. The volume lane covers the musically useful part.
+
+Two more 5B-specific choices worth knowing:
+
+- **Volume resolution.** The 5B's volume register is 5-bit, and its ladder is
+  logarithmic at roughly 1.5 dB per step. The volume lane offers 16-step
+  (default) or 32-step mode. 16-step maps *linearly onto loudness* so the lane
+  behaves like the 2A03 pulse's lane; 32-step drives the ladder index directly
+  for the chip's true resolution, including the 16 levels the 4-bit register
+  cannot even address.
+- **Noise pitch direction.** Register 6 is a divider, so raising it *lowers* the
+  pitch. The editor inverts it, so dragging the noise bar up raises the pitch,
+  following dnFamiTracker's convention rather than the raw register.
+
 ## Accuracy & Creative Liberties
 
 **This is not a 100% hardware-accurate emulation, and it isn't trying to be.**
 The per-channel building blocks — timers, envelopes, sweep, length/linear
 counters, the frame counter, the duty sequencers — are modeled at the register
 level. But this is a *synthesizer*, not an emulator, so a number of deliberate
-liberties were taken where strict accuracy would just make the instrument
-annoying to use:
+liberties were taken — mostly where strict accuracy would just make the
+instrument annoying to use, and in one case (the 5B's duty width) where a
+sibling chip had something worth stealing:
 
 - **Voice count.** Real hardware gives you exactly two pulse channels, one
   triangle, and one noise. Here every voice owns its own full set of channel
@@ -84,6 +177,24 @@ annoying to use:
   would happily click.
 - **Pitch.** Fine-pitch and hi-pitch offsets extend beyond what a period-register
   write alone would give you on hardware.
+- **The Sunsoft 5B is a hybrid chip that never existed.** Every other liberty on
+  this list *removes* a hardware limit; this one *adds* a feature from a
+  different chip. The real 5B's tone generator is a fixed 50% square with no
+  duty control at all — the nine duty widths here (3.125% .. 96.875%) come from
+  the **AY8930**, a later superset of the same PSG family that no Sunsoft
+  cartridge ever carried. The two chips are close enough relatives that the
+  feature drops in cleanly, and the default (50%) is exactly the stock square,
+  so a patch that never touches the width is a faithful 5B. Reach for the other
+  eight and you are playing hardware that was never manufactured. See
+  [Supported Chips](#supported-chips).
+- **5B volume curve.** The chip's 5-bit volume ladder is logarithmic (~1.5 dB
+  per step), so a half-height lane is about −21 dB, not −6 dB. The default
+  16-step volume mode remaps the lane *linearly onto loudness* so it behaves
+  like the 2A03 pulse's lane instead — a deliberate divergence from both the
+  chip and dnFamiTracker. The 32-step mode is the raw ladder if you want it.
+- **5B hardware envelope.** Not implemented, deliberately. Its period and shape
+  are only reachable through tracker effect columns, so in a DAW it could only
+  ever be an untunable free-running ramp.
 
 The intent is that anything sounding like the NES sounds *right*, while none of
 the hardware's arbitrary limits stop you from writing music. If you need
@@ -102,6 +213,7 @@ RP2A03-SYNTH/
 │   │   ├── vrc6_common.rs     # Divider
 │   │   ├── vrc6_pulse.rs      # Vrc6Pulse
 │   │   ├── vrc6_saw.rs        # Vrc6Saw
+│   │   ├── s5b_audio.rs       # Sunsoft, Psg (5B tone/noise/duty)
 │   │   ├── sequencer.rs       # Sequence / SequencePlayer, PitchMode/ArpMode/VolMode
 │   │   ├── software_lfo.rs    # SoftwareLfo (vibrato / tremolo)
 │   │   ├── blip_buf.rs        # band-limited resampling
@@ -397,9 +509,11 @@ produces the same zip as a build artifact but does not create a release.
 | Noise | done | `rp2a03_core/src/apu_noise.rs` |
 | VRC6 pulse | done | `rp2a03_core/src/vrc6_pulse.rs` |
 | VRC6 sawtooth | done | `rp2a03_core/src/vrc6_saw.rs` |
+| Sunsoft 5B (PSG) | done | `rp2a03_core/src/s5b_audio.rs` |
+| 5B hardware envelope | not planned — see [Supported Chips](#supported-chips) | — |
 | FDS wavetable | planned | — |
 | Namco 163 | planned | — |
-| Sunsoft 5B (SSG) | planned | — |
+| 2A03 DPCM | not planned (sample playback, not synthesis) | — |
 
 ---
 
@@ -417,6 +531,12 @@ authors and projects below:
 * **[MesenCE](https://github.com/nesdev-org/MesenCE)** (License: **GPL-3.0-or-later**)
   * *Author*: SourMesen
   * *Contribution*: The original C++ VRC6 Pulse and Saw Wave implementations
+* **[emu2149](https://github.com/digital-sound-antiques/emu2149)** (License: **MIT**)
+  * *Authors*: Mitsutaka Okazaki, with envelope/noise fixes by alexmush
+  * *Contribution*: The Sunsoft 5B's PSG core in `rp2a03_core/src/s5b_audio.rs` — tone/noise/envelope generators and both volume tables — is adapted from emu2149. The register-select latch and channel-enable masking around it are adapted from **Nes_Sunsoft** (FamiStudio's 5B wrapper for Nes_Snd_Emu) by [@NesBleuBleu](https://github.com/BleuBleu).
+* **[Furnace Tracker](https://github.com/tildearrow/furnace)** (License: **GPL-2.0-or-later**)
+  * *Author*: tildearrow and contributors
+  * *Contribution*: The AY8930 duty-cycle implementation in `ay8910.cpp` — the nine 32-bit duty patterns and the phase-counter approach that indexes them — is the reference for this plugin's S5B tone duty width.
 
 ---
 

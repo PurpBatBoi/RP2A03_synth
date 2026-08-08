@@ -421,7 +421,7 @@ impl Psg {
         self.reg[reg] = val;
 
         match reg {
-            0 | 1 | 2 | 3 | 4 | 5 => {
+            0..=5 => {
                 let c = reg >> 1;
                 self.freq[c] =
                     (u16::from(self.reg[c * 2 + 1] & 0x0f) << 8) | u16::from(self.reg[c * 2]);
@@ -437,7 +437,7 @@ impl Psg {
                 self.noise_disable[1] = val & 0x10 != 0;
                 self.noise_disable[2] = val & 0x20 != 0;
             }
-            8 | 9 | 10 => {
+            8..=10 => {
                 // The masked write value is 5 bits (D4..D0: envelope-select
                 // + 4-bit volume). It's shifted left one and OR'd with 1
                 // before storing, so the stored byte's bit 5 is the
@@ -768,10 +768,11 @@ impl Sunsoft {
         let addr = u32::from(addr);
         if addr >= u32::from(REG_SELECT_BASE) && addr < u32::from(REG_SELECT_BASE) + u32::from(REG_RANGE) {
             self.selected_reg = data;
-        } else if addr >= u32::from(REG_WRITE_BASE) && addr < u32::from(REG_WRITE_BASE) + u32::from(REG_RANGE) {
-            if let Some(slot) = self.shadow_regs.get_mut(self.selected_reg as usize & 0x0f) {
-                *slot = Some(data);
-            }
+        } else if addr >= u32::from(REG_WRITE_BASE)
+            && addr < u32::from(REG_WRITE_BASE) + u32::from(REG_RANGE)
+            && let Some(slot) = self.shadow_regs.get_mut(self.selected_reg as usize & 0x0f)
+        {
+            *slot = Some(data);
         }
     }
 
