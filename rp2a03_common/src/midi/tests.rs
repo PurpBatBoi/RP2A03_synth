@@ -1160,13 +1160,42 @@ fn s5b_duty_byte_splits_period_and_flags_to_the_right_registers() {
     handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
 
     // Noise period (reg 6) gets the low 5 bits, only written because the
-    // noise flag is set.
-    assert_eq!(sunsoft.psg().reg(6), 0x0A);
+    // noise flag is set, and inverted on the way out like dn's `UpdateRegs`.
+    assert_eq!(sunsoft.psg().reg(6), 0x0A ^ 0x1F);
     // Tone (bit 0) and noise (bit 3) both enabled -> both bits clear.
     assert_eq!(sunsoft.psg().reg(7) & 0x09, 0);
     // Envelope-select bit (D4) is never set — this synth has no envelope
     // period/shape control, so constant volume is the only volume source.
     assert_eq!(sunsoft.psg().reg(8) & 0x10, 0);
+}
+
+/// Drives one S5B modulation pass with `period` in the duty byte's low 5 bits
+/// and the noise flag set, returning what reached register 6.
+fn s5b_noise_reg_for(period: i16) -> u8 {
+    let seqs = ActiveSequences {
+        duty_seq: Sequence::parse(&format!("{}", S5B_MODE_NOISE | period)),
+        duty_enabled: true,
+        ..default_seqs()
+    };
+
+    let mut handler = MidiHandler::new();
+    handler.channel_mode = ChannelMode::S5B;
+    handler.hardware_volume = 15;
+    let mut sunsoft = Sunsoft::new();
+
+    handler.note_on(60, 127, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
+    handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
+    sunsoft.psg().reg(6)
+}
+
+#[test]
+fn s5b_noise_period_bar_runs_high_is_bright() {
+    // Register 6 is a divider (0 = fastest LFSR), so dn inverts the sequence
+    // value on the way in to make a higher bar a higher-pitched noise. Writing
+    // it raw put a resting bar on the ultrasonic end and reversed the drag.
+    assert_eq!(s5b_noise_reg_for(0), 0x1F, "bar at rest -> slowest noise");
+    assert_eq!(s5b_noise_reg_for(31), 0x00, "bar at top -> fastest noise");
+    assert_eq!(s5b_noise_reg_for(8), 0x17);
 }
 
 #[test]

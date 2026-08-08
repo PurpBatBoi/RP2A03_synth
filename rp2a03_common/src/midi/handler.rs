@@ -1155,8 +1155,18 @@ impl MidiHandler {
         //    dn writing it conditionally in `HandleNote`. Every modulation
         //    tick is a superset of dn's note-trigger-only write, converging
         //    to the same steady state (see CoreHook.md §3, known simplification).
+        //
+        //    The value is inverted on the way to the register, exactly as dn's
+        //    `UpdateRegs` does (`WriteReg(0x06, s_iNoiseFreq ^ 0x1F)`), so a
+        //    higher bar in the editor is a *higher-pitched* noise. Register 6
+        //    itself runs the other way — it is a divider, so 0 is the fastest
+        //    LFSR and 0x1F the slowest — which is why writing it raw made a
+        //    bar at rest (0) land on the ~56 kHz end, ~15 dB down after
+        //    band-limiting, and made dragging the bar up walk the pitch down.
+        //    FamiStudio writes it raw instead; dn's direction is the one this
+        //    project follows.
         if noise_flag {
-            sunsoft.write_noise_period(noise_period);
+            sunsoft.write_noise_period(noise_period ^ S5B_PERIOD_MASK as u8);
         }
 
         // 4. Tone/noise enable bits, gated by the channel's own gate state.
