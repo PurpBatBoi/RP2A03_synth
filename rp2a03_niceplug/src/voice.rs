@@ -25,9 +25,10 @@ const TRIANGLE_AMPLITUDE_SCALE: i32 = 3000;
 /// `Sunsoft::output()` (one active PSG tone channel) tops out at `0xFF0`
 /// (4080) versus `Pulse::output()`'s max of 15 — scaled so a max-volume S5B
 /// note lands in the same ballpark as `AMPLITUDE_SCALE`'s pulse output
-/// (`15 * 1500 = 22500`). Not ear-verified against real hardware balance yet
-/// (see `.references/Implement-Plans-S5B/CoreHook.md` §2); revisit by
-/// listening once the mixer is exercised end-to-end.
+/// (`15 * 1500 = 22500`). Ear-verified in the mix and kept: this is a
+/// balance decision rather than a hardware measurement, same as the other
+/// per-channel scales here (see "Mixing" in the README's Accuracy &
+/// Creative Liberties).
 const S5B_AMPLITUDE_SCALE: i32 = 6;
 const ALLOCATION_RAMP_CLOCKS: u32 = 2048;
 
