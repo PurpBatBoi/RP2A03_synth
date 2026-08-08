@@ -61,6 +61,13 @@ impl VoiceBank {
         Ok(())
     }
 
+    /// Whether voice `index` would be skipped by `render_segment` this block.
+    /// Exposed for tests that pin the idle-skip behavior.
+    #[cfg(test)]
+    pub(crate) fn voice_is_idle(&self, index: usize) -> bool {
+        self.voices[index].is_idle()
+    }
+
     /// Largest block one `render_segment` call may cover.
     ///
     /// Every voice shares the same resampler configuration, so voice 0 speaks
@@ -265,11 +272,19 @@ impl VoiceBank {
             .iter_mut()
             .zip(self.master_gains.iter().copied())
         {
-            for clock in 0..clocks_needed {
-                let channel_output = voice.clock_channel_output();
-                let delta = voice.advance_output(channel_output, gain);
-                if delta != 0 {
-                    voice.blip.add_delta(clock, delta);
+            // An idle voice would clock its chip model `clocks_needed` times
+            // (~40 per output sample) only to add a delta of zero every time,
+            // so the whole loop is skipped. `end_frame` still runs: it is what
+            // advances the buffer's `avail`/`offset`, and skipping it would
+            // desynchronize this voice's timeline from the others that did
+            // render. See `Voice::is_idle` for why this is bit-identical.
+            if !voice.is_idle() {
+                for clock in 0..clocks_needed {
+                    let channel_output = voice.clock_channel_output();
+                    let delta = voice.advance_output(channel_output, gain);
+                    if delta != 0 {
+                        voice.blip.add_delta(clock, delta);
+                    }
                 }
             }
             voice.blip.end_frame(clocks_needed);

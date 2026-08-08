@@ -236,6 +236,59 @@ fn repeated_note_fifo_render_matches_golden_output() {
 }
 
 // ---------------------------------------------------------------------------
+// Idle-voice skipping
+// ---------------------------------------------------------------------------
+
+/// The voice count is the *configured* maximum, not the number of voices
+/// sounding, so an 8-voice bank playing one note used to clock eight full chip
+/// models every block. `Voice::is_idle` skips the silent ones.
+///
+/// This pins the property the skip depends on: a voice that has never been
+/// given a note is idle, and a voice holding one is not.
+#[test]
+fn untouched_voices_are_idle_while_a_playing_voice_is_not() {
+    let mut harness = Harness::new(5, true, MAX_VOICES as i32);
+    harness.block(&[note_on(0, 60, 1.0)], 256);
+
+    assert!(
+        !harness.plugin.voices.voice_is_idle(0),
+        "the voice holding the note must not be skipped"
+    );
+    assert!(
+        (1..MAX_VOICES).all(|i| harness.plugin.voices.voice_is_idle(i)),
+        "voices that were never given a note must be skipped"
+    );
+}
+
+/// A released voice must eventually become skippable, or the optimization
+/// never actually fires for voices that have been played.
+#[test]
+fn a_released_voice_becomes_idle_once_it_has_settled() {
+    let mut harness = Harness::new(5, true, MAX_VOICES as i32);
+    harness
+        .block(&[note_on(0, 60, 1.0)], 256)
+        .block(&[note_off(0, 60)], 4096);
+
+    assert!(
+        harness.plugin.voices.voice_is_idle(0),
+        "a fully released voice must become skippable"
+    );
+}
+
+/// The skip is only sound if a skipped voice contributes silence. Rendering a
+/// polyphonic block with nothing playing must produce exactly zero.
+#[test]
+fn an_idle_polyphonic_bank_renders_silence() {
+    let mut harness = Harness::new(5, true, MAX_VOICES as i32);
+    harness.block(&[], 1024);
+    assert_eq!(
+        harness.peak(),
+        0.0,
+        "a bank with no notes must render pure silence"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Block splitting
 // ---------------------------------------------------------------------------
 

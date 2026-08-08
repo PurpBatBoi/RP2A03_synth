@@ -220,6 +220,33 @@ impl Voice {
         midi_handler.apply_current_modulation(&mut channel, seqs)
     }
 
+    /// Whether this voice provably contributes nothing to the coming segment,
+    /// so its per-clock emulation can be skipped entirely.
+    ///
+    /// Worth having because the voice count is the *configured* maximum, not
+    /// the number of voices actually sounding: with polyphony on and 8 voices
+    /// allowed, an idle bank would otherwise clock eight full chip models at
+    /// ~40 APU clocks per output sample whether or not anything is playing.
+    ///
+    /// The conditions are what make the skip bit-identical rather than an
+    /// approximation:
+    ///
+    /// - **Gate closed.** Every channel's `clock_channel_output` returns a
+    ///   hard `0` while ungated, so no clocking can produce a nonzero level.
+    ///   Release tails hold the gate open, so a releasing voice is not idle.
+    /// - **`last_output` already 0.** This covers the triangle, whose DAC
+    ///   deliberately holds its last level across the gate rather than
+    ///   snapping to zero — a held level is a pending delta, so the voice is
+    ///   not idle until it has settled.
+    /// - **No allocation ramp pending.** A ramp is mid-flight output.
+    ///
+    /// With all three true, every `advance_output` this segment would compute
+    /// a delta of `0 - 0` and add nothing to the BlipBuf. The caller still has
+    /// to run the buffer's frame bookkeeping — see `render_segment`.
+    pub(crate) fn is_idle(&self) -> bool {
+        !self.midi_handler.gate() && self.last_output == 0 && self.allocation_ramp_clocks == 0
+    }
+
     /// Advances the currently selected channel by one APU clock and returns its
     /// raw (pre-gain) DAC level.
     pub(crate) fn clock_channel_output(&mut self) -> i32 {
