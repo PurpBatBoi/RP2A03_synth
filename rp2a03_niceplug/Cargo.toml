@@ -30,3 +30,5 @@ egui = { workspace = true }
 parking_lot = { workspace = true }
 egui_extras = { workspace = true }
 image = { workspace = true }
+ctor = { workspace = true }
+dirs = { workspace = true }

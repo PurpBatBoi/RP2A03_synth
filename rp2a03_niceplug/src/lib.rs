@@ -27,3 +27,26 @@ pub use plugin::Rp2a03Plugin;
 
 nice_export_clap!(Rp2a03Plugin);
 nice_export_vst3!(Rp2a03Plugin);
+
+/// Points nice-plug's crash logger at a fixed file before the host makes its first call into
+/// this library (nice-plug's own `setup_logger()` runs on that first call and locks in whatever
+/// `NICE_LOG` says then). Without this, panics log to STDERR or WinDbg, which no host user can
+/// find — this way a crash always leaves a file the user can attach to a bug report. Leaves
+/// `NICE_LOG` alone if the user already set it.
+#[ctor::ctor(unsafe)]
+fn point_crash_log_at_a_file() {
+    if std::env::var_os("NICE_LOG").is_some() {
+        return;
+    }
+    let Some(mut log_dir) = dirs::data_local_dir() else {
+        return;
+    };
+    log_dir.push("rp2a03_synth");
+    if std::fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+    log_dir.push("crash.log");
+    // SAFETY: ctors run at library load time, before the host creates any thread that could
+    // race on the environment.
+    unsafe { std::env::set_var("NICE_LOG", log_dir) };
+}

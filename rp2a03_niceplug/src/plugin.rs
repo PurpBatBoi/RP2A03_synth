@@ -199,10 +199,16 @@ impl Plugin for Rp2a03Plugin {
         self.mono_buf
             .resize(buffer_config.max_buffer_size as usize, 0.0);
         self.reset_state();
+        nice_log!(
+            "activated at {} Hz, max buffer {} samples",
+            self.sample_rate,
+            buffer_config.max_buffer_size
+        );
         true
     }
 
     fn reset(&mut self) {
+        nice_log!("voice state reset");
         self.reset_state();
     }
 

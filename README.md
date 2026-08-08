@@ -506,6 +506,23 @@ RP2A03_synth/
 The workflow can also be run manually from the Actions tab; a manual run
 produces the same zip as a build artifact but does not create a release.
 
+## Reporting Crashes
+
+This is alpha software. If your DAW hangs or crashes with this plugin loaded,
+check for a crash log before filing an issue — the plugin logs the panic
+message, thread, and backtrace to a fixed file on load, so it survives even
+though the host itself gives you nothing useful:
+
+| Platform | Crash log location |
+|---|---|
+| Windows | `%LOCALAPPDATA%\rp2a03_synth\crash.log` |
+| macOS | `~/Library/Application Support/rp2a03_synth/crash.log` |
+| Linux | `$XDG_DATA_HOME/rp2a03_synth/crash.log` (falls back to `~/.local/share/rp2a03_synth/crash.log`) |
+
+Attach that file's contents to your bug report. Set the `NICE_LOG` environment
+variable to a different path before launching your DAW to redirect it
+elsewhere.
+
 ## Feature status
 
 | Component | Status | Location |
