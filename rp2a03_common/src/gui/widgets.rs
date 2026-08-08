@@ -3,7 +3,9 @@
 //! Custom painter elements for sequence visualization and interactive envelope editing.
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use rp2a03_core::sequencer::{S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK, Sequence};
+use rp2a03_core::sequencer::{
+    S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK, Sequence, s5b_duty_index, s5b_set_duty_index,
+};
 
 use super::theme;
 
@@ -899,13 +901,26 @@ pub fn draw_s5b_duty_noise_graph(
         Pos2::new(rect.min.x, rect.max.y - HEADER_HEIGHT - BOTTOM_MARGIN),
         Pos2::new(rect.max.x, rect.max.y - BOTTOM_MARGIN),
     );
-    let period_rect = Rect::from_min_max(
+    let period_area_rect = Rect::from_min_max(
         content_rect.min,
         Pos2::new(content_rect.max.x, content_rect.max.y - FLAG_ROW_HEIGHT),
     );
     let flag_rect = Rect::from_min_max(
         Pos2::new(content_rect.min.x, content_rect.max.y - FLAG_ROW_HEIGHT),
         content_rect.max,
+    );
+    // Period area splits into a duty-width sub-bar (top) and noise-period
+    // sub-bar (bottom), same columns, half the height each.
+    let duty_rect = Rect::from_min_max(
+        period_area_rect.min,
+        Pos2::new(
+            period_area_rect.max.x,
+            period_area_rect.min.y + period_area_rect.height() * 0.5f32,
+        ),
+    );
+    let period_rect = Rect::from_min_max(
+        Pos2::new(period_area_rect.min.x, duty_rect.max.y),
+        period_area_rect.max,
     );
 
     let header_response = ui.interact(
@@ -1048,6 +1063,146 @@ pub fn draw_s5b_duty_noise_graph(
             }
         }
     }
+
+    //------------------------------------------------------
+    // Duty-width bar graph (0..=8), stacked above the noise-period bar.
+    //------------------------------------------------------
+    let duty_response = ui.interact(
+        duty_rect,
+        ui.make_persistent_id("s5b_duty_area"),
+        Sense::click_and_drag(),
+    );
+
+    let duty_draw_drag_id = ui.make_persistent_id("s5b_duty_draw_last_pos");
+    let duty_line_draw_id = ui.make_persistent_id("s5b_duty_line_draw_state");
+
+    let duty_y_to_value = |value: i16, y: f32| -> i16 {
+        let rel_y = (y - duty_rect.min.y).clamp(0.0, duty_rect.height());
+        let norm_y = if duty_rect.height() > 0.0 {
+            1.0 - rel_y / duty_rect.height()
+        } else {
+            0.0
+        };
+        let new_index = ((norm_y * 9.0).floor() as i16).clamp(0, 8);
+        s5b_set_duty_index(value, new_index)
+    };
+
+    if (duty_response.dragged_by(egui::PointerButton::Primary)
+        || duty_response.clicked_by(egui::PointerButton::Primary))
+        && let Some(pointer_pos) = duty_response.interact_pointer_pos()
+    {
+        let last_pos: Option<Pos2> = ui.ctx().data_mut(|d| d.get_temp(duty_draw_drag_id));
+        let p0 = last_pos.unwrap_or(pointer_pos);
+        let p1 = pointer_pos;
+
+        for_each_step_between(duty_rect, step_width, num_steps, p0, p1, 0.0, |s, y| {
+            let new_value = duty_y_to_value(seq.values[s], y);
+            if new_value != seq.values[s] {
+                seq.values[s] = new_value;
+                changed = true;
+            }
+        });
+
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(duty_draw_drag_id, pointer_pos));
+    }
+
+    if duty_response.drag_started_by(egui::PointerButton::Secondary)
+        && let Some(pointer_pos) = duty_response.interact_pointer_pos()
+    {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                duty_line_draw_id,
+                LineDrawState {
+                    start: pointer_pos,
+                    last: pointer_pos,
+                    tension: 0.0,
+                },
+            );
+        });
+    }
+
+    if duty_response.dragged_by(egui::PointerButton::Secondary)
+        && let Some(pointer_pos) = duty_response.interact_pointer_pos()
+        && let Some(mut state) = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<LineDrawState>(duty_line_draw_id))
+    {
+        state.last = pointer_pos;
+
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll_delta.abs() > 0.0f32 {
+            state.tension = (state.tension + scroll_delta * 0.003f32).clamp(-1.0, 1.0);
+        }
+
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(duty_line_draw_id, state));
+
+        for_each_step_between(
+            duty_rect,
+            step_width,
+            num_steps,
+            state.start,
+            state.last,
+            state.tension,
+            |s, y| {
+                let new_value = duty_y_to_value(seq.values[s], y);
+                if new_value != seq.values[s] {
+                    seq.values[s] = new_value;
+                    changed = true;
+                }
+            },
+        );
+    }
+
+    if duty_response.drag_stopped_by(egui::PointerButton::Secondary)
+        || duty_response.lost_focus()
+        || !duty_response.hovered()
+        || !ui.input(|i| i.pointer.secondary_down())
+    {
+        ui.ctx()
+            .data_mut(|d| d.remove_temp::<LineDrawState>(duty_line_draw_id));
+    }
+
+    if duty_response.drag_stopped_by(egui::PointerButton::Primary)
+        || !ui.input(|i| i.pointer.primary_down())
+    {
+        ui.ctx().data_mut(|d| {
+            d.remove_temp::<Pos2>(duty_draw_drag_id);
+        });
+    }
+
+    for i in 0..num_steps {
+        let duty = s5b_duty_index(seq.values[i]).clamp(0, 8);
+
+        let bar_x_min = duty_rect.min.x + i as f32 * step_width;
+        let bar_x_max = bar_x_min + step_width - 1.0f32;
+        let norm_val = duty as f32 / 8.0f32;
+        let bar_y_min = duty_rect.max.y - (norm_val * duty_rect.height());
+        let bar_rect = Rect::from_min_max(
+            Pos2::new(bar_x_min, bar_y_min),
+            Pos2::new(bar_x_max, duty_rect.max.y),
+        );
+        painter.rect_filled(bar_rect, 1.0f32, theme::S5B_TONE_FLAG);
+    }
+
+    draw_line_draw_preview(&painter, ui.ctx().data(|d| d.get_temp(duty_line_draw_id)));
+
+    // Min / Max labels for the duty bar.
+    painter.text(
+        Pos2::new(duty_rect.min.x + 6.0f32, duty_rect.min.y + 2.0f32),
+        egui::Align2::LEFT_TOP,
+        "8",
+        egui::FontId::proportional(11.0f32),
+        Color32::from_rgb(160, 160, 160),
+    );
+    painter.text(
+        Pos2::new(duty_rect.min.x + 6.0f32, duty_rect.max.y - 14.0f32),
+        egui::Align2::LEFT_TOP,
+        "0",
+        egui::FontId::proportional(11.0f32),
+        Color32::from_rgb(160, 160, 160),
+    );
 
     //------------------------------------------------------
     // Upper region: noise-period bar graph (0..=31).

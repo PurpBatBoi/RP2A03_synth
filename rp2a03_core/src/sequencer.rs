@@ -80,6 +80,32 @@ pub const S5B_MODE_NOISE: i16 = 0x80;
 /// Mask for the noise-period bits of an S5B duty/mode step value.
 pub const S5B_PERIOD_MASK: i16 = 0x1F;
 
+/// Shift/mask for the tone duty-width bits of an S5B duty/mode step value
+/// (bits 8-11), holding a signed offset from AY8930 duty preset index 4
+/// (50%, stock behavior) so bit pattern 0 reads as "unset = 50%" for
+/// sequences authored before this field existed. Valid decoded index range
+/// is 0..=8 (3.125%..96.875%), i.e. offset -4..=4.
+pub const S5B_DUTY_SHIFT: i16 = 8;
+pub const S5B_DUTY_MASK: i16 = 0x0F << S5B_DUTY_SHIFT;
+/// Duty preset index that offset 0 (bit pattern 0) decodes to.
+pub const S5B_DUTY_DEFAULT_INDEX: i16 = 4;
+
+/// Decodes the duty preset index (0..=8) packed into an S5B step value.
+pub fn s5b_duty_index(value: i16) -> i16 {
+    let raw = (value & S5B_DUTY_MASK) >> S5B_DUTY_SHIFT;
+    // Sign-extend the 4-bit field (two's complement) before adding the
+    // default offset, so e.g. 0xF (-1) still decodes to index 3, not 19.
+    let offset = (raw << 12) >> 12;
+    S5B_DUTY_DEFAULT_INDEX + offset
+}
+
+/// Packs a duty preset index (0..=8) into an S5B step value, preserving all
+/// other bits.
+pub fn s5b_set_duty_index(value: i16, index: i16) -> i16 {
+    let offset = index.clamp(0, 8) - S5B_DUTY_DEFAULT_INDEX;
+    (value & !S5B_DUTY_MASK) | ((offset << S5B_DUTY_SHIFT) & S5B_DUTY_MASK)
+}
+
 #[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
@@ -439,6 +465,29 @@ mod tests {
     fn test_pitch_mode_defaults() {
         let seq = Sequence::default();
         assert_eq!(seq.pitch_mode, PitchMode::Relative);
+    }
+
+    #[test]
+    fn test_s5b_duty_index_unset_reads_as_default() {
+        assert_eq!(s5b_duty_index(0), S5B_DUTY_DEFAULT_INDEX);
+    }
+
+    #[test]
+    fn test_s5b_duty_index_roundtrip() {
+        for index in 0..=8 {
+            let value = s5b_set_duty_index(0, index);
+            assert_eq!(s5b_duty_index(value), index, "index {index} roundtrip");
+        }
+    }
+
+    #[test]
+    fn test_s5b_duty_index_preserves_other_bits() {
+        let value = S5B_PERIOD_MASK | S5B_MODE_SQUARE | S5B_MODE_NOISE;
+        let with_duty = s5b_set_duty_index(value, 0);
+        assert_eq!(with_duty & S5B_PERIOD_MASK, S5B_PERIOD_MASK);
+        assert_eq!(with_duty & S5B_MODE_SQUARE, S5B_MODE_SQUARE);
+        assert_eq!(with_duty & S5B_MODE_NOISE, S5B_MODE_NOISE);
+        assert_eq!(s5b_duty_index(with_duty), 0);
     }
 
     // ── SequencePlayer dn-parity tests ──
