@@ -1107,31 +1107,45 @@ impl MidiHandler {
 
         // 1. Volume: 16 or 32 steps depending on the volume sequence's own
         //    `VolMode5B` setting (dn stores this per-sequence, same as the
-        //    VRC6 saw's `vol_mode`/`Steps64`). Unlike the saw, the S5B's
-        //    constant-volume register (reg 8, D3..D0) is genuinely only
-        //    4-bit — hardware has no wider sink for it, the chip's 5-bit
-        //    resolution belongs to the *envelope* ramp table, not the
-        //    per-channel constant write — so 32-step values are halved down
-        //    to the same 0..=15 register range `Steps16` uses.
+        //    VRC6 saw's `vol_mode`/`Steps64`).
+        //
+        //    The chip's volume table is a ~1.5 dB-per-entry analog ladder, so
+        //    lane position and loudness are not proportional: half-lane on the
+        //    raw ladder is about -21 dB, where the 2A03 pulse's linear 4-bit
+        //    DAC is -5.5 dB. The two modes resolve that differently.
+        //
+        //    `Steps16` maps its 16 values *linearly* onto the ladder
+        //    (`Psg::linear_volume_index`) so it behaves like the pulse's 16
+        //    steps, which is what a 16-step lane is expected to do here. That
+        //    is a deliberate divergence from the chip and from dn, both of
+        //    which pack a 4-bit volume as `(val << 1) | 1` and inherit the
+        //    logarithmic spacing.
+        //
+        //    `Steps32` drives the table index directly, so it is the raw
+        //    ladder at full resolution — every one of the 32 analog levels,
+        //    including the 16 the 4-bit register cannot address.
+        //    See `Psg::set_volume_level`.
         let steps_32 = seqs.vol_seq.vol_mode_5b == VolMode5B::Steps32;
-        let vol_ceiling: i16 = if steps_32 { 31 } else { 15 };
+        let vol_ceiling: u8 = if steps_32 { 31 } else { 15 };
         let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
-            self.vol_seq_player.value().clamp(0, vol_ceiling) as u32
+            self.vol_seq_player.value().clamp(0, i16::from(vol_ceiling)) as u8
         } else {
-            vol_ceiling as u32
+            vol_ceiling
         };
-        let vol_val = if steps_32 { vol_val / 2 } else { vol_val };
 
-        let hardware_scaled = vol_val * self.hardware_volume as u32 / 15;
-        let vel_scaled_vol = hardware_scaled * self.current_velocity as u32 / 127;
-        let tremolo_sub = self.lfo.tremolo_volume_delta() as u32;
-        let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).min(15) as u8;
+        let hardware_scaled = (u32::from(vol_val) * self.hardware_volume as u32 / 15)
+            .min(u32::from(vol_ceiling));
+        let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
+        // The tremolo delta is in 4-bit units, so it scales with the step
+        // range — same as the saw's `* 4` for its 64-step mode.
+        let tremolo_sub = self.lfo.tremolo_volume_delta() * if steps_32 { 2 } else { 1 };
+        let level = vel_scaled_vol.saturating_sub(tremolo_sub).min(vol_ceiling);
 
         // Turn off gate when release tail completes and volume reaches 0.
         if self.note_stack.is_empty()
             && self.vol_seq_player.is_releasing
             && self.vol_seq_player.state == SeqState::End
-            && apu_vol == 0
+            && level == 0
         {
             self.gate = false;
         }
@@ -1172,13 +1186,21 @@ impl MidiHandler {
         // 4. Tone/noise enable bits, gated by the channel's own gate state.
         sunsoft.set_tone_noise_enable(self.gate && square_flag, self.gate && noise_flag);
 
-        // 5. Constant volume. The chip's hardware envelope is never selected:
-        //    its period and shape are only reachable through dn's effect
-        //    columns, which a DAW-hosted synth has no equivalent of, so it
-        //    would only ever run as an untunable free-running ramp. The
-        //    duty/mode editor exposes Tone and Noise alone for the same
-        //    reason.
-        sunsoft.write_volume_envelope(apu_vol, false);
+        // 5. Constant volume, as a table index. `Steps32` is already one;
+        //    `Steps16` searches for the entry nearest `level/15` of full
+        //    scale so its lane tracks loudness linearly.
+        //
+        //    The hardware envelope is never selected: its period and shape
+        //    are only reachable through dn's effect columns, which a
+        //    DAW-hosted synth has no equivalent of, so it would only ever run
+        //    as an untunable free-running ramp. The duty/mode editor exposes
+        //    Tone and Noise alone for the same reason.
+        let vol_index = if steps_32 {
+            level
+        } else {
+            sunsoft.psg().linear_volume_index(level, vol_ceiling)
+        };
+        sunsoft.write_volume_level(vol_index);
 
         // 6. Pitch application.
         self.apply_pitch_registers(&mut AnyChannel::S5B(sunsoft));

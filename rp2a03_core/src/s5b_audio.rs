@@ -314,6 +314,55 @@ impl Psg {
         self.ch_out[idx]
     }
 
+    /// Sets tone channel `idx`'s level as a direct index into the selected
+    /// volume table (0..=31), clearing the envelope-select flag.
+    ///
+    /// This deliberately reaches past the register model. A $08/$09/$0A
+    /// write is 4-bit and is stored as `(val << 1) | 1`, so the register
+    /// path can only ever address the table's *odd* entries — 16 of its 32
+    /// analog levels. The even entries are levels the chip really does
+    /// produce, just only ever under the hardware envelope generator, which
+    /// sweeps the full 0..=31 range. A host that wants that resolution as a
+    /// constant volume has no register to write, so it writes here instead.
+    /// Faithful register emulation goes through [`Self::write_reg`].
+    pub fn set_volume_level(&mut self, idx: usize, level: u8) {
+        self.volume[idx] = level & 0x1f;
+    }
+
+    /// Tone channel `idx`'s current volume-table index (0..=31), however it
+    /// was set.
+    pub fn volume_level(&self, idx: usize) -> u8 {
+        self.volume[idx] & 0x1f
+    }
+
+    /// Volume-table index whose output level is nearest `num`/`den` of full
+    /// scale — a *linear* fader over the chip's logarithmic ladder.
+    ///
+    /// The 5B's volume table is an analog ladder roughly 1.5 dB per entry, so
+    /// scaling the index does not scale the amplitude: index 16 of 31 is
+    /// about −23 dB, not −6 dB. A host that wants a linear response (to match
+    /// the 2A03 pulse's 4-bit linear DAC, say) has to search the table, which
+    /// is what this does. It reads the *selected* table, so it stays right if
+    /// the AY-3-8910 curve is in use. Ties resolve to the lower index.
+    pub fn linear_volume_index(&self, num: u8, den: u8) -> u8 {
+        let table = self.voltbl.table();
+        let target = if den == 0 {
+            0
+        } else {
+            u32::from(num) * table[31] / u32::from(den)
+        };
+        let mut best = 0u8;
+        let mut best_err = u32::MAX;
+        for (i, &level) in table.iter().enumerate() {
+            let err = level.abs_diff(target);
+            if err < best_err {
+                best_err = err;
+                best = i as u8;
+            }
+        }
+        best
+    }
+
     /// Sum of all three tone channels' output, matching the chip's mono
     /// mix.
     pub fn output(&self) -> i16 {
@@ -580,12 +629,13 @@ impl Sunsoft {
         self.psg.write_reg(1, u32::from(val));
     }
 
-    /// Channel 0 volume/envelope-select (reg 8): `vol` is the 4-bit constant
-    /// volume, `envelope_enabled` selects the shared envelope generator
-    /// instead (bit 4).
-    pub fn write_volume_envelope(&mut self, vol: u8, envelope_enabled: bool) {
-        let val = (vol & 0x0F) | if envelope_enabled { 0x10 } else { 0 };
-        self.psg.write_reg(8, u32::from(val));
+    /// Channel 0 output level, as a direct 0..=31 index into the volume
+    /// table. See [`Psg::set_volume_level`] — this reaches all 32 analog
+    /// levels rather than the 16 the 4-bit constant-volume register can
+    /// address. Pass `(v << 1) | 1` to reproduce a register write of the
+    /// 4-bit volume `v`.
+    pub fn write_volume_level(&mut self, level: u8) {
+        self.psg.set_volume_level(0, level);
     }
 
     /// Chip-global noise generator period (reg 6, masked to 5 bits).
@@ -927,10 +977,35 @@ mod tests {
         sunsoft.write_noise_period(0xFF);
         assert_eq!(sunsoft.psg.noise_freq, 0x1F);
 
-        sunsoft.write_volume_envelope(0x0F, false);
-        assert_eq!(sunsoft.psg.volume[0], (0x0F << 1) | 1);
-        sunsoft.write_volume_envelope(0x00, true);
-        assert_eq!(sunsoft.psg.volume[0], (0x10 << 1) | 1);
+        sunsoft.write_volume_level(31);
+        assert_eq!(sunsoft.psg.volume_level(0), 31);
+        sunsoft.write_volume_level(16);
+        assert_eq!(sunsoft.psg.volume_level(0), 16);
+    }
+
+    #[test]
+    fn direct_volume_level_reaches_table_entries_the_register_cannot() {
+        // A $08 write is 4-bit and stored as `(val << 1) | 1`, so it can only
+        // land on odd table indices; the even ones are reachable only through
+        // the envelope generator, or through `set_volume_level`.
+        let mut register = Psg::new();
+        for v in 0..16u32 {
+            register.write_reg(8, v);
+            assert_eq!(register.volume_level(0) % 2, 1, "register path is odd-only");
+        }
+
+        let mut direct = Psg::new();
+        for level in 0..32u8 {
+            direct.set_volume_level(0, level);
+            assert_eq!(direct.volume_level(0), level);
+        }
+
+        // The two agree wherever they overlap: `(v << 1) | 1` is the packing.
+        for v in 0..16u32 {
+            register.write_reg(8, v);
+            direct.set_volume_level(0, ((v as u8) << 1) | 1);
+            assert_eq!(register.volume_level(0), direct.volume_level(0));
+        }
     }
 
     #[test]
@@ -963,7 +1038,7 @@ mod tests {
         tone.write_timer_lo(8);
         tone.write_timer_hi(0);
         tone.write_noise_period(0x1F);
-        tone.write_volume_envelope(0x0F, false);
+        tone.write_volume_level(31);
         tone.set_tone_noise_enable(true, false);
 
         let mut toggled = false;
@@ -983,7 +1058,7 @@ mod tests {
         noise.write_timer_lo(0xFF);
         noise.write_timer_hi(0x0F);
         noise.write_noise_period(1);
-        noise.write_volume_envelope(0x0F, false);
+        noise.write_volume_level(31);
         noise.set_tone_noise_enable(false, true);
 
         let mut changed = false;
@@ -1002,7 +1077,7 @@ mod tests {
         let mut sunsoft = Sunsoft::new();
         sunsoft.write_timer_lo(8); // TP = 8
         sunsoft.write_timer_hi(0);
-        sunsoft.write_volume_envelope(0x0F, false);
+        sunsoft.write_volume_level(31);
         sunsoft.set_tone_noise_enable(true, false);
 
         // TP=8 toggles the square edge every 8 internal steps. At 16 CPU

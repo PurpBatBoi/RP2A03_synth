@@ -2,6 +2,7 @@
 //! Tests for `MidiHandler` and its sequence/pitch/envelope processing.
 
 use super::handler::AnyChannel;
+use super::types::freq_to_s5b_period;
 use super::*;
 use nice_plug::prelude::*;
 use rp2a03_core::NTSC_CPU_CLOCK;
@@ -1164,9 +1165,34 @@ fn s5b_duty_byte_splits_period_and_flags_to_the_right_registers() {
     assert_eq!(sunsoft.psg().reg(6), 0x0A ^ 0x1F);
     // Tone (bit 0) and noise (bit 3) both enabled -> both bits clear.
     assert_eq!(sunsoft.psg().reg(7) & 0x09, 0);
-    // Envelope-select bit (D4) is never set — this synth has no envelope
-    // period/shape control, so constant volume is the only volume source.
-    assert_eq!(sunsoft.psg().reg(8) & 0x10, 0);
+    // Volume 15 in 16-step mode repacks to table index 31, the same entry a
+    // 4-bit `$08` write of 15 would reach. The envelope is never selected —
+    // this synth has no envelope period/shape control, so a constant level is
+    // the only volume source.
+    assert_eq!(sunsoft.psg().volume_level(0), 31);
+}
+
+#[test]
+fn s5b_period_follows_the_tracker_table_not_the_datasheet() {
+    // dn `CDetuneS5B::FrequencyToPeriod` (`DetuneTable.cpp:245`) is
+    // `lround(BASE_FREQ_NTSC / (Freq * 16))`, and FamiStudio's
+    // `ChannelStateS5B.cs:87` lands on the identical value. The chip then
+    // plays `clk / (32 * TP)`, so S5B sounds an octave below the written note
+    // in both trackers — and here. Using the datasheet's `/ 32` would be
+    // hardware-true but would put this synth an octave above every tracker,
+    // so do not "correct" this. Worked example from the dn report: A-440.
+    assert_eq!(freq_to_s5b_period(440.0), 254);
+    let sounding = NTSC_CPU_CLOCK as f32 / (32.0 * 254.0);
+    assert!(
+        (sounding - 220.0).abs() < 1.0,
+        "A-440 must sound near 220 Hz, got {sounding}"
+    );
+
+    // TP is clamped away from 0 — it is a divisor — and to dn's own 0xFFF
+    // table ceiling.
+    assert_eq!(freq_to_s5b_period(0.0), 4095);
+    assert_eq!(freq_to_s5b_period(1.0), 4095);
+    assert_eq!(freq_to_s5b_period(1_000_000.0), 1);
 }
 
 /// Drives one S5B modulation pass with `period` in the duty byte's low 5 bits
@@ -1242,7 +1268,7 @@ fn s5b_noise_period_not_written_when_noise_flag_clear() {
 }
 
 /// Drives one S5B modulation pass with the given volume sequence/mode and
-/// returns the resulting reg 8 constant-volume nibble (D3..D0).
+/// returns the resulting volume-table index (0..=31) driving the output.
 fn s5b_volume_reg_for(vol_text: &str, vol_mode: VolMode5B) -> u8 {
     let mut vol_seq = Sequence::parse(vol_text);
     vol_seq.vol_mode_5b = vol_mode;
@@ -1261,20 +1287,82 @@ fn s5b_volume_reg_for(vol_text: &str, vol_mode: VolMode5B) -> u8 {
     handler.note_on(60, 127, &mut AnyChannel::S5B(&mut sunsoft), &seqs);
     handler.apply_current_modulation(&mut AnyChannel::S5B(&mut sunsoft), &seqs);
 
-    sunsoft.psg().reg(8) & 0x0F
+    sunsoft.psg().volume_level(0)
 }
 
 #[test]
 fn s5b_volume_clamps_to_15_in_16_step_mode() {
-    assert_eq!(s5b_volume_reg_for("15", VolMode5B::Steps16), 15);
-    assert_eq!(s5b_volume_reg_for("31", VolMode5B::Steps16), 15);
+    assert_eq!(s5b_volume_reg_for("15", VolMode5B::Steps16), 31);
+    assert_eq!(s5b_volume_reg_for("31", VolMode5B::Steps16), 31, "clamped to 15");
+    assert_eq!(s5b_volume_reg_for("0", VolMode5B::Steps16), 0);
+}
+
+/// YM2149 ladder, indexed by the table position the handler selects.
+const S5B_LADDER: [u32; 32] = [
+    0, 0, 1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 9, 11, 13, 15, 18, 22, 26, 31, 37, 45, 53, 63, 76, 90, 106,
+    127, 151, 180, 214, 255,
+];
+
+#[test]
+fn s5b_16_step_lane_is_linear_in_amplitude() {
+    // The point of the mode: lane position tracks loudness the way the 2A03
+    // pulse's linear 4-bit DAC does, not the chip's ~3 dB-per-step ladder.
+    // The ladder is coarser than a linear step near the top (255 -> 214 is a
+    // 41-count gap against a 17-count step), so exact landings are impossible;
+    // half the widest gap bounds the error, which works out to under 1 dB.
+    for v in 0..16u8 {
+        let idx = s5b_volume_reg_for(&v.to_string(), VolMode5B::Steps16);
+        let got = S5B_LADDER[idx as usize];
+        let want = u32::from(v) * 255 / 15;
+        assert!(
+            got.abs_diff(want) <= 21,
+            "v={v}: linear target {want}, ladder gave {got} at index {idx}"
+        );
+    }
 }
 
 #[test]
-fn s5b_volume_halves_down_from_32_step_to_the_4bit_register() {
-    assert_eq!(s5b_volume_reg_for("31", VolMode5B::Steps32), 15);
-    assert_eq!(s5b_volume_reg_for("0", VolMode5B::Steps32), 0);
-    assert_eq!(s5b_volume_reg_for("16", VolMode5B::Steps32), 8);
+fn s5b_16_step_lane_never_goes_backwards() {
+    // Not strictly increasing: where the ladder is coarser than a linear step,
+    // adjacent lane values land on the same entry (v=7/8, 10/11, 12/13, 14/15).
+    // Each of those pairs spans well under 1 dB, so they read as a plateau
+    // rather than a jump — but the lane must never *drop* as it rises.
+    let mut prev = 0;
+    for v in 0..16u8 {
+        let idx = s5b_volume_reg_for(&v.to_string(), VolMode5B::Steps16);
+        assert!(idx >= prev, "v={v} quieter than v={}", v - 1);
+        prev = idx;
+    }
+    assert_eq!(prev, 31, "the top of the lane must reach full scale");
+}
+
+#[test]
+fn s5b_volume_32_step_reaches_every_table_index() {
+    for v in 0..32u8 {
+        assert_eq!(
+            s5b_volume_reg_for(&v.to_string(), VolMode5B::Steps32),
+            v,
+            "32-step drives the table index directly"
+        );
+    }
+}
+
+#[test]
+fn s5b_volume_32_step_reaches_levels_16_step_cannot() {
+    let reachable_16: Vec<u8> = (0..16u8)
+        .map(|v| s5b_volume_reg_for(&v.to_string(), VolMode5B::Steps16))
+        .collect();
+
+    // Spreading 16 values linearly over the ladder reaches 12 distinct
+    // entries; 32-step reaches all 32, so it is a strict superset.
+    let missing: Vec<u8> = (0..32u8).filter(|i| !reachable_16.contains(i)).collect();
+    assert!(
+        !missing.is_empty(),
+        "32-step must reach ladder entries 16-step cannot"
+    );
+    for i in missing {
+        assert_eq!(s5b_volume_reg_for(&i.to_string(), VolMode5B::Steps32), i);
+    }
 }
 
 #[test]

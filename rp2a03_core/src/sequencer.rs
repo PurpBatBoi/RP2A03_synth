@@ -52,13 +52,21 @@ pub enum VolMode {
 /// to `ChannelMode::S5B`. Not a reuse of `VolMode`: the rescale math there is
 /// hardcoded to the 16<->64 relationship for VRC6's 6-bit accumulator, whereas
 /// the S5B's hardware volume register is 5-bit (0..=31), a 16<->32 relationship.
-/// This is a deliberate hardware-fidelity addition beyond stock DnFamiTracker,
-/// which has no S5B equivalent of `SETTING_VOL_64_STEPS`.
+/// A deliberate addition beyond stock DnFamiTracker, which has no S5B
+/// equivalent of `SETTING_VOL_64_STEPS`. The two modes differ in curve as well
+/// as in resolution — see `MidiHandler::apply_s5b_modulation`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum VolMode5B {
+    /// Steps are 0..=15 and map *linearly* onto the chip's logarithmic volume
+    /// ladder, so the lane tracks loudness the way the 2A03 pulse's linear
+    /// 4-bit DAC does. Diverges from the chip, which packs a 4-bit volume as
+    /// `(val << 1) | 1` and inherits the ladder's ~3 dB-per-step spacing.
     #[default]
     Steps16 = 0,
+    /// Steps are 0..=31 and index the volume ladder directly: the chip's true
+    /// resolution, ~1.5 dB per step, including the 16 levels the 4-bit
+    /// register cannot address.
     Steps32 = 1,
 }
 
