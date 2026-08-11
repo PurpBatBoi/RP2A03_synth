@@ -18,7 +18,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.7-Alpha"
+version = "0.0.8-Alpha"
 # This project tracks current stable rather than supporting older toolchains,
 # so the floor is whatever stable was when it was last raised — not the oldest
 # release the code happens to compile on. Raise it freely alongside stable; the
