@@ -14,7 +14,7 @@ use crate::params::Rp2a03Params;
 use crate::sequences::snapshot;
 
 const EDITOR_MARGIN: i8 = 12;
-const EDITOR_BORDER: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
+const EDITOR_BORDER: egui::Color32 = egui::Color32::from_rgb(30, 30, 30);
 const REPAINT_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Writes a parameter through the host's gesture protocol.
@@ -49,7 +49,9 @@ pub(crate) fn create(
 
             ui.ctx().request_repaint_after(REPAINT_INTERVAL);
 
-            egui::CentralPanel::default().show_inside(ui, |ui| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(27)))
+                .show_inside(ui, |ui| {
                 egui::Frame::new()
                     .stroke(egui::Stroke::new(1.5_f32, EDITOR_BORDER))
                     .inner_margin(egui::Margin::same(EDITOR_MARGIN))

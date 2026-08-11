@@ -6,7 +6,7 @@ pub const BG: Color32 = Color32::from_rgb(14, 14, 14);
 pub const PANEL: Color32 = Color32::from_rgb(8, 8, 8);
 pub const PANEL_ALT: Color32 = Color32::from_rgb(20, 20, 20);
 
-pub const BORDER: Color32 = Color32::from_rgb(35, 35, 35);
+pub const BORDER: Color32 = Color32::from_rgb(30, 30, 30);
 pub const GRAPH_BG: Color32 = Color32::from_rgb(10, 10, 10);
 pub const GRAPH_ALT: Color32 = Color32::from_rgb(25, 25, 25);
 
