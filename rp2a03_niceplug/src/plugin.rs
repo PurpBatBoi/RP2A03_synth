@@ -2,7 +2,6 @@
 //! The `nice_plug::Plugin` implementation: lifecycle, parameter/GUI sync, and
 //! the block-splitting event loop that drives the voice bank.
 
-use nice_plug::params::InternalParamMut;
 use nice_plug::prelude::*;
 use rp2a03_common::{HostAutomationSnapshot, MAX_SEQUENCES};
 use std::sync::Arc;
@@ -24,10 +23,6 @@ pub struct Rp2a03Plugin {
     /// Program Change selection remains active until the host changes the Index parameter.
     midi_program_index: Option<usize>,
     last_sequence_parameter: i32,
-    automation_was_playing: bool,
-    automation_initialized: bool,
-    automation_changed: [bool; 15],
-    last_automation_values: [i32; 15],
 }
 
 impl Default for Rp2a03Plugin {
@@ -41,110 +36,17 @@ impl Default for Rp2a03Plugin {
             mono_buf: Vec::new(),
             midi_program_index: None,
             last_sequence_parameter: 0,
-            automation_was_playing: false,
-            automation_initialized: false,
-            automation_changed: [false; 15],
-            last_automation_values: [0; 15],
         }
     }
 }
 
 impl Rp2a03Plugin {
-    fn automation_values(&self) -> [i32; 15] {
-        let p = &self.params;
-        [
-            p.sequence_number.value(),
-            p.vibrato_depth.value(),
-            p.vibrato_speed.value(),
-            p.tremolo_depth.value(),
-            p.tremolo_speed.value(),
-            p.hardware_volume.value(),
-            p.fine_pitch.value(),
-            p.hi_pitch.value(),
-            p.pitch_slide.value(),
-            p.pitch_slide_range.value(),
-            p.step_time.value(),
-            i32::from(u8::from(p.polyphony.value())),
-            p.max_voices.value(),
-            i32::from(u8::from(p.portamento_enabled.value())),
-            p.portamento_speed.value(),
-        ]
-    }
-
-    /// Resets a host parameter whose automation disappeared between playback
-    /// passes. This is deliberately done only at a transport start, since an
-    /// absent event inside a running pass means \"hold the previous value\".
-    fn reset_deleted_automation(&self, index: usize) {
-        let p = &self.params;
-        unsafe {
-            match index {
-                0 => p.sequence_number._internal_set_plain_value(0),
-                1 => p.vibrato_depth._internal_set_plain_value(0),
-                2 => p.vibrato_speed._internal_set_plain_value(4),
-                3 => p.tremolo_depth._internal_set_plain_value(0),
-                4 => p.tremolo_speed._internal_set_plain_value(4),
-                5 => p.hardware_volume._internal_set_plain_value(15),
-                6 => p.fine_pitch._internal_set_plain_value(0),
-                7 => p.hi_pitch._internal_set_plain_value(0),
-                8 => p.pitch_slide._internal_set_plain_value(0),
-                9 => p.pitch_slide_range._internal_set_plain_value(2),
-                10 => p.step_time._internal_set_plain_value(60),
-                11 => p.polyphony._internal_set_plain_value(false),
-                12 => p.max_voices._internal_set_plain_value(8),
-                13 => p.portamento_enabled._internal_set_plain_value(false),
-                14 => p.portamento_speed._internal_set_plain_value(0),
-                _ => unreachable!(),
-            };
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sync_transport_automation_for_test(&mut self, playing: bool) {
-        self.sync_transport_automation(playing);
-    }
-
-    fn sync_transport_automation(&mut self, playing: bool) {
-        let mut values = self.automation_values();
-        if playing && !self.automation_was_playing {
-            let values_at_start = values;
-            if self.automation_initialized {
-                for index in 0..values.len() {
-                    if self.automation_changed[index]
-                        && values_at_start[index] == self.last_automation_values[index]
-                    {
-                        self.reset_deleted_automation(index);
-                    }
-                }
-                values = self.automation_values();
-            }
-            self.automation_changed = [false; 15];
-            if self.automation_initialized {
-                for index in 0..values_at_start.len() {
-                    self.automation_changed[index] =
-                        values_at_start[index] != self.last_automation_values[index];
-                }
-            }
-        } else if playing && self.automation_initialized {
-            for index in 0..values.len() {
-                self.automation_changed[index] |=
-                    values[index] != self.last_automation_values[index];
-            }
-        }
-
-        self.last_automation_values = values;
-        self.automation_initialized = true;
-        self.automation_was_playing = playing;
-    }
-
     /// Shared tail of `initialize` and `reset`.
     fn reset_state(&mut self) {
         self.voices.reset_all(self.params.channel_mode());
         self.midi_program_index = None;
         self.last_sequence_parameter = self.params.sequence_number.value();
         self.playheads.clear();
-        self.automation_was_playing = false;
-        self.automation_initialized = false;
-        self.automation_changed = [false; 15];
     }
 
     /// The sequence slot to play this block. A Program Change overrides the
@@ -316,7 +218,6 @@ impl Plugin for Rp2a03Plugin {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        self.sync_transport_automation(context.transport().playing);
         let host_controls = self.params.host_automation_snapshot();
         self.voices.apply_host_automation(host_controls);
 

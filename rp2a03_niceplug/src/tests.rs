@@ -620,38 +620,17 @@ fn host_automation_controls_track_the_parameters() {
 }
 
 #[test]
-fn deleted_automation_resets_to_defaults_on_the_next_playback() {
-    for target in AutomationTarget::ALL {
-        let mut harness = Harness::new(0, false, 1);
-        harness.plugin.sync_transport_automation_for_test(false);
-        harness.plugin.sync_transport_automation_for_test(true);
+fn host_automation_snapshot_does_not_mask_equal_values() {
+    let params = Rp2a03Params::default();
+    set_int(&params.vibrato_depth, 7);
+    set_int(&params.vibrato_speed, 20);
 
-        let raw = if matches!(target, AutomationTarget::MaxVoices) {
-            0
-        } else {
-            127
-        };
-        let expected_automated = target.set(&harness.plugin.params, raw);
-        harness.plugin.sync_transport_automation_for_test(true);
-        let controls = harness.plugin.params.host_automation_snapshot();
-        harness.plugin.voices.apply_host_automation(controls);
-        assert_eq!(target.actual(&harness), expected_automated);
+    let first = params.host_automation_snapshot();
+    let second = params.host_automation_snapshot();
 
-        harness.plugin.sync_transport_automation_for_test(false);
-        // No new parameter event is supplied before the next playback pass:
-        // this represents deleting the entire FL Studio automation lane.
-        harness.plugin.sync_transport_automation_for_test(true);
-        let controls = harness.plugin.params.host_automation_snapshot();
-        harness.plugin.voices.apply_host_automation(controls);
-
-        let fresh = Harness::new(0, false, 1);
-        assert_eq!(
-            target.actual(&harness),
-            target.actual(&fresh),
-            "deleted automation did not reset parameter {:?}",
-            target
-        );
-    }
+    assert_eq!(first, second);
+    assert_eq!(second.vibrato_depth, 7);
+    assert_eq!(second.vibrato_speed, 20);
 }
 
 #[test]
