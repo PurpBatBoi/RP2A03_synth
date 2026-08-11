@@ -7,9 +7,15 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["opengl"]
+opengl = ["nice-plug-egui/opengl"]
+wgpu = ["nice-plug-egui/wgpu"]
+
 [dependencies]
 rp2a03_core = { workspace = true }
 nice-plug = { workspace = true }
+nice-plug-egui = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
 image = { workspace = true }

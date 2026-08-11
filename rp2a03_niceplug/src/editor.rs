@@ -14,6 +14,7 @@ use crate::params::Rp2a03Params;
 use crate::sequences::snapshot;
 
 const EDITOR_MARGIN: i8 = 12;
+const EDITOR_BORDER: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
 const REPAINT_INTERVAL: Duration = Duration::from_millis(30);
 
 /// Writes a parameter through the host's gesture protocol.
@@ -48,26 +49,29 @@ pub(crate) fn create(
 
             ui.ctx().request_repaint_after(REPAINT_INTERVAL);
 
-            egui::Frame::NONE
-                .inner_margin(egui::Margin::same(EDITOR_MARGIN))
-                .show(ui, |ui| {
-                    let result = render_editor_ui(
-                        ui,
-                        &mut data,
-                        sequence_index,
-                        &playheads,
-                        step_time_hz,
-                        ui_state,
-                    );
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::Frame::new()
+                    .stroke(egui::Stroke::new(1.5_f32, EDITOR_BORDER))
+                    .inner_margin(egui::Margin::same(EDITOR_MARGIN))
+                    .show(ui, |ui| {
+                        let result = render_editor_ui(
+                            ui,
+                            &mut data,
+                            sequence_index,
+                            &playheads,
+                            step_time_hz,
+                            ui_state,
+                        );
 
                     // The sequence index is the one control the editor owns
                     // directly as well as through the parameter, so the shared
                     // state is updated before the parameter write.
-                    if let Some(new_index) = result.new_sequence_index {
-                        data.set_all_selected_sequence_indices(new_index);
-                    }
+                        if let Some(new_index) = result.new_sequence_index {
+                            data.set_all_selected_sequence_indices(new_index);
+                        }
 
-                    apply_result(setter, &params, &result);
+                        apply_result(setter, &params, &result);
+                    });
                 });
         },
     )

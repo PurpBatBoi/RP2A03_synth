@@ -134,7 +134,7 @@ pub fn draw_envelope_bar_graph(
     let painter = ui.painter_at(rect);
 
     // Background panel
-    painter.rect_filled(rect, 2.0f32, Color32::from_rgb(8, 8, 8));
+    painter.rect_filled(rect, 2.0f32, theme::GRAPH_BG);
     painter.rect_stroke(
         rect,
         2.0f32,
@@ -622,9 +622,9 @@ pub fn draw_envelope_bar_graph(
             Pos2::new(bar_x_max, graph_rect.max.y),
         );
         let bg_color = if i % 2 == 0 {
-            Color32::from_rgb(14, 14, 14)
+            theme::GRAPH_BG
         } else {
-            Color32::from_rgb(20, 20, 20)
+            theme::GRAPH_ALT
         };
         painter.rect_filled(col_rect, 0.0f32, bg_color);
     }

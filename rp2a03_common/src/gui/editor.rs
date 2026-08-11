@@ -1304,11 +1304,14 @@ pub fn render_editor_ui(
     step_time_hz: u32,
     ui_state: &mut EditorUiState,
 ) -> EditorResult {
-    // Apply non-selectable labels to the global Context style so all child scopes,
-    // grids, and group boxes inherit it
-    ui.ctx().global_style_mut(|style| {
-        style.interaction.selectable_labels = false;
-    });
+    // The host supplies a bare Ui. Paint the same panel-backed surface used by
+    // egui's CentralPanel so the editor does not fall through to the black
+    // host framebuffer.
+    ui.painter().rect_filled(
+        ui.max_rect(),
+        egui::CornerRadius::ZERO,
+        ui.visuals().panel_fill,
+    );
 
     ui.set_min_height(ui.available_height());
 

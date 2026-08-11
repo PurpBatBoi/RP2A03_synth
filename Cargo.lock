@@ -2843,6 +2843,7 @@ dependencies = [
  "egui_extras",
  "image",
  "nice-plug",
+ "nice-plug-egui",
  "rfd",
  "rmp-serde",
  "rp2a03_core",
