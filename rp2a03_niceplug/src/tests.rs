@@ -9,6 +9,7 @@
 use nice_plug::params::InternalParamMut;
 use nice_plug::prelude::*;
 use rp2a03_common::{ChannelMode, SEQUENCE_TYPE_COUNT};
+use std::path::Path;
 
 use crate::params::Rp2a03Params;
 use crate::plugin::Rp2a03Plugin;
@@ -125,6 +126,253 @@ impl Harness {
 
     fn sum(&self) -> f32 {
         self.rendered.iter().sum()
+    }
+
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MidiCcPoint {
+    tick: u64,
+    value: u8,
+}
+
+fn read_be_u32(bytes: &[u8], offset: &mut usize) -> usize {
+    let value = u32::from_be_bytes(bytes[*offset..*offset + 4].try_into().unwrap());
+    *offset += 4;
+    value as usize
+}
+
+fn read_vlq(bytes: &[u8], offset: &mut usize) -> u32 {
+    let mut value = 0;
+    loop {
+        let byte = bytes[*offset];
+        *offset += 1;
+        value = (value << 7) | u32::from(byte & 0x7f);
+        if byte & 0x80 == 0 {
+            return value;
+        }
+    }
+}
+
+/// Minimal Standard MIDI File reader for the external regression fixture.
+/// It intentionally extracts only channel CC messages, keeping the test
+/// dependency-free and leaving the MIDI file outside every plugin artifact.
+fn read_cc7_fixture(path: &Path) -> Vec<MidiCcPoint> {
+    let bytes = std::fs::read(path).expect("MIDI regression fixture must be present");
+    assert_eq!(&bytes[..4], b"MThd");
+    let header_len = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let tracks = u16::from_be_bytes(bytes[10..12].try_into().unwrap());
+    assert_eq!(header_len, 6);
+
+    let mut offset = 14;
+    let mut points = Vec::new();
+    for _ in 0..tracks {
+        assert_eq!(&bytes[offset..offset + 4], b"MTrk");
+        offset += 4;
+        let track_len = read_be_u32(&bytes, &mut offset);
+        let end = offset + track_len;
+        let mut tick = 0_u64;
+        let mut running_status = None;
+
+        while offset < end {
+            tick += u64::from(read_vlq(&bytes, &mut offset));
+            let first = bytes[offset];
+            let status = if first & 0x80 != 0 {
+                offset += 1;
+                running_status = Some(first);
+                first
+            } else {
+                running_status.expect("running-status event without a status byte")
+            };
+
+            match status {
+                0xff => {
+                    offset += 1;
+                    let len = read_vlq(&bytes, &mut offset) as usize;
+                    offset += len;
+                }
+                0xf0 | 0xf7 => {
+                    let len = read_vlq(&bytes, &mut offset) as usize;
+                    offset += len;
+                }
+                0x80..=0xef => {
+                    let kind = status & 0xf0;
+                    let data1 = if first & 0x80 == 0 { first } else { bytes[offset] };
+                    if first & 0x80 != 0 {
+                        offset += 1;
+                    }
+                    let data2 = if kind == 0xc0 || kind == 0xd0 {
+                        None
+                    } else {
+                        let value = bytes[offset];
+                        offset += 1;
+                        Some(value)
+                    };
+                    if kind == 0xb0 && data1 == 7 {
+                        points.push(MidiCcPoint {
+                            tick,
+                            value: data2.expect("CC messages have two data bytes"),
+                        });
+                    }
+                }
+                _ => panic!("unsupported MIDI status byte {status:#x}"),
+            }
+        }
+        offset = end;
+    }
+    points
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AutomationTarget {
+    SequenceNumber,
+    VibratoDepth,
+    VibratoSpeed,
+    TremoloDepth,
+    TremoloSpeed,
+    HardwareVolume,
+    FinePitch,
+    HiPitch,
+    PitchSlide,
+    PitchSlideRange,
+    StepTime,
+    Polyphony,
+    MaxVoices,
+    PortamentoEnabled,
+    PortamentoSpeed,
+}
+
+impl AutomationTarget {
+    const ALL: [Self; 15] = [
+        Self::SequenceNumber,
+        Self::VibratoDepth,
+        Self::VibratoSpeed,
+        Self::TremoloDepth,
+        Self::TremoloSpeed,
+        Self::HardwareVolume,
+        Self::FinePitch,
+        Self::HiPitch,
+        Self::PitchSlide,
+        Self::PitchSlideRange,
+        Self::StepTime,
+        Self::Polyphony,
+        Self::MaxVoices,
+        Self::PortamentoEnabled,
+        Self::PortamentoSpeed,
+    ];
+
+    fn set(self, params: &Rp2a03Params, raw: u8) -> i32 {
+        let (min, max) = match self {
+            Self::SequenceNumber => (0, 127),
+            Self::VibratoDepth | Self::TremoloDepth => (0, 15),
+            Self::VibratoSpeed | Self::TremoloSpeed => (0, 63),
+            Self::HardwareVolume => (0, 15),
+            Self::FinePitch | Self::HiPitch => (-64, 63),
+            Self::PitchSlide => (-8192, 8191),
+            Self::PitchSlideRange => (0, 24),
+            Self::StepTime => (1, 600),
+            Self::Polyphony => (0, 1),
+            Self::MaxVoices => (1, MAX_VOICES as i32),
+            Self::PortamentoEnabled => (0, 1),
+            Self::PortamentoSpeed => (0, 127),
+        };
+        let value = min + (i32::from(raw) * (max - min) / 127);
+        match self {
+            Self::SequenceNumber => set_int(&params.sequence_number, value),
+            Self::VibratoDepth => set_int(&params.vibrato_depth, value),
+            Self::VibratoSpeed => set_int(&params.vibrato_speed, value),
+            Self::TremoloDepth => set_int(&params.tremolo_depth, value),
+            Self::TremoloSpeed => set_int(&params.tremolo_speed, value),
+            Self::HardwareVolume => set_int(&params.hardware_volume, value),
+            Self::FinePitch => set_int(&params.fine_pitch, value),
+            Self::HiPitch => set_int(&params.hi_pitch, value),
+            Self::PitchSlide => set_int(&params.pitch_slide, value),
+            Self::PitchSlideRange => set_int(&params.pitch_slide_range, value),
+            Self::StepTime => set_int(&params.step_time, value),
+            Self::Polyphony => set_bool(&params.polyphony, value != 0),
+            Self::MaxVoices => set_int(&params.max_voices, value),
+            Self::PortamentoEnabled => set_bool(&params.portamento_enabled, value != 0),
+            Self::PortamentoSpeed => set_int(&params.portamento_speed, value),
+        }
+        value
+    }
+
+    fn actual(self, harness: &Harness) -> i32 {
+        let handler = &harness.plugin.voices.primary().midi_handler;
+        match self {
+            Self::SequenceNumber => harness.plugin.params.sequence_number.value(),
+            Self::VibratoDepth => i32::from(handler.lfo.vibrato_depth),
+            Self::VibratoSpeed => i32::from(handler.lfo.vibrato_speed),
+            Self::TremoloDepth => i32::from(handler.lfo.tremolo_depth),
+            Self::TremoloSpeed => i32::from(handler.lfo.tremolo_speed),
+            Self::HardwareVolume => i32::from(handler.hardware_volume),
+            Self::FinePitch => i32::from(handler.fine_pitch),
+            Self::HiPitch => i32::from(handler.hi_pitch),
+            Self::PitchSlide => i32::from(handler.pitch_slide),
+            Self::PitchSlideRange => i32::from(handler.pitch_slide_range),
+            Self::StepTime => i32::from(handler.step_time_hz),
+            Self::Polyphony => i32::from(u8::from(harness.plugin.params.polyphony.value())),
+            Self::MaxVoices => harness.plugin.params.max_voices.value(),
+            Self::PortamentoEnabled => i32::from(u8::from(handler.portamento_enabled)),
+            Self::PortamentoSpeed => i32::from(handler.portamento_speed),
+        }
+    }
+}
+
+#[test]
+fn every_midi_demo_reaches_every_host_automation_parameter_on_four_replays() {
+    const SAMPLE_RATE: u64 = 44_100;
+    const TEMPO_US_PER_QUARTER: u64 = 500_000;
+    const PPQ: u64 = 960;
+
+    let references = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(".references");
+    let mut fixtures: Vec<_> = std::fs::read_dir(&references)
+        .expect("references directory must be present")
+        .map(|entry| entry.expect("fixture directory entry must be readable").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "mid" || ext == "midi"))
+        .collect();
+    fixtures.sort();
+    assert!(fixtures.len() >= 4, "expected the complete MIDI demo set");
+
+    for fixture in fixtures {
+        let points = read_cc7_fixture(&fixture);
+        assert!(points.len() > 200, "{} should contain a dense envelope", fixture.display());
+        let timeline: Vec<_> = points
+            .iter()
+            .map(|point| {
+                point.tick * TEMPO_US_PER_QUARTER * SAMPLE_RATE
+                    / (1_000_000 * PPQ)
+            })
+            .collect();
+        let cycle_len = timeline.last().copied().unwrap_or(0).max(1);
+
+        for target in AutomationTarget::ALL {
+            for replay in 0..4 {
+                let start = points.len() * replay / 4;
+                let mut harness = Harness::new(0, false, 1);
+                let mut previous_sample = 0_u64;
+                for index in 0..points.len() {
+                    let point_index = (start + index) % points.len();
+                    let cycle = (start + index) / points.len();
+                    let sample = timeline[point_index] + cycle as u64 * cycle_len;
+                    let block_len = sample.saturating_sub(previous_sample).max(1) as usize;
+                    let expected = target.set(&harness.plugin.params, points[point_index].value);
+                    harness.block(&[], block_len);
+                    assert_eq!(
+                        target.actual(&harness),
+                        expected,
+                        "{} missed CC 7 value {} at tick {} during replay {}",
+                        fixture.display(),
+                        points[point_index].value,
+                        points[point_index].tick,
+                        replay + 1
+                    );
+                    previous_sample = sample;
+                }
+            }
+        }
     }
 }
 
@@ -369,6 +617,41 @@ fn host_automation_controls_track_the_parameters() {
     assert_eq!(controls.step_time_hz, 120);
     assert!(controls.portamento_enabled);
     assert_eq!(controls.portamento_speed, 64);
+}
+
+#[test]
+fn deleted_automation_resets_to_defaults_on_the_next_playback() {
+    for target in AutomationTarget::ALL {
+        let mut harness = Harness::new(0, false, 1);
+        harness.plugin.sync_transport_automation_for_test(false);
+        harness.plugin.sync_transport_automation_for_test(true);
+
+        let raw = if matches!(target, AutomationTarget::MaxVoices) {
+            0
+        } else {
+            127
+        };
+        let expected_automated = target.set(&harness.plugin.params, raw);
+        harness.plugin.sync_transport_automation_for_test(true);
+        let controls = harness.plugin.params.host_automation_controls();
+        harness.plugin.voices.apply_host_automation(controls);
+        assert_eq!(target.actual(&harness), expected_automated);
+
+        harness.plugin.sync_transport_automation_for_test(false);
+        // No new parameter event is supplied before the next playback pass:
+        // this represents deleting the entire FL Studio automation lane.
+        harness.plugin.sync_transport_automation_for_test(true);
+        let controls = harness.plugin.params.host_automation_controls();
+        harness.plugin.voices.apply_host_automation(controls);
+
+        let fresh = Harness::new(0, false, 1);
+        assert_eq!(
+            target.actual(&harness),
+            target.actual(&fresh),
+            "deleted automation did not reset parameter {:?}",
+            target
+        );
+    }
 }
 
 #[test]
