@@ -4,7 +4,7 @@
 
 use nice_plug::params::InternalParamMut;
 use nice_plug::prelude::*;
-use rp2a03_common::{HostAutomationControls, MAX_SEQUENCES};
+use rp2a03_common::{HostAutomationSnapshot, MAX_SEQUENCES};
 use std::sync::Arc;
 
 use crate::editor;
@@ -188,7 +188,7 @@ impl Rp2a03Plugin {
         num_samples: usize,
         events: &mut E,
         active_voice_count: usize,
-        host_controls: HostAutomationControls,
+        host_controls: HostAutomationSnapshot,
     ) where
         E: Iterator<Item = NoteEvent<()>>,
     {
@@ -317,7 +317,7 @@ impl Plugin for Rp2a03Plugin {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         self.sync_transport_automation(context.transport().playing);
-        let host_controls = self.params.host_automation_controls();
+        let host_controls = self.params.host_automation_snapshot();
         self.voices.apply_host_automation(host_controls);
 
         // Sync channel mode from host parameter (handles DAW automation / state recall).

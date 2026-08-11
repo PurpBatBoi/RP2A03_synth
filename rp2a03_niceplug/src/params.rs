@@ -9,7 +9,7 @@
 use nice_plug::prelude::*;
 use nice_plug_egui::EguiState;
 use parking_lot::Mutex;
-use rp2a03_common::{ChannelMode, HostAutomationControls, MAX_SEQUENCES, SharedSequences};
+use rp2a03_common::{ChannelMode, HostAutomationSnapshot, MAX_SEQUENCES, SharedSequences};
 use std::sync::Arc;
 
 use crate::voice_bank::MAX_VOICES;
@@ -111,9 +111,12 @@ impl Default for Rp2a03Params {
 const PORTAMENTO_SPEED_MAX: i32 = 127;
 
 impl Rp2a03Params {
-    /// The subset of parameters the MIDI handler folds into every voice.
-    pub(crate) fn host_automation_controls(&self) -> HostAutomationControls {
-        HostAutomationControls {
+    /// Takes one immutable render-block snapshot of host automation.
+    ///
+    /// The snapshot is the boundary between host-facing parameter storage and
+    /// per-voice runtime state, similar to SFLT's render-time override view.
+    pub(crate) fn host_automation_snapshot(&self) -> HostAutomationSnapshot {
+        HostAutomationSnapshot {
             vibrato_depth: self.vibrato_depth.value() as u8,
             vibrato_speed: self.vibrato_speed.value() as u8,
             tremolo_depth: self.tremolo_depth.value() as u8,

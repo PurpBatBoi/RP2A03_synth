@@ -9,6 +9,7 @@ mod types;
 
 pub use handler::{AnyChannel, MidiHandler};
 pub use types::{
-    ActiveSequences, ChannelMode, HostAutomationControls, SequenceReload, freq_to_period,
+    ActiveSequences, ChannelMode, HostAutomationControls, HostAutomationSnapshot, SequenceReload,
+    freq_to_period,
     freq_to_triangle_period, midi_note_to_freq,
 };

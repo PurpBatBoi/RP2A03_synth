@@ -86,7 +86,7 @@ impl Harness {
 
     /// Mirrors one `Plugin::process` call, driving the real `render_block`.
     fn block(&mut self, events: &[NoteEvent<()>], num_samples: usize) -> &mut Self {
-        let host_controls = self.plugin.params.host_automation_controls();
+        let host_controls = self.plugin.params.host_automation_snapshot();
         self.plugin.voices.apply_host_automation(host_controls);
         let channel_mode = self.plugin.params.channel_mode();
         self.plugin.voices.set_channel_mode(channel_mode);
@@ -606,7 +606,7 @@ fn host_automation_controls_track_the_parameters() {
     set_bool(&params.portamento_enabled, true);
     set_int(&params.portamento_speed, 64);
 
-    let controls = params.host_automation_controls();
+    let controls = params.host_automation_snapshot();
     assert_eq!(controls.vibrato_depth, 7);
     assert_eq!(controls.vibrato_speed, 20);
     assert_eq!(controls.tremolo_depth, 3);
@@ -633,7 +633,7 @@ fn deleted_automation_resets_to_defaults_on_the_next_playback() {
         };
         let expected_automated = target.set(&harness.plugin.params, raw);
         harness.plugin.sync_transport_automation_for_test(true);
-        let controls = harness.plugin.params.host_automation_controls();
+        let controls = harness.plugin.params.host_automation_snapshot();
         harness.plugin.voices.apply_host_automation(controls);
         assert_eq!(target.actual(&harness), expected_automated);
 
@@ -641,7 +641,7 @@ fn deleted_automation_resets_to_defaults_on_the_next_playback() {
         // No new parameter event is supplied before the next playback pass:
         // this represents deleting the entire FL Studio automation lane.
         harness.plugin.sync_transport_automation_for_test(true);
-        let controls = harness.plugin.params.host_automation_controls();
+        let controls = harness.plugin.params.host_automation_snapshot();
         harness.plugin.voices.apply_host_automation(controls);
 
         let fresh = Harness::new(0, false, 1);

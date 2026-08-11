@@ -181,12 +181,12 @@ impl SequenceReload {
     }
 }
 
-/// Host-automatable controls that mirror the corresponding MIDI CC functions.
+/// Immutable host-automation snapshot consumed by the audio thread.
 ///
 /// They are synchronized only when their parameter value changes, allowing MIDI
 /// CC messages to continue controlling a value until host automation changes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HostAutomationControls {
+pub struct HostAutomationSnapshot {
     pub vibrato_depth: u8,
     pub vibrato_speed: u8,
     pub tremolo_depth: u8,
@@ -203,7 +203,7 @@ pub struct HostAutomationControls {
     pub portamento_speed: u8,
 }
 
-impl Default for HostAutomationControls {
+impl Default for HostAutomationSnapshot {
     fn default() -> Self {
         Self {
             vibrato_depth: 0,
@@ -221,3 +221,7 @@ impl Default for HostAutomationControls {
         }
     }
 }
+
+/// Backwards-compatible name for code that treats the snapshot as a set of
+/// controls. New code should use HostAutomationSnapshot.
+pub type HostAutomationControls = HostAutomationSnapshot;

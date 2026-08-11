@@ -6,7 +6,7 @@
 //! the bank and reused in place so no render path allocates.
 
 use nice_plug::prelude::*;
-use rp2a03_common::{ActiveSequences, ChannelMode, HostAutomationControls, SequenceReload};
+use rp2a03_common::{ActiveSequences, ChannelMode, HostAutomationSnapshot, SequenceReload};
 use rp2a03_core::blip_buf::InvalidRates;
 
 use crate::voice::Voice;
@@ -86,7 +86,8 @@ impl VoiceBank {
         self.last_active_voice_count = 1;
     }
 
-    pub(crate) fn apply_host_automation(&mut self, controls: HostAutomationControls) {
+    /// Projects one host snapshot into every voice's runtime state.
+    pub(crate) fn apply_host_automation(&mut self, controls: HostAutomationSnapshot) {
         for voice in &mut self.voices {
             voice.midi_handler.apply_host_automation(controls);
         }
@@ -120,7 +121,7 @@ impl VoiceBank {
     fn select_voice(
         &mut self,
         active_voice_count: usize,
-        controls: HostAutomationControls,
+        controls: HostAutomationSnapshot,
     ) -> usize {
         if active_voice_count == 1 {
             return 0;
@@ -175,7 +176,7 @@ impl VoiceBank {
         event: &NoteEvent<()>,
         seqs: &ActiveSequences,
         active_voice_count: usize,
-        controls: HostAutomationControls,
+        controls: HostAutomationSnapshot,
     ) -> Option<usize> {
         match event {
             NoteEvent::NoteOn { .. } => {
