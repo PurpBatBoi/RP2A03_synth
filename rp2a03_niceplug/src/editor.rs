@@ -52,28 +52,28 @@ pub(crate) fn create(
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(egui::Color32::from_gray(27)))
                 .show_inside(ui, |ui| {
-                egui::Frame::new()
-                    .stroke(egui::Stroke::new(1.5_f32, EDITOR_BORDER))
-                    .inner_margin(egui::Margin::same(EDITOR_MARGIN))
-                    .show(ui, |ui| {
-                        let result = render_editor_ui(
-                            ui,
-                            &mut data,
-                            sequence_index,
-                            &playheads,
-                            step_time_hz,
-                            ui_state,
-                        );
+                    egui::Frame::new()
+                        .stroke(egui::Stroke::new(1.5_f32, EDITOR_BORDER))
+                        .inner_margin(egui::Margin::same(EDITOR_MARGIN))
+                        .show(ui, |ui| {
+                            let result = render_editor_ui(
+                                ui,
+                                &mut data,
+                                sequence_index,
+                                &playheads,
+                                step_time_hz,
+                                ui_state,
+                            );
 
-                    // The sequence index is the one control the editor owns
-                    // directly as well as through the parameter, so the shared
-                    // state is updated before the parameter write.
-                        if let Some(new_index) = result.new_sequence_index {
-                            data.set_all_selected_sequence_indices(new_index);
-                        }
+                            // The sequence index is the one control the editor owns
+                            // directly as well as through the parameter, so the shared
+                            // state is updated before the parameter write.
+                            if let Some(new_index) = result.new_sequence_index {
+                                data.set_all_selected_sequence_indices(new_index);
+                            }
 
-                        apply_result(setter, &params, &result);
-                    });
+                            apply_result(setter, &params, &result);
+                        });
                 });
         },
     )

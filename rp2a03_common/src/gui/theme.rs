@@ -31,12 +31,14 @@ pub const S5B_NOISE_FLAG: Color32 = Color32::from_rgb(200, 120, 220);
 pub const S5B_FLAG_OFF: Color32 = Color32::from_rgb(80, 80, 80);
 
 pub fn style() -> Arc<Style> {
-    let mut style = Style::default();
+    let mut style = Style {
+        visuals: egui::Visuals::dark(),
+        ..Default::default()
+    };
 
     // Start from egui's standard dark theme. The editor-specific graph colors
     // below remain available to the custom graph widgets, but the controls
     // themselves should use egui's normal dark-theme visuals.
-    style.visuals = egui::Visuals::dark();
     style.visuals.override_text_color = Some(egui::Color32::from_gray(240));
     style.interaction.selectable_labels = false;
 

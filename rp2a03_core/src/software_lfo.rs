@@ -180,10 +180,7 @@ impl SoftwareLfo {
     /// Calculate the current Vibrato pitch period delta.
     /// Returns signed period shift (subtracting period increases pitch).
     pub fn vibrato_pitch_delta(&self) -> i16 {
-        if self.vibrato_speed == 0
-            || self.vibrato_depth == 0
-            || self.vibrato_delay_remaining > 0
-        {
+        if self.vibrato_speed == 0 || self.vibrato_depth == 0 || self.vibrato_delay_remaining > 0 {
             return 0;
         }
 
@@ -207,10 +204,7 @@ impl SoftwareLfo {
 
     /// Calculate the current Tremolo volume reduction delta (0..15).
     pub fn tremolo_volume_delta(&self) -> u8 {
-        if self.tremolo_speed == 0
-            || self.tremolo_depth == 0
-            || self.tremolo_delay_remaining > 0
-        {
+        if self.tremolo_speed == 0 || self.tremolo_depth == 0 || self.tremolo_delay_remaining > 0 {
             return 0;
         }
 

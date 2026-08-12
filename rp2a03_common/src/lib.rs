@@ -18,6 +18,5 @@ pub use gui::{
 };
 pub use midi::{
     ActiveSequences, AnyChannel, ChannelMode, HostAutomationControls, HostAutomationSnapshot,
-    MidiHandler, SequenceReload,
-    freq_to_period, freq_to_triangle_period, midi_note_to_freq,
+    MidiHandler, SequenceReload, freq_to_period, freq_to_triangle_period, midi_note_to_freq,
 };

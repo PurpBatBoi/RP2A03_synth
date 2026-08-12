@@ -127,7 +127,6 @@ impl Harness {
     fn sum(&self) -> f32 {
         self.rendered.iter().sum()
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,7 +196,11 @@ fn read_cc7_fixture(path: &Path) -> Vec<MidiCcPoint> {
                 }
                 0x80..=0xef => {
                     let kind = status & 0xf0;
-                    let data1 = if first & 0x80 == 0 { first } else { bytes[offset] };
+                    let data1 = if first & 0x80 == 0 {
+                        first
+                    } else {
+                        bytes[offset]
+                    };
                     if first & 0x80 != 0 {
                         offset += 1;
                     }
@@ -272,10 +275,9 @@ impl AutomationTarget {
             Self::SequenceNumber => (0, 127),
             Self::VibratoDepth | Self::TremoloDepth => (0, 15),
             Self::VibratoSpeed | Self::TremoloSpeed => (0, 63),
-            Self::VibratoDelay | Self::TremoloDelay | Self::DelaySpeed => (
-                0,
-                rp2a03_core::software_lfo::MAX_DELAY_FRAMES as i32,
-            ),
+            Self::VibratoDelay | Self::TremoloDelay | Self::DelaySpeed => {
+                (0, rp2a03_core::software_lfo::MAX_DELAY_FRAMES as i32)
+            }
             Self::HardwareVolume => (0, 15),
             Self::FinePitch | Self::HiPitch => (-64, 63),
             Self::PitchSlide => (-8192, 8191),
@@ -346,21 +348,29 @@ fn every_midi_demo_reaches_every_host_automation_parameter_on_four_replays() {
         .join(".references");
     let mut fixtures: Vec<_> = std::fs::read_dir(&references)
         .expect("references directory must be present")
-        .map(|entry| entry.expect("fixture directory entry must be readable").path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "mid" || ext == "midi"))
+        .map(|entry| {
+            entry
+                .expect("fixture directory entry must be readable")
+                .path()
+        })
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext == "mid" || ext == "midi")
+        })
         .collect();
     fixtures.sort();
     assert!(fixtures.len() >= 4, "expected the complete MIDI demo set");
 
     for fixture in fixtures {
         let points = read_cc7_fixture(&fixture);
-        assert!(points.len() > 200, "{} should contain a dense envelope", fixture.display());
+        assert!(
+            points.len() > 200,
+            "{} should contain a dense envelope",
+            fixture.display()
+        );
         let timeline: Vec<_> = points
             .iter()
-            .map(|point| {
-                point.tick * TEMPO_US_PER_QUARTER * SAMPLE_RATE
-                    / (1_000_000 * PPQ)
-            })
+            .map(|point| point.tick * TEMPO_US_PER_QUARTER * SAMPLE_RATE / (1_000_000 * PPQ))
             .collect();
         let cycle_len = timeline.last().copied().unwrap_or(0).max(1);
 
