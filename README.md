@@ -45,6 +45,33 @@ https://github.com/user-attachments/assets/d7d7984e-a96e-4002-8f1c-d2bf56444ee7
 * DAW host automation
 * Adjustable sequence rate from **1–600 Hz**
 
+## Parameters
+
+The following parameters are available to the plugin. Delay and fade durations are measured in
+engine frames; at the default 60 Hz step time, one frame is approximately
+16.7 ms.
+
+| Parameter | Range / default | Function |
+| --------- | --------------- | -------- |
+| **Sequence Index** | 0–127 / 0 | Selects the shared sequence slot used by the envelope lanes. |
+| **Vibrato Depth** | 0–15 / 0 | Sets the pitch modulation depth. |
+| **Vibrato Speed** | 0–63 / 4 | Sets the vibrato phase advance per engine frame. |
+| **Vibrato Delay** | 0–127 frames / 0 | Delays vibrato after a fresh note trigger. |
+| **Tremolo Depth** | 0–15 / 0 | Sets the volume modulation depth. |
+| **Tremolo Speed** | 0–63 / 4 | Sets the tremolo phase advance per engine frame. |
+| **Tremolo Delay** | 0–127 frames / 0 | Delays tremolo after a fresh note trigger. |
+| **Delay Speed** | 0–127 frames / 0 | Shared linear fade-in duration after either delay. Zero starts modulation at full depth. |
+| **HW Volume** | 0–15 / 15 | Sets the channel's hardware volume ceiling. |
+| **Pitch** | -64–63 / 0 | Applies a fine pitch period offset. |
+| **Hi-Pitch** | -64–63 / 0 | Applies a coarse high-byte pitch period offset. |
+| **Pitch Slide** | -8192–8191 / 0 | Applies the host-controlled pitch-wheel offset. |
+| **Pitch Slide Range** | 0–24 semitones / 2 | Sets the pitch-wheel range used by MIDI RPN 0. |
+| **Step Time** | 1–600 Hz / 60 | Sets the sequence and LFO engine frame rate. |
+| **Polyphony** | Off / Off | Enables multi-voice playback. |
+| **Max Voices** | 1–8 / 8 | Limits the number of simultaneous voices when polyphony is enabled. |
+| **Portamento** | Off / Off | Enables glide between successive notes. |
+| **Portamento Speed** | 0–127 / 0 | Sets the speed of enabled portamento. |
+
 ## Supported Chips
 
 | Chip            | Waveforms              | Examples                                     |

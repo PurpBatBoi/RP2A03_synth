@@ -21,6 +21,8 @@ pub static FT_VIBRATO_TABLE: [u8; 256] = [
 
 /// Default active LFO speed (4 ticks step per frame = ~3.75 Hz modulation rate).
 pub const DEFAULT_LFO_SPEED: u8 = 4;
+/// Largest host-controlled delay or fade duration, in engine frames.
+pub const MAX_DELAY_FRAMES: u8 = 127;
 
 /// Software LFO state for Vibrato (pitch) and Tremolo (volume) modulation.
 #[derive(Debug, Clone)]
@@ -31,7 +33,7 @@ pub struct SoftwareLfo {
     pub vibrato_speed: u8,
     /// Vibrato position accumulator (0..63 cycle)
     pub vibrato_pos: u8,
-    /// Vibrato delay before modulation starts, in engine frames.
+    /// Vibrato delay before modulation starts, in engine frames (0..=127).
     pub vibrato_delay: u8,
     vibrato_delay_remaining: u8,
     vibrato_fade_elapsed: u8,
@@ -42,11 +44,11 @@ pub struct SoftwareLfo {
     pub tremolo_speed: u8,
     /// Tremolo position accumulator (0..63 cycle)
     pub tremolo_pos: u8,
-    /// Tremolo delay before modulation starts, in engine frames.
+    /// Tremolo delay before modulation starts, in engine frames (0..=127).
     pub tremolo_delay: u8,
     tremolo_delay_remaining: u8,
     tremolo_fade_elapsed: u8,
-    /// Shared linear fade duration, in engine frames.
+    /// Shared linear fade duration, in engine frames (0..=127).
     pub delay_speed: u8,
     vibrato_fade_speed: u8,
     tremolo_fade_speed: u8,
@@ -115,9 +117,9 @@ impl SoftwareLfo {
     /// Set delays and the shared linear fade duration. These settings apply to
     /// the next retrigger; an active delay/fade keeps its current timing.
     pub fn set_delay_params(&mut self, vibrato_delay: u8, tremolo_delay: u8, delay_speed: u8) {
-        self.vibrato_delay = vibrato_delay;
-        self.tremolo_delay = tremolo_delay;
-        self.delay_speed = delay_speed;
+        self.vibrato_delay = vibrato_delay.min(MAX_DELAY_FRAMES);
+        self.tremolo_delay = tremolo_delay.min(MAX_DELAY_FRAMES);
+        self.delay_speed = delay_speed.min(MAX_DELAY_FRAMES);
     }
 
     /// Retrigger both modulation effects for a fresh note.
@@ -295,5 +297,44 @@ mod tests {
         assert!(half > 0);
         lfo.clock_tick();
         assert!(lfo.vibrato_pitch_delta() >= half);
+    }
+
+    #[test]
+    fn test_tremolo_delay_and_fade_are_independent() {
+        let mut lfo = SoftwareLfo::new();
+        lfo.set_tremolo(15, 1);
+        lfo.set_delay_params(0, 2, 2);
+        lfo.retrigger();
+
+        assert_eq!(lfo.tremolo_volume_delta(), 0);
+        lfo.clock_tick();
+        assert_eq!(lfo.tremolo_volume_delta(), 0);
+        lfo.clock_tick();
+        assert_eq!(lfo.tremolo_volume_delta(), 0);
+        lfo.clock_tick();
+        let partial = lfo.tremolo_volume_delta();
+        lfo.clock_tick();
+        assert!(lfo.tremolo_volume_delta() >= partial);
+    }
+
+    #[test]
+    fn test_delay_speed_is_captured_on_retrigger() {
+        let mut lfo = SoftwareLfo::new();
+        lfo.set_vibrato(15, 1);
+        lfo.set_delay_params(0, 0, 4);
+        lfo.retrigger();
+        lfo.set_delay_params(0, 0, 1);
+
+        lfo.vibrato_pos = 8;
+        lfo.clock_tick();
+        let first = lfo.vibrato_pitch_delta();
+        lfo.clock_tick();
+        let second = lfo.vibrato_pitch_delta();
+        assert!(second > first);
+
+        lfo.retrigger();
+        lfo.vibrato_pos = 8;
+        lfo.clock_tick();
+        assert!(lfo.vibrato_pitch_delta() > first);
     }
 }

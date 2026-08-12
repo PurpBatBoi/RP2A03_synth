@@ -10,6 +10,7 @@ use nice_plug::prelude::*;
 use nice_plug_egui::EguiState;
 use parking_lot::Mutex;
 use rp2a03_common::{ChannelMode, HostAutomationSnapshot, MAX_SEQUENCES, SharedSequences};
+use rp2a03_core::software_lfo::MAX_DELAY_FRAMES;
 use std::sync::Arc;
 
 use crate::voice_bank::MAX_VOICES;
@@ -84,11 +85,11 @@ impl Default for Rp2a03Params {
             ),
             vibrato_depth: IntParam::new("Vibrato Depth", 0, linear(0, 15)),
             vibrato_speed: IntParam::new("Vibrato Speed", 4, linear(0, 63)),
-            vibrato_delay: IntParam::new("Vibrato Delay", 0, linear(0, 127)),
+            vibrato_delay: IntParam::new("Vibrato Delay", 0, linear(0, MAX_DELAY_FRAMES as i32)),
             tremolo_depth: IntParam::new("Tremolo Depth", 0, linear(0, 15)),
             tremolo_speed: IntParam::new("Tremolo Speed", 4, linear(0, 63)),
-            tremolo_delay: IntParam::new("Tremolo Delay", 0, linear(0, 127)),
-            delay_speed: IntParam::new("Delay Speed", 0, linear(0, 127)),
+            tremolo_delay: IntParam::new("Tremolo Delay", 0, linear(0, MAX_DELAY_FRAMES as i32)),
+            delay_speed: IntParam::new("Delay Speed", 0, linear(0, MAX_DELAY_FRAMES as i32)),
             hardware_volume: IntParam::new("HW Volume", 15, linear(0, 15)),
             fine_pitch: IntParam::new("Pitch", 0, linear(-64, 63)),
             hi_pitch: IntParam::new("Hi-Pitch", 0, linear(-64, 63)),

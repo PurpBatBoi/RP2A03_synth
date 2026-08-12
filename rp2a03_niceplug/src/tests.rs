@@ -272,7 +272,10 @@ impl AutomationTarget {
             Self::SequenceNumber => (0, 127),
             Self::VibratoDepth | Self::TremoloDepth => (0, 15),
             Self::VibratoSpeed | Self::TremoloSpeed => (0, 63),
-            Self::VibratoDelay | Self::TremoloDelay | Self::DelaySpeed => (0, 127),
+            Self::VibratoDelay | Self::TremoloDelay | Self::DelaySpeed => (
+                0,
+                rp2a03_core::software_lfo::MAX_DELAY_FRAMES as i32,
+            ),
             Self::HardwareVolume => (0, 15),
             Self::FinePitch | Self::HiPitch => (-64, 63),
             Self::PitchSlide => (-8192, 8191),
