@@ -2837,7 +2837,7 @@ dependencies = [
 
 [[package]]
 name = "rp2a03_common"
-version = "0.0.7-Alpha"
+version = "0.0.8-Alpha"
 dependencies = [
  "egui",
  "egui_extras",
@@ -2852,7 +2852,7 @@ dependencies = [
 
 [[package]]
 name = "rp2a03_core"
-version = "0.0.7-Alpha"
+version = "0.0.8-Alpha"
 dependencies = [
  "serde",
  "serde_json",
@@ -2860,7 +2860,7 @@ dependencies = [
 
 [[package]]
 name = "rp2a03_niceplug"
-version = "0.0.7-Alpha"
+version = "0.0.8-Alpha"
 dependencies = [
  "ctor",
  "dirs",
