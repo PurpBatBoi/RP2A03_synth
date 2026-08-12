@@ -9,6 +9,16 @@ A FamiTracker-style sequencer, software LFOs, portamento, MIDI, and host automat
 
 > **Alpha software:** expect bugs and incomplete features.
 
+## Synth Showcase
+
+### "SUNNY" — Snail House cover by [recme](https://github.com/recm3)
+
+https://github.com/user-attachments/assets/b758d92e-7e35-460d-8dde-89ff16a07951
+
+### "The Brilliant Truth" — *Mina the Hollower* cover by Purpbatboi
+
+https://github.com/user-attachments/assets/d7d7984e-a96e-4002-8f1c-d2bf56444ee7
+
 ## Features
 
 * Register-level **2A03** emulation
@@ -68,15 +78,6 @@ The core models the important APU behavior at the register/channel level, but in
 
 For bit-accurate tracker playback, use [FamiStudio](https://famistudio.org/), [Furnace](https://tildearrow.org/furnace/), or [Dn-FamiTracker](https://github.com/Dn-Programming-Core-Management/Dn-FamiTracker).
 
-## Synth Showcase
-
-### "SUNNY" — Snail House cover by [recme](https://github.com/recm3)
-
-https://github.com/user-attachments/assets/b758d92e-7e35-460d-8dde-89ff16a07951
-
-### "The Brilliant Truth" — *Mina the Hollower* cover by Purpbatboi
-
-https://github.com/user-attachments/assets/d7d7984e-a96e-4002-8f1c-d2bf56444ee7
 
 ## Building
 
