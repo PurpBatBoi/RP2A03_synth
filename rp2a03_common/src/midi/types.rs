@@ -189,8 +189,11 @@ impl SequenceReload {
 pub struct HostAutomationSnapshot {
     pub vibrato_depth: u8,
     pub vibrato_speed: u8,
+    pub vibrato_delay: u8,
     pub tremolo_depth: u8,
     pub tremolo_speed: u8,
+    pub tremolo_delay: u8,
+    pub delay_speed: u8,
     pub hardware_volume: u8,
     pub fine_pitch: i8,
     pub hi_pitch: i8,
@@ -208,8 +211,11 @@ impl Default for HostAutomationSnapshot {
         Self {
             vibrato_depth: 0,
             vibrato_speed: DEFAULT_LFO_SPEED,
+            vibrato_delay: 0,
             tremolo_depth: 0,
             tremolo_speed: DEFAULT_LFO_SPEED,
+            tremolo_delay: 0,
+            delay_speed: 0,
             hardware_volume: 15,
             fine_pitch: 0,
             hi_pitch: 0,

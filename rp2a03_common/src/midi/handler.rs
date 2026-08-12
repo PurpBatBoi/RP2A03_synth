@@ -451,6 +451,17 @@ impl MidiHandler {
             self.lfo
                 .set_tremolo(self.lfo.tremolo_depth, controls.tremolo_speed);
         }
+        if self.last_host_controls.is_none()
+            || controls.vibrato_delay != previous.vibrato_delay
+            || controls.tremolo_delay != previous.tremolo_delay
+            || controls.delay_speed != previous.delay_speed
+        {
+            self.lfo.set_delay_params(
+                controls.vibrato_delay,
+                controls.tremolo_delay,
+                controls.delay_speed,
+            );
+        }
         if self.last_host_controls.is_none() || controls.hardware_volume != previous.hardware_volume
         {
             self.hardware_volume = controls.hardware_volume.min(15);

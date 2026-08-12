@@ -154,6 +154,9 @@ impl MidiHandler {
         self.note_stack.push((note, velocity));
 
         self.trigger_sequences(seqs);
+        if !was_gated {
+            self.lfo.retrigger();
+        }
         self.apply_top_note(channel, reset_phase);
         self.recalculate_macro_period(seqs);
         let target_period = self.macro_period;

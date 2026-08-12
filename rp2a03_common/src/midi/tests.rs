@@ -62,8 +62,11 @@ fn host_automation_controls_update_the_matching_synth_controls() {
     handler.apply_host_automation(HostAutomationControls {
         vibrato_depth: 7,
         vibrato_speed: 20,
+        vibrato_delay: 11,
         tremolo_depth: 9,
         tremolo_speed: 30,
+        tremolo_delay: 13,
+        delay_speed: 17,
         hardware_volume: 11,
         fine_pitch: -24,
         hi_pitch: 5,
@@ -76,8 +79,11 @@ fn host_automation_controls_update_the_matching_synth_controls() {
 
     assert_eq!(handler.lfo.vibrato_depth, 7);
     assert_eq!(handler.lfo.vibrato_speed, 20);
+    assert_eq!(handler.lfo.vibrato_delay, 11);
     assert_eq!(handler.lfo.tremolo_depth, 9);
     assert_eq!(handler.lfo.tremolo_speed, 30);
+    assert_eq!(handler.lfo.tremolo_delay, 13);
+    assert_eq!(handler.lfo.delay_speed, 17);
     assert_eq!(handler.hardware_volume, 11);
     assert!(handler.portamento_enabled);
     assert_eq!(handler.portamento_speed, 42);

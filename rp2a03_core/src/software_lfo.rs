@@ -31,6 +31,10 @@ pub struct SoftwareLfo {
     pub vibrato_speed: u8,
     /// Vibrato position accumulator (0..63 cycle)
     pub vibrato_pos: u8,
+    /// Vibrato delay before modulation starts, in engine frames.
+    pub vibrato_delay: u8,
+    vibrato_delay_remaining: u8,
+    vibrato_fade_elapsed: u8,
 
     /// Tremolo depth (0..15 index)
     pub tremolo_depth: u8,
@@ -38,6 +42,14 @@ pub struct SoftwareLfo {
     pub tremolo_speed: u8,
     /// Tremolo position accumulator (0..63 cycle)
     pub tremolo_pos: u8,
+    /// Tremolo delay before modulation starts, in engine frames.
+    pub tremolo_delay: u8,
+    tremolo_delay_remaining: u8,
+    tremolo_fade_elapsed: u8,
+    /// Shared linear fade duration, in engine frames.
+    pub delay_speed: u8,
+    vibrato_fade_speed: u8,
+    tremolo_fade_speed: u8,
 }
 
 impl Default for SoftwareLfo {
@@ -46,9 +58,18 @@ impl Default for SoftwareLfo {
             vibrato_depth: 0,
             vibrato_speed: DEFAULT_LFO_SPEED,
             vibrato_pos: 0,
+            vibrato_delay: 0,
+            vibrato_delay_remaining: 0,
+            vibrato_fade_elapsed: 0,
             tremolo_depth: 0,
             tremolo_speed: DEFAULT_LFO_SPEED,
             tremolo_pos: 0,
+            tremolo_delay: 0,
+            tremolo_delay_remaining: 0,
+            tremolo_fade_elapsed: 0,
+            delay_speed: 0,
+            vibrato_fade_speed: 0,
+            tremolo_fade_speed: 0,
         }
     }
 }
@@ -64,10 +85,19 @@ impl SoftwareLfo {
         self.vibrato_depth = 0;
         self.vibrato_speed = DEFAULT_LFO_SPEED;
         self.vibrato_pos = 0;
+        self.vibrato_delay = 0;
+        self.vibrato_delay_remaining = 0;
+        self.vibrato_fade_elapsed = 0;
 
         self.tremolo_depth = 0;
         self.tremolo_speed = DEFAULT_LFO_SPEED;
         self.tremolo_pos = 0;
+        self.tremolo_delay = 0;
+        self.tremolo_delay_remaining = 0;
+        self.tremolo_fade_elapsed = 0;
+        self.delay_speed = 0;
+        self.vibrato_fade_speed = 0;
+        self.tremolo_fade_speed = 0;
     }
 
     /// Set Vibrato depth (0..15) and speed (0..63).
@@ -82,21 +112,76 @@ impl SoftwareLfo {
         self.tremolo_speed = speed.min(63);
     }
 
+    /// Set delays and the shared linear fade duration. These settings apply to
+    /// the next retrigger; an active delay/fade keeps its current timing.
+    pub fn set_delay_params(&mut self, vibrato_delay: u8, tremolo_delay: u8, delay_speed: u8) {
+        self.vibrato_delay = vibrato_delay;
+        self.tremolo_delay = tremolo_delay;
+        self.delay_speed = delay_speed;
+    }
+
+    /// Retrigger both modulation effects for a fresh note.
+    pub fn retrigger(&mut self) {
+        self.vibrato_delay_remaining = self.vibrato_delay;
+        self.tremolo_delay_remaining = self.tremolo_delay;
+        self.vibrato_fade_elapsed = 0;
+        self.tremolo_fade_elapsed = 0;
+        self.vibrato_fade_speed = self.delay_speed;
+        self.tremolo_fade_speed = self.delay_speed;
+    }
+
     /// Clock the LFO accumulators by one tick (e.g. at 60 Hz frame rate).
     pub fn clock_tick(&mut self) {
-        if self.vibrato_speed > 0 {
+        if self.vibrato_delay_remaining > 0 {
+            self.vibrato_delay_remaining -= 1;
+        } else {
+            self.vibrato_fade_elapsed = self
+                .vibrato_fade_elapsed
+                .saturating_add(1)
+                .min(self.vibrato_fade_speed);
+        }
+        if self.vibrato_delay_remaining == 0 && self.vibrato_speed > 0 {
             self.vibrato_pos = self.vibrato_pos.wrapping_add(self.vibrato_speed) & 0x3F;
         }
 
-        if self.tremolo_speed > 0 {
+        if self.tremolo_delay_remaining > 0 {
+            self.tremolo_delay_remaining -= 1;
+        } else {
+            self.tremolo_fade_elapsed = self
+                .tremolo_fade_elapsed
+                .saturating_add(1)
+                .min(self.tremolo_fade_speed);
+        }
+        if self.tremolo_delay_remaining == 0 && self.tremolo_speed > 0 {
             self.tremolo_pos = self.tremolo_pos.wrapping_add(self.tremolo_speed) & 0x3F;
+        }
+    }
+
+    fn vibrato_fade_scale(&self) -> u16 {
+        if self.vibrato_delay_remaining > 0 || self.vibrato_fade_speed == 0 {
+            256
+        } else {
+            (u16::from(self.vibrato_fade_elapsed) * 256 / u16::from(self.vibrato_fade_speed))
+                .min(256)
+        }
+    }
+
+    fn tremolo_fade_scale(&self) -> u16 {
+        if self.tremolo_delay_remaining > 0 || self.tremolo_fade_speed == 0 {
+            256
+        } else {
+            (u16::from(self.tremolo_fade_elapsed) * 256 / u16::from(self.tremolo_fade_speed))
+                .min(256)
         }
     }
 
     /// Calculate the current Vibrato pitch period delta.
     /// Returns signed period shift (subtracting period increases pitch).
     pub fn vibrato_pitch_delta(&self) -> i16 {
-        if self.vibrato_speed == 0 || self.vibrato_depth == 0 {
+        if self.vibrato_speed == 0
+            || self.vibrato_depth == 0
+            || self.vibrato_delay_remaining > 0
+        {
             return 0;
         }
 
@@ -114,12 +199,16 @@ impl SoftwareLfo {
         let table_idx = ((self.vibrato_depth as usize) << 4) | (idx as usize);
         let magnitude = FT_VIBRATO_TABLE[table_idx.min(255)] as i16;
 
+        let magnitude = magnitude * self.vibrato_fade_scale() as i16 / 256;
         if negate { -magnitude } else { magnitude }
     }
 
     /// Calculate the current Tremolo volume reduction delta (0..15).
     pub fn tremolo_volume_delta(&self) -> u8 {
-        if self.tremolo_speed == 0 || self.tremolo_depth == 0 {
+        if self.tremolo_speed == 0
+            || self.tremolo_depth == 0
+            || self.tremolo_delay_remaining > 0
+        {
             return 0;
         }
 
@@ -130,7 +219,7 @@ impl SoftwareLfo {
         let table_idx = ((self.tremolo_depth as usize) << 4) | (phase as usize);
         let raw_val = FT_VIBRATO_TABLE[table_idx.min(255)];
 
-        raw_val >> 1 // Right shift by 1 to scale volume reduction to 0..15
+        ((u16::from(raw_val >> 1) * self.tremolo_fade_scale()) / 256) as u8
     }
 }
 
@@ -186,5 +275,25 @@ mod tests {
                 vol_delta
             );
         }
+    }
+
+    #[test]
+    fn test_delay_and_linear_fade() {
+        let mut lfo = SoftwareLfo::new();
+        lfo.set_vibrato(15, 1);
+        lfo.set_delay_params(2, 0, 2);
+        lfo.retrigger();
+        lfo.vibrato_pos = 8;
+
+        assert_eq!(lfo.vibrato_pitch_delta(), 0);
+        lfo.clock_tick();
+        assert_eq!(lfo.vibrato_pitch_delta(), 0);
+        lfo.clock_tick();
+        assert_eq!(lfo.vibrato_pitch_delta(), 0);
+        lfo.clock_tick();
+        let half = lfo.vibrato_pitch_delta();
+        assert!(half > 0);
+        lfo.clock_tick();
+        assert!(lfo.vibrato_pitch_delta() >= half);
     }
 }

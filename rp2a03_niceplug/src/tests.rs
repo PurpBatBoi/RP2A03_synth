@@ -228,8 +228,11 @@ enum AutomationTarget {
     SequenceNumber,
     VibratoDepth,
     VibratoSpeed,
+    VibratoDelay,
     TremoloDepth,
     TremoloSpeed,
+    TremoloDelay,
+    DelaySpeed,
     HardwareVolume,
     FinePitch,
     HiPitch,
@@ -243,12 +246,15 @@ enum AutomationTarget {
 }
 
 impl AutomationTarget {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 18] = [
         Self::SequenceNumber,
         Self::VibratoDepth,
         Self::VibratoSpeed,
+        Self::VibratoDelay,
         Self::TremoloDepth,
         Self::TremoloSpeed,
+        Self::TremoloDelay,
+        Self::DelaySpeed,
         Self::HardwareVolume,
         Self::FinePitch,
         Self::HiPitch,
@@ -266,6 +272,7 @@ impl AutomationTarget {
             Self::SequenceNumber => (0, 127),
             Self::VibratoDepth | Self::TremoloDepth => (0, 15),
             Self::VibratoSpeed | Self::TremoloSpeed => (0, 63),
+            Self::VibratoDelay | Self::TremoloDelay | Self::DelaySpeed => (0, 127),
             Self::HardwareVolume => (0, 15),
             Self::FinePitch | Self::HiPitch => (-64, 63),
             Self::PitchSlide => (-8192, 8191),
@@ -281,8 +288,11 @@ impl AutomationTarget {
             Self::SequenceNumber => set_int(&params.sequence_number, value),
             Self::VibratoDepth => set_int(&params.vibrato_depth, value),
             Self::VibratoSpeed => set_int(&params.vibrato_speed, value),
+            Self::VibratoDelay => set_int(&params.vibrato_delay, value),
             Self::TremoloDepth => set_int(&params.tremolo_depth, value),
             Self::TremoloSpeed => set_int(&params.tremolo_speed, value),
+            Self::TremoloDelay => set_int(&params.tremolo_delay, value),
+            Self::DelaySpeed => set_int(&params.delay_speed, value),
             Self::HardwareVolume => set_int(&params.hardware_volume, value),
             Self::FinePitch => set_int(&params.fine_pitch, value),
             Self::HiPitch => set_int(&params.hi_pitch, value),
@@ -303,8 +313,11 @@ impl AutomationTarget {
             Self::SequenceNumber => harness.plugin.params.sequence_number.value(),
             Self::VibratoDepth => i32::from(handler.lfo.vibrato_depth),
             Self::VibratoSpeed => i32::from(handler.lfo.vibrato_speed),
+            Self::VibratoDelay => i32::from(handler.lfo.vibrato_delay),
             Self::TremoloDepth => i32::from(handler.lfo.tremolo_depth),
             Self::TremoloSpeed => i32::from(handler.lfo.tremolo_speed),
+            Self::TremoloDelay => i32::from(handler.lfo.tremolo_delay),
+            Self::DelaySpeed => i32::from(handler.lfo.delay_speed),
             Self::HardwareVolume => i32::from(handler.hardware_volume),
             Self::FinePitch => i32::from(handler.fine_pitch),
             Self::HiPitch => i32::from(handler.hi_pitch),
@@ -597,7 +610,10 @@ fn host_automation_controls_track_the_parameters() {
     let params = Rp2a03Params::default();
     set_int(&params.vibrato_depth, 7);
     set_int(&params.vibrato_speed, 20);
+    set_int(&params.vibrato_delay, 11);
     set_int(&params.tremolo_depth, 3);
+    set_int(&params.tremolo_delay, 13);
+    set_int(&params.delay_speed, 17);
     set_int(&params.hardware_volume, 9);
     set_int(&params.fine_pitch, -12);
     set_int(&params.pitch_slide, -4096);
@@ -609,7 +625,10 @@ fn host_automation_controls_track_the_parameters() {
     let controls = params.host_automation_snapshot();
     assert_eq!(controls.vibrato_depth, 7);
     assert_eq!(controls.vibrato_speed, 20);
+    assert_eq!(controls.vibrato_delay, 11);
     assert_eq!(controls.tremolo_depth, 3);
+    assert_eq!(controls.tremolo_delay, 13);
+    assert_eq!(controls.delay_speed, 17);
     assert_eq!(controls.hardware_volume, 9);
     assert_eq!(controls.fine_pitch, -12);
     assert_eq!(controls.pitch_slide, -4096);

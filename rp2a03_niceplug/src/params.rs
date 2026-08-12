@@ -33,10 +33,16 @@ pub(crate) struct Rp2a03Params {
     pub vibrato_depth: IntParam,
     #[id = "vibrato_speed"]
     pub vibrato_speed: IntParam,
+    #[id = "vibrato_delay"]
+    pub vibrato_delay: IntParam,
     #[id = "tremolo_depth"]
     pub tremolo_depth: IntParam,
     #[id = "tremolo_speed"]
     pub tremolo_speed: IntParam,
+    #[id = "tremolo_delay"]
+    pub tremolo_delay: IntParam,
+    #[id = "delay_speed"]
+    pub delay_speed: IntParam,
     #[id = "hardware_volume"]
     pub hardware_volume: IntParam,
     #[id = "fine_pitch"]
@@ -78,8 +84,11 @@ impl Default for Rp2a03Params {
             ),
             vibrato_depth: IntParam::new("Vibrato Depth", 0, linear(0, 15)),
             vibrato_speed: IntParam::new("Vibrato Speed", 4, linear(0, 63)),
+            vibrato_delay: IntParam::new("Vibrato Delay", 0, linear(0, 127)),
             tremolo_depth: IntParam::new("Tremolo Depth", 0, linear(0, 15)),
             tremolo_speed: IntParam::new("Tremolo Speed", 4, linear(0, 63)),
+            tremolo_delay: IntParam::new("Tremolo Delay", 0, linear(0, 127)),
+            delay_speed: IntParam::new("Delay Speed", 0, linear(0, 127)),
             hardware_volume: IntParam::new("HW Volume", 15, linear(0, 15)),
             fine_pitch: IntParam::new("Pitch", 0, linear(-64, 63)),
             hi_pitch: IntParam::new("Hi-Pitch", 0, linear(-64, 63)),
@@ -119,8 +128,11 @@ impl Rp2a03Params {
         HostAutomationSnapshot {
             vibrato_depth: self.vibrato_depth.value() as u8,
             vibrato_speed: self.vibrato_speed.value() as u8,
+            vibrato_delay: self.vibrato_delay.value() as u8,
             tremolo_depth: self.tremolo_depth.value() as u8,
             tremolo_speed: self.tremolo_speed.value() as u8,
+            tremolo_delay: self.tremolo_delay.value() as u8,
+            delay_speed: self.delay_speed.value() as u8,
             hardware_volume: self.hardware_volume.value() as u8,
             fine_pitch: self.fine_pitch.value() as i8,
             hi_pitch: self.hi_pitch.value() as i8,
