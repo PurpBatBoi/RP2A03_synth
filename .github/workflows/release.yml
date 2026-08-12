@@ -72,6 +72,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.platform }}
+          # Native macOS bundle builds create CMake dependency trees under
+          # target/ that are not stable cache contents. Keeping those trees in
+          # the cache causes harmless but noisy ENOENT reports when the cache
+          # is restored without their optional test directories.
+          cache-targets: ${{ matrix.platform != 'Mac' }}
 
       # The whole workspace, with this platform's editor backend. rp2a03_niceplug
       # owns the rendered-audio fingerprint tests and the block-size regressions,
