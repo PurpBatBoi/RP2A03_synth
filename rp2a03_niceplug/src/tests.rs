@@ -344,8 +344,8 @@ fn every_midi_demo_reaches_every_host_automation_parameter_on_four_replays() {
     const PPQ: u64 = 960;
 
     let references = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join(".references");
+        .join("tests")
+        .join("fixtures");
     let mut fixtures: Vec<_> = std::fs::read_dir(&references)
         .expect("references directory must be present")
         .map(|entry| {
