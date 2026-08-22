@@ -14,3 +14,7 @@
 *.vst3
 *.vst
 *.d
+
+# Baseline renders: hashes are committed in tests/baseline/manifest.txt,
+# the audio itself is local-only.
+/tests/baseline/wav/

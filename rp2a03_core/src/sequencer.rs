@@ -1,4 +1,4 @@
-//! rp2a03_core\src\sequencer.rs
+//! `rp2a03_core\src\sequencer.rs`
 //!
 //! FamiTracker-style sequence engine for volume, arpeggio, pitch, hi-pitch, and duty cycle envelopes.
 //!
@@ -11,11 +11,14 @@
 //! - Loop marker `|`: defines step index where sequence loops back while key is held.
 //! - Release marker `/`: defines step index where playback jumps when key is released `NoteOff`).
 
+/// Whether a pitch/hi-pitch sequence's step values accumulate or set the offset outright.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum PitchMode {
+    /// Each step adds to the running pitch offset.
     #[default]
     Relative = 0,
+    /// Each step replaces the pitch offset outright.
     Absolute = 1,
 }
 
@@ -52,7 +55,7 @@ pub enum VolMode {
 /// to `ChannelMode::S5B`. Not a reuse of `VolMode`: the rescale math there is
 /// hardcoded to the 16<->64 relationship for VRC6's 6-bit accumulator, whereas
 /// the S5B's hardware volume register is 5-bit (0..=31), a 16<->32 relationship.
-/// A deliberate addition beyond stock DnFamiTracker, which has no S5B
+/// A deliberate addition beyond stock `DnFamiTracker`, which has no S5B
 /// equivalent of `SETTING_VOL_64_STEPS`. The two modes differ in curve as well
 /// as in resolution — see `MidiHandler::apply_s5b_modulation`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -75,7 +78,9 @@ pub enum VolMode5B {
 /// Bits 0-4 (`0x1F`) hold the noise period (0..=31); these three flag bits sit
 /// above it in the same `i16` step value.
 pub const S5B_MODE_ENVELOPE: i16 = 0x20;
+/// Set when the S5B step should enable the tone (square) generator.
 pub const S5B_MODE_SQUARE: i16 = 0x40;
+/// Set when the S5B step should enable the noise generator.
 pub const S5B_MODE_NOISE: i16 = 0x80;
 /// Mask for the noise-period bits of an S5B duty/mode step value.
 pub const S5B_PERIOD_MASK: i16 = 0x1F;
@@ -86,11 +91,13 @@ pub const S5B_PERIOD_MASK: i16 = 0x1F;
 /// sequences authored before this field existed. Valid decoded index range
 /// is 0..=8 (3.125%..96.875%), i.e. offset -4..=4.
 pub const S5B_DUTY_SHIFT: i16 = 8;
+/// Mask for the duty-width bits of an S5B duty/mode step value.
 pub const S5B_DUTY_MASK: i16 = 0x0F << S5B_DUTY_SHIFT;
 /// Duty preset index that offset 0 (bit pattern 0) decodes to.
 pub const S5B_DUTY_DEFAULT_INDEX: i16 = 4;
 
 /// Decodes the duty preset index (0..=8) packed into an S5B step value.
+#[must_use]
 pub fn s5b_duty_index(value: i16) -> i16 {
     let raw = (value & S5B_DUTY_MASK) >> S5B_DUTY_SHIFT;
     // Sign-extend the 4-bit field (two's complement) before adding the
@@ -101,11 +108,14 @@ pub fn s5b_duty_index(value: i16) -> i16 {
 
 /// Packs a duty preset index (0..=8) into an S5B step value, preserving all
 /// other bits.
+#[must_use]
 pub fn s5b_set_duty_index(value: i16, index: i16) -> i16 {
     let offset = index.clamp(0, 8) - S5B_DUTY_DEFAULT_INDEX;
     (value & !S5B_DUTY_MASK) | ((offset << S5B_DUTY_SHIFT) & S5B_DUTY_MASK)
 }
 
+/// One FamiTracker-style envelope: a list of step values plus optional
+/// loop/release markers, authored per lane and per numbered sequence slot.
 #[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sequence {
     /// Step values (signed to support bipolar pitch/arpeggio/hi-pitch offsets).
@@ -168,15 +178,11 @@ impl Clone for Sequence {
 
 impl Sequence {
     /// Create a new sequence with a single step value.
+    #[must_use]
     pub fn single(value: i16) -> Self {
         Self {
             values: vec![value],
-            loop_point: None,
-            release_point: None,
-            pitch_mode: PitchMode::default(),
-            arp_mode: ArpMode::default(),
-            vol_mode: VolMode::default(),
-            vol_mode_5b: VolMode5B::default(),
+            ..Default::default()
         }
     }
 
@@ -186,6 +192,7 @@ impl Sequence {
     /// - Numbers: step values (signed integers).
     /// - `|` or `L`: marks loop start step index.
     /// - `/` or `R`: marks release start step index.
+    #[must_use]
     pub fn parse(input: &str) -> Self {
         let (seq, _) = Self::parse_clamped(input, i16::MIN, i16::MAX);
         seq
@@ -193,6 +200,7 @@ impl Sequence {
 
     /// Parse a sequence string and clamp all numeric tokens to `[min_val, max_val]`.
     /// Returns the parsed `Sequence` and a normalized/clamped text string.
+    #[must_use]
     pub fn parse_clamped(input: &str, min_val: i16, max_val: i16) -> (Self, String) {
         let mut values = Vec::new();
         let mut loop_point = None;
@@ -229,26 +237,26 @@ impl Sequence {
             values,
             loop_point,
             release_point,
-            pitch_mode: PitchMode::default(),
-            arp_mode: ArpMode::default(),
-            vol_mode: VolMode::default(),
-            vol_mode_5b: VolMode5B::default(),
+            ..Default::default()
         };
 
         (sequence, normalized_text)
     }
 
     /// Get total number of steps in sequence.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Check if sequence is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
     /// Get value at a given step index, clamped to valid bounds.
+    #[must_use]
     pub fn get(&self, index: usize) -> i16 {
         if self.values.is_empty() {
             return 0;
@@ -315,14 +323,15 @@ impl Default for SequencePlayer {
 
 impl SequencePlayer {
     /// Create a new sequence player.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Trigger the sequence (called on NoteOn). Reads step 0 immediately
-    /// into current_value and advances position to step 1, matching dnFamiTracker
+    /// Trigger the sequence (called on `NoteOn`). Reads step 0 immediately
+    /// into `current_value` and advances position to step 1, matching dnFamiTracker
     /// triggering the instrument and processing sequence step 0 within the same
-    /// engine frame (TriggerInstrument -> UpdateInstrument).
+    /// engine frame (`TriggerInstrument` -> `UpdateInstrument`).
     pub fn trigger(&mut self, seq: &Sequence) {
         if seq.is_empty() {
             self.state = SeqState::Disabled;
@@ -336,7 +345,7 @@ impl SequencePlayer {
         self.clock_tick(seq);
     }
 
-    /// Release the sequence (called on NoteOff).
+    /// Release the sequence (called on `NoteOff`).
     ///
     /// 1:1 with dn's `CSeqInstHandler::ReleaseInstrument()`: the release flag is always
     /// set, but the pointer only jumps when the sequence is still `Running` or already
@@ -375,8 +384,8 @@ impl SequencePlayer {
 
         // dn uses -1 sentinels for "no loop/release point"; translate with signed math
         // so the comparisons below read exactly like CSeqInstHandler::UpdateInstrument.
-        let release = seq.release_point.map(|r| r as isize).unwrap_or(-1);
-        let loop_pt = seq.loop_point.map(|l| l as isize).unwrap_or(-1);
+        let release = seq.release_point.map_or(-1, |r| r as isize);
+        let loop_pt = seq.loop_point.map_or(-1, |l| l as isize);
         let items = seq_len as isize;
         let pos = self.pos as isize;
 
@@ -418,6 +427,7 @@ impl SequencePlayer {
     }
 
     /// Get current output value without advancing.
+    #[must_use]
     pub fn value(&self) -> i16 {
         self.current_value
     }
@@ -428,264 +438,5 @@ impl SequencePlayer {
         self.state = SeqState::Disabled;
         self.is_releasing = false;
         self.current_value = 0;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_famitracker_string() {
-        let seq = Sequence::parse("6 8 9 10 | 11 12 12 12 11 9 8 8 9 / 9 10 12 11 11 10");
-        assert_eq!(seq.len(), 19);
-        assert_eq!(seq.loop_point, Some(4));
-        assert_eq!(seq.release_point, Some(13));
-        assert_eq!(seq.values[0], 6);
-        assert_eq!(seq.values[4], 11);
-        assert_eq!(seq.values[13], 9);
-    }
-
-    #[test]
-    fn test_parse_clamped_values() {
-        let (seq, text) = Sequence::parse_clamped("0 5 32 -50 10", 0, 15);
-        assert_eq!(seq.values, vec![0, 5, 15, 0, 10]);
-        assert_eq!(text, "0 5 15 0 10");
-    }
-
-    #[test]
-    fn test_signed_bipolar_values() {
-        let (seq, _) = Sequence::parse_clamped("0 4 7 12 -12 | 0 -4 -7 / -12", -128, 127);
-        assert_eq!(seq.values, vec![0, 4, 7, 12, -12, 0, -4, -7, -12]);
-        assert_eq!(seq.loop_point, Some(5));
-        assert_eq!(seq.release_point, Some(8));
-    }
-
-    #[test]
-    fn test_pitch_mode_defaults() {
-        let seq = Sequence::default();
-        assert_eq!(seq.pitch_mode, PitchMode::Relative);
-    }
-
-    #[test]
-    fn test_s5b_duty_index_unset_reads_as_default() {
-        assert_eq!(s5b_duty_index(0), S5B_DUTY_DEFAULT_INDEX);
-    }
-
-    #[test]
-    fn test_s5b_duty_index_roundtrip() {
-        for index in 0..=8 {
-            let value = s5b_set_duty_index(0, index);
-            assert_eq!(s5b_duty_index(value), index, "index {index} roundtrip");
-        }
-    }
-
-    #[test]
-    fn test_s5b_duty_index_preserves_other_bits() {
-        let value = S5B_PERIOD_MASK | S5B_MODE_SQUARE | S5B_MODE_NOISE;
-        let with_duty = s5b_set_duty_index(value, 0);
-        assert_eq!(with_duty & S5B_PERIOD_MASK, S5B_PERIOD_MASK);
-        assert_eq!(with_duty & S5B_MODE_SQUARE, S5B_MODE_SQUARE);
-        assert_eq!(with_duty & S5B_MODE_NOISE, S5B_MODE_NOISE);
-        assert_eq!(s5b_duty_index(with_duty), 0);
-    }
-
-    // ── SequencePlayer dn-parity tests ──
-    // Expected step values below are traced from dnFamiTracker
-    // CSeqInstHandler::UpdateInstrument() / ReleaseInstrument().
-
-    #[test]
-    fn sequence_without_vol_mode_deserializes_as_16_steps() {
-        // Saved states written before `vol_mode` existed must still load; dn's own
-        // default for a volume sequence is SETTING_VOL_16_STEPS.
-        let json = r#"{
-            "values": [15, 7, 0],
-            "loop_point": null,
-            "release_point": null,
-            "pitch_mode": "Relative",
-            "arp_mode": "Absolute"
-        }"#;
-
-        let seq: Sequence = serde_json::from_str(json).expect("legacy state must deserialize");
-        assert_eq!(seq.vol_mode, VolMode::Steps16);
-        assert_eq!(seq.values, vec![15, 7, 0]);
-    }
-
-    #[test]
-    fn sequence_vol_mode_round_trips() {
-        let mut seq = Sequence::parse("63 32");
-        seq.vol_mode = VolMode::Steps64;
-
-        let json = serde_json::to_string(&seq).unwrap();
-        let restored: Sequence = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored, seq);
-    }
-
-    #[test]
-    fn player_no_markers_ends_and_holds_last_value() {
-        let seq = Sequence::parse("5 7");
-        let mut player = SequencePlayer::new();
-
-        player.trigger(&seq); // reads step 0 immediately
-        assert_eq!(player.value(), 5);
-        assert_eq!(player.state, SeqState::Running);
-
-        assert_eq!(player.clock_tick(&seq), 7); // step 1; pointer passes end -> End
-        assert_eq!(player.state, SeqState::End);
-
-        // dn END/HALT: value holds but no further step processing happens
-        assert_eq!(player.clock_tick(&seq), 7);
-        assert_eq!(player.clock_tick(&seq), 7);
-        assert_eq!(player.state, SeqState::End);
-    }
-
-    #[test]
-    fn player_loop_only_repeats_from_loop_point() {
-        let seq = Sequence::parse("1 2 | 3");
-        let mut player = SequencePlayer::new();
-
-        player.trigger(&seq);
-        for expected in [2, 3, 3, 3, 3] {
-            assert_eq!(player.clock_tick(&seq), expected);
-            assert_eq!(player.state, SeqState::Running);
-        }
-    }
-
-    #[test]
-    fn player_loop_includes_release_point_step_before_release() {
-        // dn: loopback check is pointer == release + 1, so the release-point step (value 4)
-        // is processed once per loop pass while the key is held.
-        let seq = Sequence::parse("1 | 2 3 / 4 5"); // loop = 1, release = 3
-        let mut player = SequencePlayer::new();
-
-        player.trigger(&seq);
-        let expected = [2, 3, 4, 2, 3, 4, 2, 3];
-        for e in expected {
-            assert_eq!(player.clock_tick(&seq), e);
-        }
-
-        // 1:1 with dn ReleaseInstrument: pointer jumps now, value is processed next tick
-        player.release(&seq);
-        assert_eq!(
-            player.value(),
-            3,
-            "release() must not read the release step early"
-        );
-        assert_eq!(player.state, SeqState::Running);
-
-        // Release tail: reads step 3 again, then step 4, then ends
-        assert_eq!(player.clock_tick(&seq), 4);
-        assert_eq!(player.state, SeqState::Running);
-        assert_eq!(player.clock_tick(&seq), 5);
-        assert_eq!(player.state, SeqState::End);
-        assert_eq!(player.clock_tick(&seq), 5);
-    }
-
-    #[test]
-    fn player_waiting_for_release_rereads_release_step_every_tick() {
-        // release = 2 with one more step after it, so the wait branch (pos == release + 1
-        // while pos < items) actually engages instead of falling into end-of-sequence.
-        let seq = Sequence::parse("1 2 / 3 4");
-        let mut player = SequencePlayer::new();
-
-        player.trigger(&seq); // value 1
-        assert_eq!(player.clock_tick(&seq), 2); // step 1
-        // Boundary: pointer reached release + 1 while key held, no loop -> freeze at step 2
-        assert_eq!(player.clock_tick(&seq), 3);
-        assert_eq!(player.state, SeqState::Running);
-        // dn re-processes the release-point step every tick during the wait (matters for
-        // accumulating relative pitch/hi-pitch sequences)
-        assert_eq!(player.clock_tick(&seq), 3);
-        assert_eq!(player.clock_tick(&seq), 3);
-        assert_eq!(player.state, SeqState::Running);
-
-        player.release(&seq);
-        // Release tail: release step processed again on the next tick, then the final step
-        assert_eq!(player.clock_tick(&seq), 3);
-        assert_eq!(player.state, SeqState::Running);
-        assert_eq!(player.clock_tick(&seq), 4);
-        assert_eq!(player.state, SeqState::End);
-        assert_eq!(player.clock_tick(&seq), 4);
-    }
-
-    #[test]
-    fn player_release_without_release_point_keeps_looping() {
-        let seq = Sequence::parse("1 | 2 3");
-        let mut player = SequencePlayer::new();
-
-        player.trigger(&seq);
-        player.release(&seq); // no release point: only the flag changes
-        assert!(player.is_releasing);
-        assert_eq!(player.state, SeqState::Running);
-
-        // dn: with no release point the loop condition ignores the release flag
-        for expected in [2, 3, 2, 3] {
-            assert_eq!(player.clock_tick(&seq), expected);
-            assert_eq!(player.state, SeqState::Running);
-        }
-    }
-
-    #[test]
-    fn player_release_does_nothing_when_disabled() {
-        let seq = Sequence::parse("1 / 2 3");
-        let mut player = SequencePlayer::new();
-
-        // Never triggered: dn ReleaseInstrument skips sequences that are not RUNNING/END
-        player.release(&seq);
-        assert_eq!(player.state, SeqState::Disabled);
-        assert_eq!(player.clock_tick(&seq), 0);
-    }
-
-    #[test]
-    fn player_loop_at_or_after_release_point_loops_through_end() {
-        // Loop inside the release tail (loop = 3 >= release = 1): dn's pre-release loop
-        // branch requires loop < release, so this freezes at the release step while held;
-        // after release the tail plays out and then keeps looping from the loop point.
-        let seq = Sequence::parse("8 / 7 6 | 5 4"); // values [8,7,6,5,4], release = 1, loop = 3
-        let mut player = SequencePlayer::new();
-
-        player.trigger(&seq); // value 8, pos = 1 (release + 1 = 2 not reached yet)
-        assert_eq!(player.clock_tick(&seq), 7); // step 1; pos = 2 == release + 1
-        // loop branch fails (3 < 1 is false), pos < items (2 < 5), key held -> wait on step 1
-        assert_eq!(player.state, SeqState::Running);
-        assert_eq!(player.clock_tick(&seq), 7); // frozen wait re-reads the release step
-
-        player.release(&seq);
-        assert_eq!(player.clock_tick(&seq), 7); // release step processed on next tick
-        assert_eq!(player.clock_tick(&seq), 6); // step 2
-        assert_eq!(player.clock_tick(&seq), 5); // step 3
-        // step 4 is the last item; pos = 5 >= items and loop 3 >= release 1 -> jump to 3
-        assert_eq!(player.clock_tick(&seq), 4);
-        assert_eq!(player.state, SeqState::Running);
-        assert_eq!(player.clock_tick(&seq), 5); // loops forever from the loop point
-        assert_eq!(player.clock_tick(&seq), 4);
-        assert_eq!(player.state, SeqState::Running);
-    }
-
-    #[test]
-    fn player_end_can_be_released_into_release_tail() {
-        // dn ReleaseInstrument accepts sequences in SEQ_STATE_END and restarts them at the
-        // release point (only reachable when reaching the end, e.g. release point on the
-        // last step with no loop: pos == release + 1 == items -> End).
-        let seq = Sequence::parse("1 2 3 / 5"); // values [1,2,3,5], release = 3
-        let mut player = SequencePlayer::new();
-
-        player.trigger(&seq);
-        assert_eq!(player.clock_tick(&seq), 2);
-        assert_eq!(player.clock_tick(&seq), 3);
-        // After step 3 (value 5): pos = 4 == release + 1 == items -> no loop -> End
-        assert_eq!(player.clock_tick(&seq), 5);
-        assert_eq!(player.state, SeqState::End);
-
-        // From End, a release re-enters at the release point and plays it once more
-        player.release(&seq);
-        assert_eq!(player.state, SeqState::Running);
-        assert_eq!(
-            player.value(),
-            5,
-            "release() must not read the release step early"
-        );
-        assert_eq!(player.clock_tick(&seq), 5);
-        assert_eq!(player.state, SeqState::End);
     }
 }

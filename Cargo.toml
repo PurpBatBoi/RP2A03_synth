@@ -18,7 +18,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.8-Alpha"
+version = "0.0.9-Alpha"
 # This project tracks current stable rather than supporting older toolchains,
 # so the floor is whatever stable was when it was last raised — not the oldest
 # release the code happens to compile on. Raise it freely alongside stable; the
@@ -34,6 +34,41 @@ suspicious = { level = "warn", priority = -1 }
 complexity = { level = "warn", priority = -1 }
 perf = { level = "warn", priority = -1 }
 style = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# The `cast_*` group fires on almost every register-level bit-twiddle and DSP
+# sample conversion in this codebase (~240 instances, none of them bugs —
+# ranges are already constrained by masks/clamps before the cast). Blanket
+# noise with no signal for this domain; allowed rather than scattering
+# hundreds of individual #[allow]s.
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_possible_wrap = "allow"
+# Established project convention (see e.g. `Envelope::clock`'s local
+# constants): a const declared right where it's used reads better than one
+# hoisted to the top of the function or file.
+items_after_statements = "allow"
+# Short domain pairs (param1/param2, bar_y_min/bar_y_max, lo/hi) trip this on
+# names that are already unambiguous in context; genuinely confusing pairs
+# (a `path` that could be misread as the `patch` next to it) are renamed
+# instead of relying on this lint.
+similar_names = "allow"
+
+# Selected `clippy::nursery` lints, not the whole group: `missing_const_for_fn`
+# (90 hits) and `suboptimal_flops`/`imprecise_flops` (43 hits, changes FMA
+# rounding) would touch huge swaths of the crate for marginal benefit, and the
+# float-rounding one risks silently shifting the M0 baseline hashes — exactly
+# the kind of change that baseline exists to catch, not something to opt into
+# via a nursery lint. `too_long_first_doc_paragraph` is a pure style
+# preference not worth fighting the doc comments just written for step 41.
+use_self = "warn"
+redundant_pub_crate = "warn"
+or_fun_call = "warn"
+option_if_let_else = "warn"
+derive_partial_eq_without_eq = "warn"
+while_float = "warn"
+needless_pass_by_ref_mut = "warn"
+doc_link_code = "warn"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -65,11 +100,14 @@ nice-plug = "0.1.10"
 nice-plug-egui = {
     version = "0.1.5",
     default-features = false,
-    features = ["keyboard_focus_workaround"],
 }
 parking_lot = "0.12"
 rfd = "0.15"
 ctor = "1.0.12"
 dirs = "6.0.0"
+assert_no_alloc = { version = "1.1", features = ["disable_release"] }
+triple_buffer = "9.0"
+basedrop = "0.1.3"
+criterion = { version = "0.8", features = ["html_reports"] }
 rp2a03_core = { path = "rp2a03_core" }
 rp2a03_common = { path = "rp2a03_common" }

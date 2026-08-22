@@ -1,11 +1,11 @@
-//! rp2a03_niceplug\src\editor.rs
+//! `rp2a03_niceplug\src\editor.rs`
 //! Editor window construction. The actual sequence-editor drawing lives in
 //! `rp2a03_common::render_editor_ui`; this module only owns the egui host
 //! window and the write-back of editor results into host parameters.
 
 use nice_plug::prelude::*;
 use nice_plug_egui::{EguiSettings, EguiState, create_egui_editor};
-use rp2a03_common::{EditorResult, EditorUiState, SEQUENCE_TYPE_COUNT, render_editor_ui, style};
+use rp2a03_common::{EditorResult, EditorUiState, Lane, render_editor_ui, style};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
@@ -27,9 +27,10 @@ fn set_param<P: Param>(setter: &ParamSetter, param: &P, value: P::Plain) {
     setter.end_set_parameter(param);
 }
 
-pub(crate) fn create(
+pub fn create(
     params: Arc<Rp2a03Params>,
-    playheads: Arc<[AtomicUsize; SEQUENCE_TYPE_COUNT]>,
+    playheads: Arc<[AtomicUsize; Lane::COUNT]>,
+    active_sequence_index: Arc<AtomicUsize>,
 ) -> Option<Box<dyn Editor>> {
     let egui_state: Arc<EguiState> = params.egui_state.clone();
 
@@ -42,8 +43,9 @@ pub(crate) fn create(
             ctx.set_style_of(egui::Theme::Dark, style());
         },
         move |ui, setter, _queue, ui_state| {
-            let mut data = params.shared_sequences.lock();
-            let sequence_index = data.selected_sequence_index(0);
+            let mut data = params.shared_sequences.lock_master();
+            let sequence_index = active_sequence_index.load(std::sync::atomic::Ordering::Relaxed);
+            let host = params.host_params_view();
             let playheads = snapshot(&playheads);
             let step_time_hz = params.step_time.value() as u32;
 
@@ -59,6 +61,7 @@ pub(crate) fn create(
                             let result = render_editor_ui(
                                 ui,
                                 &mut data,
+                                host,
                                 sequence_index,
                                 &playheads,
                                 step_time_hz,

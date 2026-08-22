@@ -9,6 +9,27 @@ workspace = true
 
 [lib]
 crate-type = ["cdylib", "lib"]
+# Cargo's implicit lib-bench harness (built for cfg(test) but under
+# `[profile.bench]`, which inherits release and so has debug_assertions
+# off) hits a real gap: `assert_no_alloc`'s `disable_release` feature
+# removes `AllocDisabler` under exactly that combination, but this crate's
+# `#[global_allocator]` static is gated on `cfg(debug_assertions)` alone, so
+# it still tries to reference the now-absent type. Not needed anyway — the
+# dedicated `[[bench]]` targets below have their own harness.
+bench = false
+# No runnable doc examples exist in this crate, and rustdoc's doctest
+# harness recompiles the lib with its own default `cfg(debug_assertions)`
+# (true) independent of the profile actually used to build the already-
+# linked `assert_no_alloc` rlib (release, so false) — same `AllocDisabler`
+# gap as above, just triggered by a rustdoc quirk instead of a Cargo one.
+doctest = false
+
+# The rendered-audio baseline tool. `required-features` keeps it out of
+# `cargo test --all-targets`, so it costs the normal build nothing.
+[[bin]]
+name = "baseline"
+path = "src/bin/baseline.rs"
+required-features = ["baseline"]
 
 # Editor rendering backend. Exactly one should be active; `wgpu` takes priority
 # if both are, but that still compiles egui_glow for nothing, so prefer
@@ -20,6 +41,9 @@ crate-type = ["cdylib", "lib"]
 default = ["opengl"]
 opengl = ["nice-plug-egui/opengl"]
 wgpu = ["nice-plug-egui/wgpu"]
+# Exposes `baseline`, the rendered-audio parity tool. Never enabled for a
+# shipped bundle.
+baseline = []
 
 [dependencies]
 rp2a03_core = { workspace = true }
@@ -32,3 +56,15 @@ egui_extras = { workspace = true }
 image = { workspace = true }
 ctor = { workspace = true }
 dirs = { workspace = true }
+assert_no_alloc = { workspace = true }
+triple_buffer = { workspace = true }
+basedrop = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "mixdown"
+harness = false
