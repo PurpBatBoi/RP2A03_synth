@@ -22,3 +22,7 @@ image = { workspace = true }
 serde = { workspace = true }
 rmp-serde = { workspace = true }
 rfd = { workspace = true }
+basedrop = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

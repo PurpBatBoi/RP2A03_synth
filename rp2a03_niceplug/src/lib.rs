@@ -1,4 +1,4 @@
-//! rp2a03_niceplug\src\lib.rs
+//! `rp2a03_niceplug\src\lib.rs`
 //! RP2A03 Plugin wrapper using nice-plug.
 //!
 //! Module map — audio-thread code is everything reachable from
@@ -13,6 +13,17 @@
 
 use nice_plug::prelude::*;
 
+// Catches an audio-thread allocation the moment it happens, instead of
+// hoping a test exercises the right block size. Cfg'd out of release
+// entirely — `disable_release` on the crate is a second, redundant guard —
+// because this allocator aborts on violation, and an abort inside a host is
+// exactly the crash class M1 fixed.
+#[cfg(any(test, debug_assertions))]
+#[global_allocator]
+static ALLOCATOR: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+#[cfg(feature = "baseline")]
+pub mod baseline;
 mod editor;
 mod params;
 mod plugin;
@@ -21,9 +32,14 @@ mod voice;
 mod voice_bank;
 
 #[cfg(test)]
-mod tests;
+mod host_abuse;
 
 pub use plugin::Rp2a03Plugin;
+
+/// Exposed only so `benches/mixdown.rs` (M7 step 45) can reach the hot loop
+/// it measures — `voice_bank` itself stays private.
+#[doc(hidden)]
+pub use voice_bank::accumulate_voice_samples;
 
 nice_export_clap!(Rp2a03Plugin);
 nice_export_vst3!(Rp2a03Plugin);

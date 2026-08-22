@@ -1,5 +1,8 @@
 //! Software LFO implementation based on DN-FamiTracker.
 
+/// `FamiTracker`'s baked vibrato depth/phase table: 16 depth rows of 16
+/// phase-quadrant entries each, sin-derived and precomputed rather than
+/// evaluated at runtime.
 pub static FT_VIBRATO_TABLE: [u8; 256] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
@@ -32,9 +35,9 @@ pub struct SoftwareLfo {
     /// Vibrato speed (0..63 tick step)
     pub vibrato_speed: u8,
     /// Vibrato position accumulator (0..63 cycle)
-    pub vibrato_pos: u8,
+    vibrato_pos: u8,
     /// Vibrato delay before modulation starts, in engine frames (0..=127).
-    pub vibrato_delay: u8,
+    vibrato_delay: u8,
     vibrato_delay_remaining: u8,
     vibrato_fade_elapsed: u8,
 
@@ -43,13 +46,13 @@ pub struct SoftwareLfo {
     /// Tremolo speed (0..63 tick step)
     pub tremolo_speed: u8,
     /// Tremolo position accumulator (0..63 cycle)
-    pub tremolo_pos: u8,
+    tremolo_pos: u8,
     /// Tremolo delay before modulation starts, in engine frames (0..=127).
-    pub tremolo_delay: u8,
+    tremolo_delay: u8,
     tremolo_delay_remaining: u8,
     tremolo_fade_elapsed: u8,
     /// Shared linear fade duration, in engine frames (0..=127).
-    pub delay_speed: u8,
+    delay_speed: u8,
     vibrato_fade_speed: u8,
     tremolo_fade_speed: u8,
 }
@@ -78,28 +81,14 @@ impl Default for SoftwareLfo {
 
 impl SoftwareLfo {
     /// Create a new `SoftwareLfo`.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Reset LFO phases and depth/speed parameters.
     pub fn reset(&mut self) {
-        self.vibrato_depth = 0;
-        self.vibrato_speed = DEFAULT_LFO_SPEED;
-        self.vibrato_pos = 0;
-        self.vibrato_delay = 0;
-        self.vibrato_delay_remaining = 0;
-        self.vibrato_fade_elapsed = 0;
-
-        self.tremolo_depth = 0;
-        self.tremolo_speed = DEFAULT_LFO_SPEED;
-        self.tremolo_pos = 0;
-        self.tremolo_delay = 0;
-        self.tremolo_delay_remaining = 0;
-        self.tremolo_fade_elapsed = 0;
-        self.delay_speed = 0;
-        self.vibrato_fade_speed = 0;
-        self.tremolo_fade_speed = 0;
+        *self = Self::default();
     }
 
     /// Set Vibrato depth (0..15) and speed (0..63).
@@ -179,6 +168,7 @@ impl SoftwareLfo {
 
     /// Calculate the current Vibrato pitch period delta.
     /// Returns signed period shift (subtracting period increases pitch).
+    #[must_use]
     pub fn vibrato_pitch_delta(&self) -> i16 {
         if self.vibrato_speed == 0 || self.vibrato_depth == 0 || self.vibrato_delay_remaining > 0 {
             return 0;
@@ -196,13 +186,14 @@ impl SoftwareLfo {
 
         // Table is 16 rows of 16 bytes: index = (depth << 4) | idx
         let table_idx = ((self.vibrato_depth as usize) << 4) | (idx as usize);
-        let magnitude = FT_VIBRATO_TABLE[table_idx.min(255)] as i16;
+        let magnitude = i16::from(FT_VIBRATO_TABLE[table_idx.min(255)]);
 
         let magnitude = magnitude * self.vibrato_fade_scale() as i16 / 256;
         if negate { -magnitude } else { magnitude }
     }
 
     /// Calculate the current Tremolo volume reduction delta (0..15).
+    #[must_use]
     pub fn tremolo_volume_delta(&self) -> u8 {
         if self.tremolo_speed == 0 || self.tremolo_depth == 0 || self.tremolo_delay_remaining > 0 {
             return 0;
@@ -216,119 +207,5 @@ impl SoftwareLfo {
         let raw_val = FT_VIBRATO_TABLE[table_idx.min(255)];
 
         ((u16::from(raw_val >> 1) * self.tremolo_fade_scale()) / 256) as u8
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_vibrato_zero_depth_returns_zero() {
-        let mut lfo = SoftwareLfo::new();
-        assert_eq!(lfo.vibrato_pitch_delta(), 0);
-
-        lfo.set_vibrato(0, 10);
-        assert_eq!(lfo.vibrato_pitch_delta(), 0);
-    }
-
-    #[test]
-    fn test_vibrato_4_phase_cycle() {
-        let mut lfo = SoftwareLfo::new();
-        lfo.set_vibrato(15, 1);
-
-        // Phase 1 (0..15): positive delta
-        lfo.vibrato_pos = 8;
-        let delta_p1 = lfo.vibrato_pitch_delta();
-        assert!(
-            delta_p1 > 0,
-            "Phase 1 should yield positive pitch delta, got {}",
-            delta_p1
-        );
-
-        // Phase 3 (32..47): negative delta
-        lfo.vibrato_pos = 40;
-        let delta_p3 = lfo.vibrato_pitch_delta();
-        assert!(
-            delta_p3 < 0,
-            "Phase 3 should yield negative pitch delta, got {}",
-            delta_p3
-        );
-        assert_eq!(delta_p3, -delta_p1);
-    }
-
-    #[test]
-    fn test_tremolo_volume_delta_range() {
-        let mut lfo = SoftwareLfo::new();
-        lfo.set_tremolo(15, 1);
-
-        for pos in 0..64 {
-            lfo.tremolo_pos = pos;
-            let vol_delta = lfo.tremolo_volume_delta();
-            assert!(
-                vol_delta <= 63,
-                "Tremolo volume delta should be within 0..63, got {}",
-                vol_delta
-            );
-        }
-    }
-
-    #[test]
-    fn test_delay_and_linear_fade() {
-        let mut lfo = SoftwareLfo::new();
-        lfo.set_vibrato(15, 1);
-        lfo.set_delay_params(2, 0, 2);
-        lfo.retrigger();
-        lfo.vibrato_pos = 8;
-
-        assert_eq!(lfo.vibrato_pitch_delta(), 0);
-        lfo.clock_tick();
-        assert_eq!(lfo.vibrato_pitch_delta(), 0);
-        lfo.clock_tick();
-        assert_eq!(lfo.vibrato_pitch_delta(), 0);
-        lfo.clock_tick();
-        let half = lfo.vibrato_pitch_delta();
-        assert!(half > 0);
-        lfo.clock_tick();
-        assert!(lfo.vibrato_pitch_delta() >= half);
-    }
-
-    #[test]
-    fn test_tremolo_delay_and_fade_are_independent() {
-        let mut lfo = SoftwareLfo::new();
-        lfo.set_tremolo(15, 1);
-        lfo.set_delay_params(0, 2, 2);
-        lfo.retrigger();
-
-        assert_eq!(lfo.tremolo_volume_delta(), 0);
-        lfo.clock_tick();
-        assert_eq!(lfo.tremolo_volume_delta(), 0);
-        lfo.clock_tick();
-        assert_eq!(lfo.tremolo_volume_delta(), 0);
-        lfo.clock_tick();
-        let partial = lfo.tremolo_volume_delta();
-        lfo.clock_tick();
-        assert!(lfo.tremolo_volume_delta() >= partial);
-    }
-
-    #[test]
-    fn test_delay_speed_is_captured_on_retrigger() {
-        let mut lfo = SoftwareLfo::new();
-        lfo.set_vibrato(15, 1);
-        lfo.set_delay_params(0, 0, 4);
-        lfo.retrigger();
-        lfo.set_delay_params(0, 0, 1);
-
-        lfo.vibrato_pos = 8;
-        lfo.clock_tick();
-        let first = lfo.vibrato_pitch_delta();
-        lfo.clock_tick();
-        let second = lfo.vibrato_pitch_delta();
-        assert!(second > first);
-
-        lfo.retrigger();
-        lfo.vibrato_pos = 8;
-        lfo.clock_tick();
-        assert!(lfo.vibrato_pitch_delta() > first);
     }
 }

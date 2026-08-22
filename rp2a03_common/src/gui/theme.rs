@@ -18,44 +18,38 @@ pub const ACCENT: Color32 = Color32::from_rgb(53, 94, 183);
 pub const LOOP: Color32 = Color32::from_rgb(100, 200, 220);
 pub const RELEASE: Color32 = Color32::from_rgb(200, 120, 220);
 pub const LOOP_RELEASE: Color32 = Color32::from_rgb(230, 190, 40);
+
+pub const WARNING: Color32 = Color32::from_rgb(230, 170, 60);
 pub const PLAYHEAD_TOP: Color32 = Color32::from_rgba_premultiplied(63, 94, 63, 100);
 pub const PLAYHEAD_BOTTOM: Color32 = Color32::from_rgba_premultiplied(53, 86, 53, 100);
 pub const PLAYHEAD_EDGE_TOP: Color32 = Color32::from_rgba_premultiplied(116, 142, 116, 150);
 pub const PLAYHEAD_EDGE_BOTTOM: Color32 = Color32::from_rgba_premultiplied(62, 131, 62, 150);
 
-/// S5B duty/mode graph flag-toggle colors, lit when the corresponding bit is
-/// set. Dim gray (`FLAG_OFF`) when clear, mirroring dn's `CNoiseEditor` intent
-/// (`GraphEditor.cpp`) but with this project's own palette instead of its raw hex.
 pub const S5B_TONE_FLAG: Color32 = Color32::from_rgb(100, 200, 220);
 pub const S5B_NOISE_FLAG: Color32 = Color32::from_rgb(200, 120, 220);
 pub const S5B_FLAG_OFF: Color32 = Color32::from_rgb(80, 80, 80);
 
+#[must_use]
 pub fn style() -> Arc<Style> {
     let mut style = Style {
         visuals: egui::Visuals::dark(),
         ..Default::default()
     };
 
-    // Start from egui's standard dark theme. The editor-specific graph colors
-    // below remain available to the custom graph widgets, but the controls
-    // themselves should use egui's normal dark-theme visuals.
     style.visuals.override_text_color = Some(egui::Color32::from_gray(240));
     style.interaction.selectable_labels = false;
 
     style.visuals.popup_shadow.offset = [0, 0];
     style.visuals.popup_shadow.spread = 2;
 
-    // Thicker widget strokes
     let stroke = 1.5;
     style.visuals.widgets.noninteractive.bg_stroke.width = stroke;
     style.visuals.widgets.inactive.bg_stroke.width = stroke;
     style.visuals.widgets.hovered.bg_stroke.width = stroke;
     style.visuals.widgets.active.bg_stroke.width = stroke;
 
-    // Thicker, visible window border
     style.visuals.window_stroke = egui::Stroke::new(1.5_f32, BORDER);
 
-    // Font sizes
     use egui::{FontId, TextStyle};
     style.text_styles = [
         (TextStyle::Heading, FontId::proportional(20.0)),

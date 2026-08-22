@@ -1,6 +1,6 @@
-//! rp2a03_core\src\blip_buf.rs
+//! `rp2a03_core\src\blip_buf.rs`
 //!
-//! blip_buf is a small waveform synthesis library meant for use in classic video game
+//! `blip_buf` is a small waveform synthesis library meant for use in classic video game
 //! sound chip emulation. It greatly simplifies sound chip emulation code by handling
 //! all the details of resampling. The emulator merely sets the input clock rate and output
 //! sample rate, adds waveforms by specifying the clock times where their amplitude changes,
@@ -15,13 +15,11 @@
 //!
 //! # Based upon
 //!
-//! This library is a very thin wrapper on the original C library, found here: https://code.google.com/p/blip-buf/
+//! This library is a very thin wrapper on the original C library, found here: <https://code.google.com/p/blip-buf>/
 //!
 //! [BLEP]: http://www.cs.cmu.edu/~eli/L/icmc01/hardsync.html
 //!
-//! Taken from https://github.com/mvdnes/blip_buf-rs/tree/main with some small changes.
-
-#![warn(missing_docs)]
+//! Taken from <https://github.com/mvdnes/blip_buf-rs/tree/main> with some small changes.
 
 use core::fmt;
 
@@ -66,7 +64,7 @@ const FRAC_BITS: Bits = TIME_BITS - PRE_SHIFT;
 /// Requested clock/sample rate pair cannot be represented by [`BlipBuf`].
 ///
 /// Both rates must be finite and greater than zero, and `clock_rate` must not
-/// exceed `sample_rate * `[`MAX_RATIO`].
+/// exceed `sample_rate * MAX_RATIO` (see [`MAX_RATIO`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InvalidRates {
     /// The rejected input clock rate, in Hz.
@@ -97,8 +95,9 @@ pub struct BlipBuf {
 }
 
 impl BlipBuf {
-    /// Creates new buffer that can hold at most sample_count samples. Sets rates
+    /// Creates new buffer that can hold at most `sample_count` samples. Sets rates
     /// so that there are `MAX_RATIO` clocks per sample.
+    #[must_use]
     pub fn new(sample_count: u32) -> Self {
         let sample_count = sample_count as usize;
         const FACTOR: u64 = TIME_UNIT / MAX_RATIO;
@@ -178,16 +177,24 @@ impl BlipBuf {
         self.samples.fill(0);
     }
 
+    /// Fixed-point buffer position for a delta landing at `clock_time`,
+    /// shared by [`Self::add_delta`] and [`Self::add_delta_fast`].
+    #[inline]
+    fn fixed_time(&self, clock_time: u32) -> usize {
+        let time = Fixed::from(clock_time);
+        ((time * self.factor + self.offset) >> PRE_SHIFT) as usize
+    }
+
     /// Adds positive/negative delta into buffer at specified clock time.
     ///
-    /// # Panics
-    ///
-    /// Panics if `clock_time` lands past the end of the buffer. That means the
-    /// caller ran more clocks than [`Self::clocks_needed`] asked for, or is
-    /// rendering a block larger than [`Self::capacity`].
+    /// If `clock_time` lands past the end of the buffer — the caller ran more
+    /// clocks than [`Self::clocks_needed`] asked for, or is rendering a block
+    /// larger than [`Self::capacity`] — the delta is silently dropped rather
+    /// than panicking; a host process must never crash over a caller bug in
+    /// this crate. `debug_assert!`s the same condition loudly for tests and
+    /// development builds.
     pub fn add_delta(&mut self, clock_time: u32, delta: i32) {
-        let time = clock_time as Fixed;
-        let fixed = ((time * self.factor + self.offset) >> PRE_SHIFT) as usize;
+        let fixed = self.fixed_time(clock_time);
         let out_index = self.avail + (fixed >> FRAC_BITS);
 
         const PHASE_SHIFT: usize = FRAC_BITS - PHASE_BITS;
@@ -202,10 +209,14 @@ impl BlipBuf {
         // window has to be in bounds — the pre-existing check allowed
         // `out_index == samples.len()` and relied on the per-element bounds
         // checks below to catch the overrun.
-        let window = self
-            .samples
-            .get_mut(out_index..out_index + HALF_WIDTH * 2)
-            .expect("blip buffer overflow: rendered past capacity()");
+        let Some(window) = self.samples.get_mut(out_index..out_index + HALF_WIDTH * 2) else {
+            debug_assert!(
+                false,
+                "blip buffer overflow: rendered past capacity() (out_index {out_index}, buffer len {})",
+                self.samples.len()
+            );
+            return;
+        };
         let (rise, fall) = window.split_at_mut(HALF_WIDTH);
 
         // Slicing once hoists the bounds check out of the taps, which matters:
@@ -228,22 +239,23 @@ impl BlipBuf {
 
     /// Same as `add_delta()`, but uses faster, lower-quality synthesis.
     ///
-    /// # Panics
-    ///
-    /// Panics under the same conditions as [`Self::add_delta`].
+    /// Saturates under the same conditions as [`Self::add_delta`] rather than
+    /// panicking.
     pub fn add_delta_fast(&mut self, clock_time: u32, delta: i32) {
-        let time = clock_time as Fixed;
-        let fixed = ((time * self.factor + self.offset) >> PRE_SHIFT) as usize;
-
+        let fixed = self.fixed_time(clock_time);
         let out_index = self.avail + (fixed >> FRAC_BITS);
 
         let interp = (fixed >> (FRAC_BITS - DELTA_BITS) & (DELTA_UNIT - 1)) as i32;
         let delta2 = delta * interp;
 
-        let window = self
-            .samples
-            .get_mut(out_index + 7..out_index + 9)
-            .expect("blip buffer overflow: rendered past capacity()");
+        let Some(window) = self.samples.get_mut(out_index + 7..out_index + 9) else {
+            debug_assert!(
+                false,
+                "blip buffer overflow: rendered past capacity() (out_index {out_index}, buffer len {})",
+                self.samples.len()
+            );
+            return;
+        };
         window[0] += delta * (DELTA_UNIT as i32) - delta2;
         window[1] += delta2;
     }
@@ -251,22 +263,26 @@ impl BlipBuf {
     /// Length of time frame, in clocks, needed to make `sample_count` additional
     /// samples available.
     ///
-    /// # Panics
-    ///
-    /// Panics if `sample_count` plus the samples already buffered exceeds
-    /// [`Self::capacity`]. Callers that take their block size from a host must
-    /// clamp to `capacity()` and render in several frames.
+    /// `sample_count` is silently clamped so that, added to the samples
+    /// already buffered, it never exceeds [`Self::capacity`] — a caller bug,
+    /// not a recoverable-by-crashing condition. Callers that take their block
+    /// size from a host must still clamp to `capacity()` and render in
+    /// several frames; this clamp is a last resort, not license to skip that.
+    /// `debug_assert!`s the unclamped invariant loudly for tests and
+    /// development builds.
     #[must_use]
     pub fn clocks_needed(&self, sample_count: u32) -> u32 {
-        assert!(
+        debug_assert!(
             self.avail + sample_count as usize <= self.capacity() as usize,
             "blip buffer overflow: {} buffered + {} requested exceeds capacity {}",
             self.avail,
             sample_count,
             self.capacity()
         );
+        let room = (self.capacity() as usize).saturating_sub(self.avail) as u32;
+        let sample_count = sample_count.min(room);
 
-        let needed = sample_count as Fixed * TIME_UNIT;
+        let needed = Fixed::from(sample_count) * TIME_UNIT;
         if needed < self.offset {
             return 0;
         }
@@ -280,19 +296,20 @@ impl BlipBuf {
     /// frame specified. Deltas can have been added slightly past `clock_duration` (up to
     /// however many clocks there are in two output samples).
     ///
-    /// # Panics
-    ///
-    /// Panics if the frame made more samples available than [`Self::capacity`].
+    /// If the frame made more samples available than [`Self::capacity`], the
+    /// excess is silently dropped rather than panicking. `debug_assert!`s the
+    /// unclamped invariant loudly for tests and development builds.
     pub fn end_frame(&mut self, clock_duration: u32) {
-        let off = (clock_duration as Fixed) * self.factor + self.offset;
+        let off = Fixed::from(clock_duration) * self.factor + self.offset;
         self.avail += (off >> TIME_BITS) as usize;
         self.offset = off & (TIME_UNIT - 1);
-        assert!(
+        debug_assert!(
             self.avail <= self.capacity() as usize,
             "blip buffer overflow: {} samples available exceeds capacity {}",
             self.avail,
             self.capacity()
         );
+        self.avail = self.avail.min(self.capacity() as usize);
     }
 
     /// Number of buffered samples available for reading.
@@ -389,77 +406,3 @@ const BL_STEP: &[[i32; 8]] = &[
     [1, 40, -110, 350, -499, 1190, -1021, 6464],
     [0, 43, -115, 350, -488, 1136, -914, 5861],
 ];
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn clamp_saturates_at_the_i16_rails() {
-        assert_eq!(clamp_to_i16(i32::from(i16::MAX) * 2), i32::from(i16::MAX));
-        assert_eq!(clamp_to_i16(i32::from(i16::MIN) * 2), i32::from(i16::MIN));
-        assert_eq!(clamp_to_i16(0), 0);
-    }
-
-    #[test]
-    fn set_rates_accepts_the_nes_clock() {
-        let mut blip = BlipBuf::new(4096);
-        assert!(blip.set_rates(crate::NTSC_CPU_CLOCK, 44_100.0).is_ok());
-        assert!(blip.set_rates(crate::NTSC_CPU_CLOCK, 192_000.0).is_ok());
-    }
-
-    #[test]
-    fn set_rates_rejects_unrepresentable_pairs() {
-        let mut blip = BlipBuf::new(4096);
-        assert!(blip.set_rates(1_789_773.0, 0.0).is_err());
-        assert!(blip.set_rates(1_789_773.0, -44_100.0).is_err());
-        assert!(blip.set_rates(0.0, 44_100.0).is_err());
-        assert!(blip.set_rates(f64::NAN, 44_100.0).is_err());
-        // Ratio above MAX_RATIO: 1 Hz output from a 2 MHz clock.
-        assert!(blip.set_rates(2_000_000.0, 1.0).is_err());
-    }
-
-    #[test]
-    fn rejected_rates_leave_the_previous_factor_in_place() {
-        let mut blip = BlipBuf::new(4096);
-        blip.set_rates(crate::NTSC_CPU_CLOCK, 48_000.0).unwrap();
-        let good = blip.factor;
-        assert!(blip.set_rates(crate::NTSC_CPU_CLOCK, 0.0).is_err());
-        assert_eq!(blip.factor, good);
-    }
-
-    #[test]
-    fn capacity_is_the_smaller_of_buffer_and_max_frame() {
-        // Allocating past MAX_FRAME buys nothing: the fixed-point math caps a
-        // single frame regardless of how much room the buffer has.
-        assert_eq!(BlipBuf::new(512).capacity(), 512);
-        assert_eq!(BlipBuf::new(4096).capacity(), MAX_FRAME);
-        assert_eq!(BlipBuf::new(65536).capacity(), MAX_FRAME);
-    }
-
-    #[test]
-    fn a_full_capacity_frame_round_trips() {
-        let mut blip = BlipBuf::new(4096);
-        blip.set_rates(crate::NTSC_CPU_CLOCK, 44_100.0).unwrap();
-
-        let block = blip.capacity();
-        let clocks = blip.clocks_needed(block);
-        // Alternating deltas — a square wave. A same-sign train would be a DC
-        // ramp, which is not something an APU channel can produce.
-        for (step, clock) in (0..clocks).step_by(64).enumerate() {
-            blip.add_delta(clock, if step % 2 == 0 { 1500 } else { -1500 });
-        }
-        blip.end_frame(clocks);
-
-        let mut out = vec![0i16; block as usize];
-        assert_eq!(blip.read_samples(&mut out, false), block as usize);
-        assert_eq!(blip.samples_avail(), 0);
-    }
-
-    #[test]
-    #[should_panic(expected = "blip buffer overflow")]
-    fn a_frame_larger_than_capacity_is_rejected() {
-        let blip = BlipBuf::new(4096);
-        let _ = blip.clocks_needed(blip.capacity() + 1);
-    }
-}

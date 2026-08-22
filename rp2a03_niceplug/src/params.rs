@@ -1,4 +1,4 @@
-//! rp2a03_niceplug\src\params.rs
+//! `rp2a03_niceplug\src\params.rs`
 //! Host-facing parameter set, and the projections from it that the audio thread
 //! actually consumes.
 //!
@@ -8,23 +8,28 @@
 
 use nice_plug::prelude::*;
 use nice_plug_egui::EguiState;
-use parking_lot::Mutex;
-use rp2a03_common::{ChannelMode, HostAutomationSnapshot, MAX_SEQUENCES, SharedSequences};
+use rp2a03_common::{ChannelMode, HostAutomationSnapshot, HostParamsView, MAX_SEQUENCES};
 use rp2a03_core::software_lfo::MAX_DELAY_FRAMES;
 use std::sync::Arc;
 
+use crate::sequences::SharedSequencesHandle;
 use crate::voice_bank::MAX_VOICES;
 
 const EDITOR_WIDTH: u32 = 758;
-const EDITOR_HEIGHT: u32 = 590;
+// 610, not 590: several panels had started to scroll by a handful of pixels,
+// and a scroll area with that little travel costs a scrollbar, a wheel-capture
+// region and a clipped edge to save twenty pixels of height. Main Design Doc
+// §6.1. The window is still fixed — this is a new fixed number.
+const EDITOR_HEIGHT: u32 = 610;
+const PORTAMENTO_SPEED_MAX: i32 = 127;
 
 #[derive(Params)]
-pub(crate) struct Rp2a03Params {
+pub struct Rp2a03Params {
     #[persist = "editor_state"]
     pub egui_state: Arc<EguiState>,
 
     #[persist = "envelope_data"]
-    pub shared_sequences: Arc<Mutex<SharedSequences>>,
+    pub shared_sequences: SharedSequencesHandle,
 
     /// Selects the same numbered sequence slot for all five pulse envelopes.
     #[id = "sequence_number"]
@@ -73,11 +78,11 @@ fn linear(min: i32, max: i32) -> IntRange {
     IntRange::Linear { min, max }
 }
 
-impl Default for Rp2a03Params {
-    fn default() -> Self {
+impl Rp2a03Params {
+    pub(crate) fn new(shared_sequences: SharedSequencesHandle) -> Self {
         Self {
             egui_state: EguiState::from_size(EDITOR_WIDTH, EDITOR_HEIGHT),
-            shared_sequences: Arc::new(Mutex::new(SharedSequences::default())),
+            shared_sequences,
             sequence_number: IntParam::new(
                 "Sequence Index",
                 0,
@@ -85,31 +90,26 @@ impl Default for Rp2a03Params {
             ),
             vibrato_depth: IntParam::new("Vibrato Depth", 0, linear(0, 15)),
             vibrato_speed: IntParam::new("Vibrato Speed", 4, linear(0, 63)),
-            vibrato_delay: IntParam::new("Vibrato Delay", 0, linear(0, MAX_DELAY_FRAMES as i32)),
+            vibrato_delay: IntParam::new(
+                "Vibrato Delay",
+                0,
+                linear(0, i32::from(MAX_DELAY_FRAMES)),
+            ),
             tremolo_depth: IntParam::new("Tremolo Depth", 0, linear(0, 15)),
             tremolo_speed: IntParam::new("Tremolo Speed", 4, linear(0, 63)),
-            tremolo_delay: IntParam::new("Tremolo Delay", 0, linear(0, MAX_DELAY_FRAMES as i32)),
-            delay_speed: IntParam::new("Delay Speed", 0, linear(0, MAX_DELAY_FRAMES as i32)),
+            tremolo_delay: IntParam::new(
+                "Tremolo Delay",
+                0,
+                linear(0, i32::from(MAX_DELAY_FRAMES)),
+            ),
+            delay_speed: IntParam::new("Delay Speed", 0, linear(0, i32::from(MAX_DELAY_FRAMES))),
             hardware_volume: IntParam::new("HW Volume", 15, linear(0, 15)),
             fine_pitch: IntParam::new("Pitch", 0, linear(-64, 63)),
             hi_pitch: IntParam::new("Hi-Pitch", 0, linear(-64, 63)),
             pitch_slide: IntParam::new("Pitch Slide", 0, linear(-8192, 8191)),
             pitch_slide_range: IntParam::new("Pitch Slide Range", 2, linear(0, 24)),
             step_time: IntParam::new("Step Time", 60, linear(1, 600)),
-            // Hidden, not merely non-automatable. Waveform is slot-owned
-            // instrument data: the editor is its only writer, and every editor
-            // path — combo box, patch load, per-slot recall — writes through to
-            // `slot_waveforms`. Any writer the host offers — automation lane or
-            // generic UI — would not, so its value would be silently discarded
-            // the next time Sequence Index moved off the slot and back.
-            // `.non_automatable()` closes only the lane and leaves the generic
-            // UI, which is the same footgun somewhere harder to find. Automate
-            // Sequence Index instead. Note this is advertisement, not
-            // enforcement: the wrappers consult these flags only when telling
-            // the host what exists, and apply incoming events by hash without
-            // checking them. Hiding does not remove the parameter from saved
-            // host state, and does not stop the editor writing it.
-            waveform: IntParam::new("Waveform", 0, linear(0, 5)).hide(),
+            waveform: IntParam::new("Waveform", 0, linear(0, 6)).hide(),
             polyphony: BoolParam::new("Polyphony", false),
             max_voices: IntParam::new("Max Voices", 8, linear(1, MAX_VOICES as i32)),
             portamento_enabled: BoolParam::new("Portamento", false),
@@ -118,13 +118,7 @@ impl Default for Rp2a03Params {
     }
 }
 
-const PORTAMENTO_SPEED_MAX: i32 = 127;
-
 impl Rp2a03Params {
-    /// Takes one immutable render-block snapshot of host automation.
-    ///
-    /// The snapshot is the boundary between host-facing parameter storage and
-    /// per-voice runtime state, similar to SFLT's render-time override view.
     pub(crate) fn host_automation_snapshot(&self) -> HostAutomationSnapshot {
         HostAutomationSnapshot {
             vibrato_depth: self.vibrato_depth.value() as u8,
@@ -149,22 +143,30 @@ impl Rp2a03Params {
         ChannelMode::from_i32(self.waveform.value())
     }
 
-    /// How many voices the render loop should run this block.
+    /// How many voices the render loop should run this block. Portamento is
+    /// a monophonic effect (each voice would otherwise slide from its own
+    /// stale previous note), so it forces this to 1 regardless of the
+    /// Polyphony parameter — including when Polyphony is left on by host
+    /// automation or a loaded preset, which the editor's own auto-disable
+    /// (`header.rs`) can't see since it only fires on the checkbox itself.
     pub(crate) fn active_voice_count(&self) -> usize {
-        if self.polyphony.value() {
+        if self.polyphony.value() && !self.portamento_enabled.value() {
             (self.max_voices.value() as usize).clamp(1, MAX_VOICES)
         } else {
             1
         }
     }
 
-    /// Mirrors the parameters the editor renders from into shared GUI state, so
-    /// host automation and state recall are reflected in the UI widgets.
-    pub(crate) fn publish_to_gui(&self, shared: &mut SharedSequences, channel_mode: ChannelMode) {
-        shared.channel_mode = channel_mode;
-        shared.polyphony = self.polyphony.value();
-        shared.max_voices = self.max_voices.value().clamp(1, MAX_VOICES as i32);
-        shared.portamento_enabled = self.portamento_enabled.value();
-        shared.portamento_speed = self.portamento_speed.value().clamp(0, PORTAMENTO_SPEED_MAX);
+    /// A per-repaint snapshot of the parameters the editor renders from, read
+    /// straight off the host params — built on the GUI thread, never mirrored
+    /// into `SharedSequences` by the audio thread.
+    pub(crate) fn host_params_view(&self) -> HostParamsView {
+        HostParamsView {
+            channel_mode: self.channel_mode(),
+            polyphony: self.polyphony.value(),
+            max_voices: self.max_voices.value().clamp(1, MAX_VOICES as i32),
+            portamento_enabled: self.portamento_enabled.value(),
+            portamento_speed: self.portamento_speed.value().clamp(0, PORTAMENTO_SPEED_MAX),
+        }
     }
 }

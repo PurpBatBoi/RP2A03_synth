@@ -152,20 +152,27 @@ text. The *logical* structure is:
     "hipitch": [],
     "duty": []
   },
-  "slot_waveforms": []
+  "slot_waveforms": [],
+  "wave_slots": [],
+  "wave_current_slot": 0,
+  "fds_settings": [],
+  "wavesynth": []
 }
 ```
 
 Field order (top-level): `format_version`, `step_time_hz`, `active_indices`,
-`sequences`, `slot_waveforms` — the one instrument-wide scalar setting sits up
+`sequences`, `slot_waveforms`, `wave_slots`, `wave_current_slot`,
+`fds_settings`, `wavesynth` — the one instrument-wide scalar setting sits up
 front, ahead of the envelope data itself. This order is load-bearing (see
 "Schema evolution rule" above): it's fixed once shipped, and any future
-top-level field is appended after `slot_waveforms`, the current last field.
+top-level field is appended after `wavesynth`, the current last field.
 
 `slot_waveforms` was itself added this way — appended after `sequences`, backed
 by `#[serde(default)]`, with no `format_version` bump, since a file written
 before it existed simply ends its top-level array early and decodes the field as
-an empty list. It is the worked example of the rule above.
+an empty list. It is the worked example of the rule above. The four FDS fields
+(`wave_slots` through `wavesynth`) were added the same way, 2026-08-20 — see
+"FDS instrument state" below.
 
 ### `step_time_hz`
 
@@ -325,7 +332,7 @@ Slots nobody set are omitted entirely and decode back to `"Pulse"`.
 | Field      | Type               | Notes |
 |------------|--------------------|-------|
 | `index`    | integer, `0..=127` | The numbered slot this entry describes. Unique within the array. |
-| `waveform` | `ChannelMode` name | `"Pulse"` \| `"Triangle"` \| `"Noise"` \| `"Vrc6Pulse"` \| `"Vrc6Saw"` \| `"S5B"`. |
+| `waveform` | `ChannelMode` name | `"Pulse"` \| `"Triangle"` \| `"Noise"` \| `"Vrc6Pulse"` \| `"Vrc6Saw"` \| `"S5B"` \| `"Fds"`. |
 
 This is also where the instrument's *live* channel selection comes from on
 load — there is no separate top-level field for it. Loading a patch sets the
@@ -340,6 +347,97 @@ by the time a save happens there is only ever one value to record.
 Because loading is a full replacement (not a merge), a load clears every slot's
 remembered waveform first — otherwise slots the incoming patch doesn't mention
 would keep the *previous* instrument's waveforms.
+
+## FDS instrument state
+
+Four fields, appended 2026-08-20 (FDS Design Doc §11). Together they carry
+everything an FDS instrument needs beyond the envelope lanes above: the wave
+palette itself, and the two per-slot settings blocks (chip modulation, Wave
+Synthesizer) the Wave Index envelope lane and `slot_waveforms` don't already
+cover.
+
+### `wave_slots` and `wave_current_slot`
+
+```json
+"wave_slots": [
+  [0, 1, 2, "... 61 more values ..."],
+  [63, 62, 61, "... 61 more values ..."]
+],
+"wave_current_slot": 1
+```
+
+`wave_slots` is the wave palette: a **dense, positional** array — unlike
+`slot_waveforms` and the two settings blocks below, nothing here is omitted.
+Position is identity: the Wave Index envelope lane (one of the `sequences`
+step values, Design Doc §7.3.2) selects a wave by its position in this array,
+so an entry can't be left out the way a default-valued `slot_waveforms` entry
+can — that would shift every later index.
+
+Each entry is exactly 64 integers, `0..=63` (the FDS chip's wave RAM: 64 steps
+of 6 bits). `wave_current_slot` is the index into `wave_slots` the Wavetable
+Editor tab had selected when saved — cosmetic only, since the audible source
+for any given instrument is the Wave Index lane's value, not this field.
+
+⛔ **Loading REPLACES the whole palette, it never merges** with whatever
+palette the plugin already had loaded. A patch is already a whole-bank
+snapshot for the envelope lanes above; the palette is exactly the same kind
+of fact. Merging would silently repoint every instrument's Wave Index lane at
+the wrong wave, since the lane stores a position, not a stable identity.
+
+### `fds_settings`
+
+```json
+"fds_settings": [
+  {
+    "index": 3,
+    "mod_depth": 40,
+    "mod_speed": 900,
+    "mod_table": [0, 1, 2, 3, -4, "... 27 more values ..."],
+    "mod_delay": 30
+  }
+]
+```
+
+Per-slot FDS Chip Settings tab state, sparse: an entry is written only for a
+slot whose settings differ from the default (all zero, `mod_table` all zero),
+same rule as `slot_waveforms`.
+
+| Field       | Type                     | Notes |
+|-------------|--------------------------|-------|
+| `index`     | integer, `0..=127`       | The numbered slot this entry describes. Unique within the array. |
+| `mod_depth` | integer, `0..=63`        | |
+| `mod_speed` | integer, `0..=4095`      | |
+| `mod_table` | array of 32 integers     | Each value `-4..=3`. Always exactly 32 entries. |
+| `mod_delay` | integer, `0..=255`       | Engine frames of silence-from-the-modulator after each note-on. |
+
+### `wavesynth`
+
+```json
+"wavesynth": [
+  {
+    "index": 3,
+    "params": {
+      "wave1": 0,
+      "wave2": 0,
+      "rate_divider": 1,
+      "effect": "None",
+      "enabled": false,
+      "speed": 0,
+      "reset_on_note": false,
+      "param1": 0,
+      "param2": 0
+    }
+  }
+]
+```
+
+Per-slot Wave Synthesizer parameters, sparse on the same rule as
+`fds_settings`. `params` is the plugin's `WaveSynthParams` struct encoded
+whole — its own field order is load-bearing here too (FDS Design Doc §11.3.3
+names the two fields deliberately *not* carried: Furnace's `oneShot`, dead in
+Furnace as well as here, and `param3`/`param4`, unused by every algorithm
+this format implements and not reserved, since appending them later is legal
+under the rule above).
 
 ## Full example
 
@@ -390,13 +488,19 @@ for readability — see "Wire format" for the actual binary encoding:
       }
     ]
   },
-  "slot_waveforms": []
+  "slot_waveforms": [],
+  "wave_slots": [],
+  "wave_current_slot": 0,
+  "fds_settings": [],
+  "wavesynth": []
 }
 ```
 
 `slot_waveforms` is empty here because slot 3 is on `"Pulse"`, the default —
 had this instrument been authored on the triangle channel, it would instead
-read `[{ "index": 3, "waveform": "Triangle" }]`.
+read `[{ "index": 3, "waveform": "Triangle" }]`. The four FDS fields are empty
+because this instrument never touched an FDS slot — see "FDS instrument
+state" above for what they hold when it does.
 
 ## Extension
 
@@ -444,3 +548,9 @@ make the file self-identifying regardless of name.
   greater than `values.len()` is rejected; a marker positioned exactly at
   `values.len()` is legal — this is the same position the editor itself can
   produce and render).
+- `wave_slots.len()` does not exceed `MAX_SLOTS` (256); each entry is exactly
+  64 integers, each `0..=63`.
+- `fds_settings`/`wavesynth` `index` values are each in `0..=127` and unique
+  within their own array (the two arrays are independent — the same index may
+  appear once in each). `fds_settings`' `mod_table` is always exactly 32
+  integers, each `-4..=3`.

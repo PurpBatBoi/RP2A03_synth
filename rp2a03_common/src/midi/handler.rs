@@ -1,297 +1,114 @@
-//! rp2a03_common\src\midi\handler.rs
-//! `MidiHandler`: state container for note stack, sequence players, LFO, and
-//! per-tick modulation / register-write logic. NoteEvent ingestion (NoteOn,
-//! NoteOff, CC dispatch) lives in `events.rs`.
+//! `rp2a03_common\src\midi\handler.rs`
 
+use super::fds_bridge::FdsWaveSynth;
 use super::types::{
-    ActiveSequences, ChannelMode, HostAutomationControls, SequenceReload, freq_to_period,
-    freq_to_s5b_period, freq_to_triangle_period, freq_to_vrc6_saw_period, midi_note_to_freq,
-    midi_note_to_noise_period,
+    ActiveSequences, ChannelMode, HostAutomationControls, Lane, SequenceReload,
+    freq_to_fds_frequency, freq_to_period, freq_to_s5b_period, freq_to_triangle_period,
+    freq_to_vrc6_pulse_period, freq_to_vrc6_saw_period, midi_note_to_freq,
 };
-use rp2a03_core::apu_noise::Noise;
-use rp2a03_core::apu_pulse::Pulse;
-use rp2a03_core::apu_triangle::Triangle;
-use rp2a03_core::s5b_audio::Sunsoft;
+use crate::gui::FDS_MOD_TABLE_LEN;
+use rp2a03_core::channel::{Channel, PhaseReset};
 use rp2a03_core::sequencer::Sequence;
-use rp2a03_core::sequencer::{
-    ArpMode, PitchMode, S5B_MODE_NOISE, S5B_MODE_SQUARE, S5B_PERIOD_MASK, SeqState, SequencePlayer,
-    VolMode, VolMode5B, s5b_duty_index,
-};
+use rp2a03_core::sequencer::{ArpMode, PitchMode, SeqState, SequencePlayer};
 use rp2a03_core::software_lfo::SoftwareLfo;
-use rp2a03_core::vrc6_pulse::Vrc6Pulse;
-use rp2a03_core::vrc6_saw::Vrc6Saw;
 
-// ─────────────────────────────────────────────
-// AnyChannel — zero-cost dispatch shim
-// ─────────────────────────────────────────────
-
-/// A thin wrapper that gives uniform access to an APU channel.
-/// channel, used inside `MidiHandler` methods so they don't need to be
-/// duplicated for each channel type.
-pub enum AnyChannel<'a> {
-    Pulse(&'a mut Pulse),
-    Triangle(&'a mut Triangle),
-    Noise(&'a mut Noise),
-    Vrc6Pulse(&'a mut Vrc6Pulse),
-    Vrc6Saw(&'a mut Vrc6Saw),
-    S5B(&'a mut Sunsoft),
-}
-
-impl<'a> AnyChannel<'a> {
-    /// The [`ChannelMode`] this channel implements, so a caller's selection can
-    /// be checked against the handler's.
-    pub fn mode(&self) -> ChannelMode {
-        match self {
-            AnyChannel::Pulse(_) => ChannelMode::Pulse,
-            AnyChannel::Triangle(_) => ChannelMode::Triangle,
-            AnyChannel::Noise(_) => ChannelMode::Noise,
-            AnyChannel::Vrc6Pulse(_) => ChannelMode::Vrc6Pulse,
-            AnyChannel::Vrc6Saw(_) => ChannelMode::Vrc6Saw,
-            AnyChannel::S5B(_) => ChannelMode::S5B,
-        }
-    }
-
-    pub fn set_enabled(&mut self, enabled: bool) {
-        match self {
-            AnyChannel::Pulse(p) => p.set_enabled(enabled),
-            AnyChannel::Triangle(t) => t.set_enabled(enabled),
-            AnyChannel::Noise(n) => n.set_enabled(enabled),
-            AnyChannel::Vrc6Pulse(p) => p.set_enabled(enabled),
-            AnyChannel::Vrc6Saw(s) => s.set_enabled(enabled),
-            // S5B has no chip-level enable latch of its own; `set_tone_noise_enable`
-            // (driven every modulation tick from the gate, see `apply_s5b_modulation`)
-            // is what silences it.
-            AnyChannel::S5B(_) => {}
-        }
-    }
-
-    pub fn write_timer_lo(&mut self, val: u8) {
-        match self {
-            AnyChannel::Pulse(p) => p.write_timer_lo(val),
-            AnyChannel::Triangle(t) => t.write_timer_lo(val),
-            AnyChannel::Noise(_) => {}
-            AnyChannel::Vrc6Pulse(p) => p.write_freq_lo(val),
-            AnyChannel::Vrc6Saw(s) => s.write_freq_lo(val),
-            AnyChannel::S5B(s) => s.write_timer_lo(val),
-        }
-    }
-
-    pub fn write_timer_hi(&mut self, val: u8) {
-        match self {
-            AnyChannel::Pulse(p) => p.write_timer_hi(val),
-            AnyChannel::Triangle(t) => t.write_timer_hi(val),
-            AnyChannel::Noise(_) => {}
-            AnyChannel::Vrc6Pulse(p) => p.write_freq_hi(val),
-            AnyChannel::Vrc6Saw(s) => s.write_freq_hi(val),
-            // S5B reg 1 is a plain 4-bit period-hi register (`REG_MASK[1] = 0x0f`),
-            // not a packed enable+period byte like the other channels' hi
-            // registers — `apply_pitch_registers` already masks `val` to the
-            // right width before calling in, so no further packing is needed.
-            AnyChannel::S5B(s) => s.write_timer_hi(val),
-        }
-    }
-
-    pub fn set_period_hi_soft(&mut self, hi_bits: u8) {
-        match self {
-            AnyChannel::Pulse(p) => p.set_period_hi_soft(hi_bits),
-            AnyChannel::Triangle(t) => t.set_period_hi_soft(hi_bits),
-            AnyChannel::Noise(_) => {}
-            AnyChannel::Vrc6Pulse(p) => p.set_period_hi_soft(hi_bits),
-            AnyChannel::Vrc6Saw(s) => s.set_period_hi_soft(hi_bits),
-            // S5B's reg 1 write is already a soft update (no phase to reset),
-            // so this is the same as `write_timer_hi`.
-            AnyChannel::S5B(s) => s.write_timer_hi(hi_bits),
-        }
-    }
-
-    pub fn write_noise_timer(&mut self, period_index: u8, short_mode: bool) {
-        if let AnyChannel::Noise(n) = self {
-            n.write_timer((period_index & 0x0F) | if short_mode { 0x80 } else { 0 });
-        }
-    }
-
-    pub fn write_noise_ctrl(&mut self, val: u8) {
-        if let AnyChannel::Noise(n) = self {
-            n.write_ctrl(val);
-        }
-    }
-
-    pub fn write_noise_length(&mut self) {
-        if let AnyChannel::Noise(n) = self {
-            n.write_length(0xF8);
-        }
-    }
-}
-
-/// One envelope's share of [`MidiHandler::reload_sequences`].
-///
-/// An empty sequence counts as disabled here for the same reason it does at every
-/// other `seqs.*_enabled && !seqs.*_seq.values.is_empty()` guard in this file:
-/// there is no step for the player to land on.
 fn reload_player(player: &mut SequencePlayer, enabled: bool, sequence: &Sequence, changed: bool) {
     if !enabled || sequence.values.is_empty() {
-        // dn ClearSequence
         player.reset();
     } else if changed || player.state == SeqState::Disabled {
-        // dn SetupSequence
         player.setup();
     }
 }
 
-/// The null RPN — "no registered parameter selected", which is where a receiver
-/// starts and where Reset All Controllers puts it back.
 pub(super) const RPN_NULL: (u8, u8) = (0x7F, 0x7F);
 
-/// RPN 0: Pitch Bend Sensitivity, the standard way a controller or DAW sets the
-/// pitch-wheel range.
 pub(super) const RPN_PITCH_BEND_SENSITIVITY: (u8, u8) = (0, 0);
 
-/// Widest pitch-bend range the synth accepts, in semitones (two octaves).
 pub(super) const MAX_PITCH_SLIDE_RANGE: u8 = 24;
 
-// ─────────────────────────────────────────────
-// MidiHandler
-// ─────────────────────────────────────────────
-
-/// Manages incoming MIDI events, note stack, velocity, CCs, and modulation.
+// Each bool is an independent piece of playback state (gate, portamento
+// on/off, portamento in-flight), not a disguised state machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct MidiHandler {
-    /// Monophonic note stack storing `(note_number, velocity_u8)`
     pub note_stack: Vec<(u8, u8)>,
-    /// Semitone transpose offset (default +12 semitones / 1 octave)
+
     pub octave_offset: i8,
-    /// Active gate status
+
     pub gate: bool,
-    /// Current active note velocity (0..127)
+
     pub current_velocity: u8,
-    /// MIDI CC 14 (Pitch offset, -64..+63 semitone cents offset)
+
     pub fine_pitch: i8,
-    /// MIDI CC 15 (Hi-pitch offset, -64..+63 coarse high-period offset)
+
     pub hi_pitch: i8,
-    /// MIDI-style pitch bend (-8192..=8191), driven by the host parameter or by
-    /// the controller's pitch wheel.
+
     pub pitch_slide: i16,
-    /// Pitch-bend range in semitones (0..=`MAX_PITCH_SLIDE_RANGE`), driven by the
-    /// host parameter or by RPN 0 (Pitch Bend Sensitivity).
+
     pub pitch_slide_range: u8,
-    /// Wheel position claimed by an incoming MIDI pitch-bend message.
-    ///
-    /// `Some` means the wheel currently owns `pitch_slide`, and the host
-    /// parameter only takes it back when the parameter itself moves. That
-    /// distinction matters for polyphonic voice stealing: `reset_for_allocation`
-    /// clears `last_host_controls`, and the reseed that follows would otherwise
-    /// snap the recycled voice back to the parameter while every other voice
-    /// stays bent.
+
     pub(super) midi_pitch_bend: Option<i16>,
-    /// Range claimed by RPN 0, under the same ownership rule as
-    /// `midi_pitch_bend`.
+
     pub(super) midi_pitch_bend_range: Option<u8>,
-    /// Currently selected RPN as `(MSB, LSB)` from CC 101 / CC 100.
-    ///
-    /// The wrapper hands over raw CCs without assembling multi-message RPNs, so
-    /// the selection is tracked here. Starts at (and returns to) the null RPN,
-    /// which makes Data Entry a no-op until a controller selects a parameter.
+
     pub(super) selected_rpn: (u8, u8),
-    /// Host-controlled 4-bit APU volume, applied before MIDI CC 7 and velocity.
+
     pub hardware_volume: u8,
-    /// Last host parameter values applied to this handler.
+
     pub(super) last_host_controls: Option<HostAutomationControls>,
-    /// Active base MIDI note
+
     pub active_note: u8,
-    /// Software LFO engine from `rp2a03_core`
+
     pub lfo: SoftwareLfo,
-    /// Sample accumulator for frame tick timing.
-    ///
-    /// This is intentionally fractional so envelope frames land sample-accurately
-    /// across host buffer sizes whose length is not an exact multiple of one step period.
+
     pub frame_sample_counter: f64,
-    /// Sequence step tick rate in Hz (default 60 = NTSC frame rate).
+
     pub step_time_hz: u16,
-    /// 5 FamiTracker sequence players
-    pub vol_seq_player: SequencePlayer,
-    pub arp_seq_player: SequencePlayer,
-    pub pitch_seq_player: SequencePlayer,
-    pub hipitch_seq_player: SequencePlayer,
-    pub duty_seq_player: SequencePlayer,
-    /// The working macro period in raw 11-bit APU period units (pulse domain —
-    /// the triangle halves it at register-write time). This is the plugin's
-    /// equivalent of dnFamiTracker's `CChannelHandler::m_iPeriod`.
-    ///
-    /// Reset to the triggered note's period on each NoteOn (dn: `RunNote`), then
-    /// mutated once per 60 Hz tick by the sequence players in dn's
-    /// `CSeqInstHandler::UpdateInstrument` order (arpeggio → pitch → hi-pitch):
-    /// arpeggio *replaces* it `SetPeriod(TriggerNote(...))`), relative pitch and
-    /// hi-pitch *add* to it, absolute pitch *replaces* it with note period + value.
-    /// Every mutation is clamped to 0..=0x7FF exactly where dn's `SetPeriod` calls
-    /// `LimitPeriod`, so per-tick overshoot past the rails is discarded like in dn —
-    /// i32 is used so the intermediate signed math matches before clamping.
-    /// Fine pitch and vibrato are *not* folded in here; they are composed onto
-    /// `macro_period` at register-write time (dn: `CalculatePeriod`).
+
+    pub seq_players: [SequencePlayer; Lane::COUNT],
+
     pub macro_period: i32,
-    /// Target period for the current legato transition.
+
     pub portamento_target_period: i32,
-    /// Whether the current note transition is being glided.
+
     pub portamento_active: bool,
-    /// Host-controlled portamento state.
+
     pub portamento_enabled: bool,
     pub portamento_speed: u8,
-    /// Cache of last written control register byte to avoid redundant register writes.
-    ///
-    /// Valid only for the channel recorded in `ctrl_channel`. Pulse and VRC6 pulse
-    /// pack this byte differently — `(duty << 6) | 0x30 | volume` versus
-    /// `(duty << 4) | volume` — and the two encodings collide (pulse duty 0 with
-    /// volume 0 and VRC6 duty 3 with volume 0 are both `0x30`), so without the
-    /// channel guard the first write after a Waveform switch is swallowed as
-    /// "unchanged" and the new channel keeps sounding the old one's duty and
-    /// volume until the computed byte happens to move.
+
     pub prev_ctrl: u8,
-    /// Channel whose control register the `prev_ctrl` cache describes.
-    ///
-    /// `None` = nothing written yet. Triangle, noise, and the VRC6 sawtooth never
-    /// touch `prev_ctrl` (they drive volume through `set_volume` / `write_rate` /
-    /// an unconditional `write_ctrl`), so passing through those modes leaves the
-    /// cache and its owner untouched and still valid.
+
     ctrl_channel: Option<ChannelMode>,
-    /// Cache of last written timer low byte to avoid redundant register writes.
-    ///
-    /// Handler-level cache over *per-channel* register state: only valid for the
-    /// channel recorded in `reg_channel` — after a `ChannelMode` switch the first
-    /// write is forced through regardless of this value.
+
     pub prev_timer_lo: u8,
-    /// Cache of last written timer high 3 bits to avoid resetting duty sequencer
-    /// phase needlessly. See `prev_timer_lo` / `reg_channel` for cache validity.
+
     pub prev_timer_hi: u8,
-    /// Channel whose registers the `prev_timer_lo` / `prev_timer_hi` caches
-    /// currently describe.
-    ///
-    /// Pulse and Triangle keep independent register state, so after a
-    /// `ChannelMode` switch the caches are stale for the new channel and its first
-    /// period write must be forced through — otherwise the new channel keeps a
-    /// stale timer-low byte (wrong pitch) until a note with a different low byte
-    /// re-triggers the write (symptom: play C4 on pulse → switch to triangle →
-    /// play C4 sounds wrong; playing D4 then "fixes" it).
-    ///
-    /// `None` = nothing written yet (first gated write always forced, which also
-    /// covers `reset()`, since the APU channel structs are reset alongside).
+
+    pub(super) uploaded_fds_wave: Option<[u8; crate::FDS_WAVE_LEN]>,
+
+    pub(super) uploaded_fds_mod_table: Option<[i8; FDS_MOD_TABLE_LEN]>,
+
+    pub(super) fds_wavesynth: FdsWaveSynth,
+
+    pub(super) fds_mod_delay: u8,
+
     reg_channel: Option<ChannelMode>,
-    /// Channel `macro_period` is currently expressed in, so a Waveform switch under
-    /// a sounding note can rebase it. See `sync_channel_mode`. Seeded wherever the
-    /// period is computed from scratch (`recalculate_macro_period`), not just on the
-    /// first modulation pass, so a note triggered through any entry point records the
-    /// domain it was built in.
+
     pub(super) period_channel: Option<ChannelMode>,
-    /// Whether the pulse duty sequencer has received its initial attack setup.
-    /// This remains true through NoteOff so an adjacent NoteOn does not reset
-    /// phase merely because MIDI delivered NoteOff first.
+
     pub(super) pulse_phase_initialized: bool,
-    /// Active channel mode (Pulse / Triangle / Noise / Vrc6Pulse / Vrc6Saw).
+
     pub channel_mode: ChannelMode,
 }
 
 impl Default for MidiHandler {
     fn default() -> Self {
         Self {
-            note_stack: Vec::with_capacity(16),
+            // `note_on` retains-then-pushes by note number, so at most one
+            // entry per MIDI note number can ever be held at once — 128 is
+            // the real ceiling, not an estimate, so this never grows on the
+            // audio thread.
+            note_stack: Vec::with_capacity(128),
             octave_offset: 12,
             gate: false,
             current_velocity: 127,
@@ -308,11 +125,7 @@ impl Default for MidiHandler {
             lfo: SoftwareLfo::new(),
             frame_sample_counter: 0.0,
             step_time_hz: 60,
-            vol_seq_player: SequencePlayer::new(),
-            arp_seq_player: SequencePlayer::new(),
-            pitch_seq_player: SequencePlayer::new(),
-            hipitch_seq_player: SequencePlayer::new(),
-            duty_seq_player: SequencePlayer::new(),
+            seq_players: std::array::from_fn(|_| SequencePlayer::new()),
             macro_period: 0,
             portamento_target_period: 0,
             portamento_active: false,
@@ -322,6 +135,10 @@ impl Default for MidiHandler {
             ctrl_channel: None,
             prev_timer_lo: 0xFF,
             prev_timer_hi: 0xFF,
+            uploaded_fds_wave: None,
+            uploaded_fds_mod_table: None,
+            fds_wavesynth: FdsWaveSynth::default(),
+            fds_mod_delay: 0,
             reg_channel: None,
             period_channel: None,
             pulse_phase_initialized: false,
@@ -331,21 +148,43 @@ impl Default for MidiHandler {
 }
 
 impl MidiHandler {
+    pub(super) fn pitch_lane_sign(&self) -> i32 {
+        if self.channel_mode == ChannelMode::Fds {
+            -1
+        } else {
+            1
+        }
+    }
+
+    pub(super) fn hipitch_lane_active(&self, seqs: &ActiveSequences) -> bool {
+        seqs.lane_active(Lane::HiPitch) && self.channel_mode != ChannelMode::Fds
+    }
+
+    /// The active lane's current value, or `default` when the lane is off.
+    pub(super) fn lane_or(&self, seqs: &ActiveSequences, lane: Lane, default: i16) -> i16 {
+        if seqs.lane_active(lane) {
+            self.seq_players[lane].value()
+        } else {
+            default
+        }
+    }
+
     pub(super) fn max_macro_period(&self) -> i32 {
         match self.channel_mode {
             ChannelMode::Triangle
             | ChannelMode::Vrc6Pulse
             | ChannelMode::Vrc6Saw
-            | ChannelMode::S5B => 0x0FFF,
+            | ChannelMode::S5B
+            | ChannelMode::Fds => 0x0FFF,
             _ => 0x07FF,
         }
     }
-    /// Create a new `MidiHandler`.
+
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Reset MIDI handler state and held notes.
     pub fn reset(&mut self) {
         self.note_stack.clear();
         self.gate = false;
@@ -358,11 +197,9 @@ impl MidiHandler {
         self.lfo.reset();
         self.frame_sample_counter = 0.0;
         self.step_time_hz = 60;
-        self.vol_seq_player.reset();
-        self.arp_seq_player.reset();
-        self.pitch_seq_player.reset();
-        self.hipitch_seq_player.reset();
-        self.duty_seq_player.reset();
+        for player in &mut self.seq_players {
+            player.reset();
+        }
         self.macro_period = 0;
         self.portamento_target_period = 0;
         self.portamento_active = false;
@@ -372,66 +209,37 @@ impl MidiHandler {
         self.ctrl_channel = None;
         self.prev_timer_lo = 0xFF;
         self.prev_timer_hi = 0xFF;
+
+        self.uploaded_fds_wave = None;
+
+        self.uploaded_fds_mod_table = None;
+
+        self.fds_wavesynth.restart();
+
+        self.fds_mod_delay = 0;
         self.reg_channel = None;
         self.period_channel = None;
         self.pulse_phase_initialized = false;
-        // channel_mode is intentionally NOT reset — it's a persistent host parameter.
-        // Neither are the pitch-wheel/RPN fields: those describe the state of a
-        // *channel-wide* MIDI controller that every voice is sounding, and this
-        // runs per voice on polyphonic stealing (`reset_for_allocation`), so
-        // clearing them would recenter one voice out from under a held bend.
     }
 
-    /// Apply top note from monophonic note stack.
-    ///
-    /// `pub(super)` because it's also called from `note_on` / `note_off` in `events.rs`.
-    /// `reset_phase` is true only for a fresh attack. Legato note changes
-    /// preserve the pulse duty phase so they do not emulate an unnecessary
-    /// `$4003/$4007` write. Noise attacks reset to a deterministic phase so
-    /// every MIDI-track note uses the same locked metallic timbre.
-    pub(super) fn apply_top_note(&mut self, channel: &mut AnyChannel, reset_phase: bool) {
+    pub(super) fn apply_top_note(&mut self, channel: &mut dyn Channel, reset_phase: bool) {
         if let Some(&(note, velocity)) = self.note_stack.last() {
             self.active_note = note;
             self.current_velocity = velocity;
             self.gate = true;
             channel.set_enabled(true);
+            channel.on_top_note(reset_phase);
 
-            match channel {
-                AnyChannel::Pulse(p) => {
-                    if reset_phase {
-                        p.write_sweep(0x08);
-                        self.pulse_phase_initialized = true;
-                    }
-                }
-                AnyChannel::Triangle(t) => t.write_linear_counter(0xFF),
-                AnyChannel::Noise(n) => {
-                    if reset_phase {
-                        n.retrigger();
-                    }
-                    n.write_length(0xF8);
-                }
-                AnyChannel::Vrc6Pulse(_) => {
-                    if reset_phase {
-                        self.pulse_phase_initialized = true;
-                    }
-                }
-                AnyChannel::Vrc6Saw(_) => {}
-                // No phase to reset — the PSG tone generator free-runs from its
-                // period register, same as the VRC6 sawtooth.
-                AnyChannel::S5B(_) => {}
+            if reset_phase && channel.phase_reset() == PhaseReset::OnFirstUse {
+                self.pulse_phase_initialized = true;
             }
 
             if reset_phase {
-                // Reset the sentinel so the next update_modulation frame is guaranteed to call
-                // write_timer_hi (full phase reset) regardless of whether the new note shares
-                // the same high-period bits as the previous note. 0xFF is never a valid 3-bit
-                // timer_hi value (valid range 0–7), so this safely signals "note just triggered".
                 self.prev_timer_hi = 0xFF;
             }
         }
     }
 
-    /// Applies changed host parameter values without continuously overriding MIDI CC values.
     pub fn apply_host_automation(&mut self, controls: HostAutomationControls) {
         let previous = self.last_host_controls.unwrap_or_default();
 
@@ -472,11 +280,7 @@ impl MidiHandler {
         if self.last_host_controls.is_none() || controls.hi_pitch != previous.hi_pitch {
             self.hi_pitch = controls.hi_pitch.clamp(-64, 63);
         }
-        // Pitch bend and its range are shared with MIDI (the wheel and RPN 0), so
-        // they need the ownership check `previous` alone cannot express: on a
-        // handler with no `last_host_controls` — a fresh voice, or one just
-        // recycled by `reset_for_allocation` — every parameter *looks* changed,
-        // and reseeding from it would drop a bend the wheel is still holding.
+
         let host_moved_slide = self
             .last_host_controls
             .is_some_and(|previous| controls.pitch_slide != previous.pitch_slide);
@@ -523,14 +327,7 @@ impl MidiHandler {
         self.last_host_controls = Some(controls);
     }
 
-    /// Whether a control-register byte has to be written, updating the cache.
-    ///
-    /// Returns true when the byte differs from the cached one *or* when the cached
-    /// one belongs to a different channel — see `prev_ctrl` for why the channel has
-    /// to be part of the comparison. A forced write is harmless: `write_ctrl` only
-    /// latches duty mode, the length-counter halt bit, and the envelope's constant
-    /// volume, none of which reset the duty sequencer's phase.
-    fn ctrl_needs_write(&mut self, ctrl_byte: u8) -> bool {
+    pub(super) fn ctrl_needs_write(&mut self, ctrl_byte: u8) -> bool {
         let channel_switched = self.ctrl_channel != Some(self.channel_mode);
         self.ctrl_channel = Some(self.channel_mode);
         if channel_switched || ctrl_byte != self.prev_ctrl {
@@ -541,24 +338,7 @@ impl MidiHandler {
         }
     }
 
-    /// Rebase `macro_period` when the waveform changes to a channel that measures
-    /// periods differently.
-    ///
-    /// `channel_mode` is assigned straight from the `waveform` parameter every block,
-    /// so a switch can land under a sounding note. That parameter is hidden from the
-    /// host, so the change always originates in the editor — the combo box, a patch
-    /// load, or a per-slot recall on a Sequence Index move — but it still arrives
-    /// mid-note as far as the audio thread is concerned. Periods are channel-specific: the VRC6
-    /// sawtooth divides by its 14-stage accumulator while every other channel divides
-    /// by 16, so a period carried over unchanged detunes the held note by roughly two
-    /// semitones. Nothing corrects it either — only an *absolute* arpeggio or pitch
-    /// sequence recomputes the period from scratch, so with a relative or absent
-    /// sequence the wrong pitch holds until the next NoteOn.
-    ///
-    /// The offset the sequences have accumulated on top of the note period is carried
-    /// across the rebase rather than discarded, so vibrato-style pitch envelopes keep
-    /// their shape through the switch.
-    pub(super) fn sync_channel_mode(&mut self) {
+    pub fn sync_channel_mode(&mut self) {
         let Some(previous) = self.period_channel.replace(self.channel_mode) else {
             return;
         };
@@ -573,143 +353,90 @@ impl MidiHandler {
         }
 
         let max = self.max_macro_period();
+
+        if (previous == ChannelMode::Fds) != (self.channel_mode == ChannelMode::Fds) {
+            self.macro_period = new_base.clamp(0, max);
+            self.portamento_target_period = new_base.clamp(0, max);
+            return;
+        }
+
         self.macro_period = (new_base + (self.macro_period - previous_base)).clamp(0, max);
         self.portamento_target_period =
             (new_base + (self.portamento_target_period - previous_base)).clamp(0, max);
     }
 
-    /// Re-point the sequence players at a newly selected sequence slot.
-    ///
-    /// dn `CSeqInstHandler::LoadInstrument` parity. Without this, switching the
-    /// active slot only swaps the *data* in [`ActiveSequences`] — each
-    /// `SequencePlayer` keeps the position and last emitted value it had under the
-    /// previous slot. A player that already reached `SeqState::End` (any sequence
-    /// without a loop point, including the single-step constant envelopes that are
-    /// the common case for duty) processes nothing further, so
-    /// `clock_sequences_one_frame` never reads the new slot and the old value is
-    /// held forever: slot A's duty keeps sounding after a switch to slot B.
-    ///
-    /// Per envelope, following dn exactly:
-    /// - disabled → `ClearSequence`: the player is reset to `Disabled`.
-    /// - enabled and either changed or currently `Disabled` → `SetupSequence`:
-    ///   position 0, `Running`, new step applied on the next 60 Hz tick.
-    /// - enabled and unchanged → left running untouched, so switching to a slot
-    ///   that reuses the same envelope does not restart it.
-    ///
-    /// Call this only when the *slot* changes. In-place edits to the sequence
-    /// currently being played keep dn's behavior of not restarting the envelope
-    /// (dn mutates the same `CSequence` object, so its pointer comparison fails).
     pub fn reload_sequences(&mut self, seqs: &ActiveSequences, reload: SequenceReload) {
-        reload_player(
-            &mut self.vol_seq_player,
-            seqs.vol_enabled,
-            &seqs.vol_seq,
-            reload.vol,
-        );
-        reload_player(
-            &mut self.arp_seq_player,
-            seqs.arp_enabled,
-            &seqs.arp_seq,
-            reload.arp,
-        );
-        reload_player(
-            &mut self.pitch_seq_player,
-            seqs.pitch_enabled,
-            &seqs.pitch_seq,
-            reload.pitch,
-        );
-        reload_player(
-            &mut self.hipitch_seq_player,
-            seqs.hipitch_enabled,
-            &seqs.hipitch_seq,
-            reload.hipitch,
-        );
-        reload_player(
-            &mut self.duty_seq_player,
-            seqs.duty_enabled,
-            &seqs.duty_seq,
-            reload.duty,
-        );
+        self.fds_wavesynth.restart();
+
+        for lane in Lane::ALL {
+            reload_player(
+                &mut self.seq_players[lane],
+                seqs.enabled[lane],
+                &seqs.seq[lane],
+                reload[lane],
+            );
+        }
     }
 
-    /// Ticks all sequence players forward by one 60 Hz engine frame and updates the
-    /// working macro period, following dnFamiTracker's
-    /// `CSeqInstHandler::UpdateInstrument` ordering (arpeggio → pitch → hi-pitch) and
-    /// `SetPeriod` semantics:
-    ///
-    /// - A sequence only advances while `SeqState::Running` (dn: END/HALT process
-    ///   nothing more, so the working period simply persists).
-    /// - Arpeggio computes the period from TriggerNote (semitone lookup) so it
-    ///   never accumulates pitch offsets (yes, really; dn
-    ///   does this via `SetPeriod(TriggerNote(GetNote() + Value))`).
-    /// - Relative pitch *adds* its step; absolute pitch *replaces* with the base note
-    ///   period + step (dn: `SetPeriod(GetPeriod() + Value)` vs
-    ///   `SetPeriod(TriggerNote(GetNote()) + Value)`).
-    /// - Hi-pitch *adds* its step shifted left by 4 and is always accumulating,
-    ///   regardless of the pitch mode setting (dn: `SetPeriod(GetPeriod() + (Value << 4))`).
     pub(super) fn clock_sequences_one_frame(&mut self, seqs: &ActiveSequences) {
-        if seqs.vol_enabled
-            && !seqs.vol_seq.values.is_empty()
-            && self.vol_seq_player.state == SeqState::Running
-        {
-            self.vol_seq_player.clock_tick(&seqs.vol_seq);
+        if seqs.lane_active(Lane::Vol) && self.seq_players[Lane::Vol].state == SeqState::Running {
+            self.seq_players[Lane::Vol].clock_tick(&seqs.seq[Lane::Vol]);
         }
 
-        if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
-            match seqs.arp_seq.arp_mode {
+        if seqs.lane_active(Lane::Arp) {
+            match seqs.seq[Lane::Arp].arp_mode {
                 ArpMode::Absolute => {
-                    // dn: SetPeriod(TriggerNote(GetNote() + Value))
-                    if self.arp_seq_player.state == SeqState::Running {
-                        let arp_step = self.arp_seq_player.clock_tick(&seqs.arp_seq);
+                    if self.seq_players[Lane::Arp].state == SeqState::Running {
+                        let arp_step = self.seq_players[Lane::Arp].clock_tick(&seqs.seq[Lane::Arp]);
                         self.macro_period = self.note_period(arp_step);
                     }
                 }
                 ArpMode::Relative => {
-                    // dn: SetNote(GetNote() + Value); SetPeriod(TriggerNote(GetNote()))
-                    // Each step permanently shifts the active base note (accumulating).
-                    if self.arp_seq_player.state == SeqState::Running {
-                        let arp_step = self.arp_seq_player.clock_tick(&seqs.arp_seq);
-                        self.active_note = (self.active_note as i16 + arp_step).clamp(0, 127) as u8;
+                    if self.seq_players[Lane::Arp].state == SeqState::Running {
+                        let arp_step = self.seq_players[Lane::Arp].clock_tick(&seqs.seq[Lane::Arp]);
+                        self.active_note =
+                            (i16::from(self.active_note) + arp_step).clamp(0, 127) as u8;
                         self.macro_period = self.note_period(0);
                     }
                 }
             }
         }
 
-        if seqs.pitch_enabled
-            && !seqs.pitch_seq.values.is_empty()
-            && self.pitch_seq_player.state == SeqState::Running
+        if seqs.lane_active(Lane::Pitch) && self.seq_players[Lane::Pitch].state == SeqState::Running
         {
-            let pitch_step = self.pitch_seq_player.clock_tick(&seqs.pitch_seq) as i32;
-            match seqs.pitch_seq.pitch_mode {
-                PitchMode::Relative => self.macro_period += pitch_step,
-                PitchMode::Absolute => self.macro_period = self.note_period(0) + pitch_step,
+            let pitch_step =
+                i32::from(self.seq_players[Lane::Pitch].clock_tick(&seqs.seq[Lane::Pitch]));
+            match seqs.seq[Lane::Pitch].pitch_mode {
+                PitchMode::Relative => self.macro_period += pitch_step * self.pitch_lane_sign(),
+
+                PitchMode::Absolute => {
+                    self.macro_period = self.note_period(0) + pitch_step * self.pitch_lane_sign();
+                }
             }
             self.macro_period = self.macro_period.clamp(0, self.max_macro_period());
         }
 
-        if seqs.hipitch_enabled
-            && !seqs.hipitch_seq.values.is_empty()
-            && self.hipitch_seq_player.state == SeqState::Running
+        if self.hipitch_lane_active(seqs)
+            && self.seq_players[Lane::HiPitch].state == SeqState::Running
         {
-            let hipitch_step = self.hipitch_seq_player.clock_tick(&seqs.hipitch_seq) as i32;
-            self.macro_period =
-                (self.macro_period + (hipitch_step << 4)).clamp(0, self.max_macro_period());
+            let hipitch_step =
+                i32::from(self.seq_players[Lane::HiPitch].clock_tick(&seqs.seq[Lane::HiPitch]));
+            self.macro_period = (self.macro_period
+                + ((hipitch_step << 4) * self.pitch_lane_sign()))
+            .clamp(0, self.max_macro_period());
         }
 
-        if seqs.duty_enabled
-            && !seqs.duty_seq.values.is_empty()
-            && self.duty_seq_player.state == SeqState::Running
-        {
-            self.duty_seq_player.clock_tick(&seqs.duty_seq);
+        if seqs.lane_active(Lane::Duty) && self.seq_players[Lane::Duty].state == SeqState::Running {
+            self.seq_players[Lane::Duty].clock_tick(&seqs.seq[Lane::Duty]);
         }
+
+        self.tick_fds_wavesynth(seqs);
+
+        self.fds_mod_delay = self.fds_mod_delay.saturating_sub(1);
 
         self.advance_portamento();
     }
 
-    /// Starts a glide from the currently sounding period to a newly triggered
-    /// legato target. Periods are interpolated in the same pulse-domain units
-    /// used by all existing pitch modulation.
     pub(super) fn start_portamento(&mut self, from: i32, target: i32) {
         self.portamento_target_period = target.clamp(0, self.max_macro_period());
         if self.portamento_enabled && self.portamento_speed > 0 && from != target {
@@ -731,7 +458,7 @@ impl MidiHandler {
             return;
         }
         let distance = difference.unsigned_abs() as i32;
-        let step = ((distance * self.portamento_speed as i32) + 126) / 127;
+        let step = ((distance * i32::from(self.portamento_speed)) + 126) / 127;
         let step = step.max(1);
         self.macro_period = if difference > 0 {
             (self.macro_period + step).min(self.portamento_target_period)
@@ -741,41 +468,32 @@ impl MidiHandler {
         self.portamento_active = self.macro_period != self.portamento_target_period;
     }
 
-    /// dn `TriggerNote` equivalent: the APU period for the active note with the octave
-    /// transposition and an optional arpeggio semitone offset. `midi_note_to_freq` +
-    /// `freq_to_period` are this plugin's note lookup table over notes 0..=127.
-    ///
-    /// Returns a period in the *pulse domain*; the triangle halves it at
-    /// register-write time for octave parity (see `apply_pitch_registers`).
-    ///
-    /// `pub(super)` because it's also called from `note_on` in `events.rs`.
     pub(super) fn note_period(&self, arp_semitones: i16) -> i32 {
         self.note_period_in(self.channel_mode, arp_semitones)
     }
 
-    /// `note_period` for an arbitrary channel, so `sync_channel_mode` can express the
-    /// same note in the channel the period is being moved away from.
     fn note_period_in(&self, mode: ChannelMode, arp_semitones: i16) -> i32 {
-        let note = (self.active_note as i16 + self.octave_offset as i16 + arp_semitones)
+        let note = (i16::from(self.active_note) + i16::from(self.octave_offset) + arp_semitones)
             .clamp(0, 127) as u8;
         match mode {
-            ChannelMode::Triangle => freq_to_triangle_period(midi_note_to_freq(note)) as i32,
-            ChannelMode::Vrc6Saw => freq_to_vrc6_saw_period(midi_note_to_freq(note)) as i32,
-            ChannelMode::S5B => freq_to_s5b_period(midi_note_to_freq(note)) as i32,
-            _ => freq_to_period(midi_note_to_freq(note)) as i32,
+            ChannelMode::Triangle => i32::from(freq_to_triangle_period(midi_note_to_freq(note))),
+            ChannelMode::Vrc6Pulse => i32::from(freq_to_vrc6_pulse_period(midi_note_to_freq(note))),
+            ChannelMode::Vrc6Saw => i32::from(freq_to_vrc6_saw_period(midi_note_to_freq(note))),
+            ChannelMode::S5B => i32::from(freq_to_s5b_period(midi_note_to_freq(note))),
+
+            ChannelMode::Fds => i32::from(freq_to_fds_frequency(midi_note_to_freq(note))),
+            _ => i32::from(freq_to_period(midi_note_to_freq(note))),
         }
     }
 
-    /// Number of samples that can be rendered before the next envelope tick.
+    #[must_use]
     pub fn samples_until_next_frame(&self, sample_rate: f32) -> usize {
-        let samples_per_tick = sample_rate as f64 / self.step_time_hz as f64;
+        let samples_per_tick = f64::from(sample_rate) / f64::from(self.step_time_hz);
         (samples_per_tick - self.frame_sample_counter)
             .ceil()
             .max(1.0) as usize
     }
 
-    /// Account for samples that have just been rendered, advancing envelopes at the
-    /// exact sample boundary where each 60 Hz frame elapses.
     pub fn advance_frame_samples(
         &mut self,
         seqs: &ActiveSequences,
@@ -786,9 +504,12 @@ impl MidiHandler {
             return;
         }
 
-        let samples_per_tick = sample_rate as f64 / self.step_time_hz as f64;
+        let samples_per_tick = f64::from(sample_rate) / f64::from(self.step_time_hz);
         self.frame_sample_counter += num_samples as f64;
 
+        // A `>=` phase-accumulator drain, not an equality test: float error
+        // can only cost one fewer/extra tick, never hang the loop.
+        #[allow(clippy::while_float)]
         while self.frame_sample_counter >= samples_per_tick {
             self.clock_sequences_one_frame(seqs);
             self.lfo.clock_tick();
@@ -796,457 +517,29 @@ impl MidiHandler {
         }
     }
 
-    /// Write the current sequence/LFO state to the active APU channel.
-    /// Returns master gain multiplier (CC11 Expression).
-    ///
-    /// `channel` must be the one [`Self::channel_mode`] selects — see
-    /// [`Self::handle_event`] for why the caller does the selecting.
-    pub fn apply_current_modulation(
-        &mut self,
-        channel: &mut AnyChannel,
-        seqs: &ActiveSequences,
-    ) -> f32 {
-        let master_gain = 1.0;
+    pub(super) fn apply_pitch_registers(&mut self, channel: &mut dyn Channel) {
+        let fine_pitch_offset = i32::from(self.fine_pitch);
+        let hi_pitch_offset = i32::from(self.hi_pitch) << 4;
+        let vibrato_delta = i32::from(self.lfo.vibrato_pitch_delta());
 
-        // The host may have moved the Waveform parameter since the last block.
-        self.sync_channel_mode();
-        debug_assert_eq!(
-            channel.mode(),
-            self.channel_mode,
-            "the channel handed in must match the selected waveform"
-        );
-
-        match channel {
-            AnyChannel::Pulse(pulse) => self.apply_pulse_modulation(pulse, seqs, master_gain),
-            AnyChannel::Triangle(triangle) => {
-                self.apply_triangle_modulation(triangle, seqs, master_gain)
-            }
-            AnyChannel::Noise(noise) => {
-                self.apply_noise_modulation(noise, seqs);
-                master_gain
-            }
-            AnyChannel::Vrc6Pulse(vrc6_pulse) => {
-                self.apply_vrc6_pulse_modulation(vrc6_pulse, seqs, master_gain)
-            }
-            AnyChannel::Vrc6Saw(vrc6_saw) => {
-                self.apply_vrc6_saw_modulation(vrc6_saw, seqs, master_gain)
-            }
-            AnyChannel::S5B(sunsoft) => self.apply_s5b_modulation(sunsoft, seqs, master_gain),
-        }
-    }
-
-    fn apply_noise_modulation(&mut self, noise: &mut Noise, seqs: &ActiveSequences) {
-        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
-            self.vol_seq_player.value().clamp(0, 15) as u32
-        } else {
-            15
-        };
-        let hardware_scaled = vol_val * self.hardware_volume as u32 / 15;
-        let apu_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
-        let short_mode = seqs.duty_enabled
-            && !seqs.duty_seq.values.is_empty()
-            && self.duty_seq_player.value() != 0;
-        noise.write_ctrl(0x30 | apu_vol);
-        let note =
-            (self.active_note as i16 + self.current_noise_arpeggio(seqs)).clamp(0, 127) as u8;
-        let period = midi_note_to_noise_period(note);
-        noise.write_timer(period | if short_mode { 0x80 } else { 0 });
-    }
-
-    fn current_noise_arpeggio(&self, seqs: &ActiveSequences) -> i16 {
-        if seqs.arp_enabled && !seqs.arp_seq.values.is_empty() {
-            self.arp_seq_player.value()
-        } else {
-            0
-        }
-    }
-
-    fn apply_pulse_modulation(
-        &mut self,
-        pulse: &mut Pulse,
-        seqs: &ActiveSequences,
-        master_gain: f32,
-    ) -> f32 {
-        if !self.gate {
-            let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
-                self.duty_seq_player.value().clamp(0, 3) as u8
-            } else {
-                0
-            };
-            let ctrl_byte = (duty_val << 6) | 0x30;
-            if self.ctrl_needs_write(ctrl_byte) {
-                pulse.write_ctrl(ctrl_byte);
-            }
-            return master_gain;
-        }
-
-        // 1. Volume Sequence & Tremolo LFO (Fallback to 15 if sequence is empty)
-        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
-            self.vol_seq_player.value().clamp(0, 15) as u8
-        } else {
-            15
-        };
-
-        let hardware_scaled = vol_val as u32 * self.hardware_volume as u32 / 15;
-        let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
-        let tremolo_sub = self.lfo.tremolo_volume_delta();
-        let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
-
-        // Turn off gate when release tail completes and volume reaches 0
-        if self.note_stack.is_empty()
-            && self.vol_seq_player.is_releasing
-            && self.vol_seq_player.state == SeqState::End
-            && apu_vol == 0
-        {
-            self.gate = false;
-        }
-
-        // 2. Duty Sequence (Fallback to 0 [12.5% square] if sequence is empty)
-        let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
-            self.duty_seq_player.value().clamp(0, 3) as u8
-        } else {
-            0
-        };
-
-        let ctrl_byte = (duty_val << 6) | 0x30 | apu_vol;
-        if self.ctrl_needs_write(ctrl_byte) {
-            pulse.write_ctrl(ctrl_byte);
-        }
-
-        // 3. Pitch application.
-        self.apply_pitch_registers(&mut AnyChannel::Pulse(pulse));
-
-        master_gain
-    }
-
-    fn apply_triangle_modulation(
-        &mut self,
-        triangle: &mut Triangle,
-        seqs: &ActiveSequences,
-        master_gain: f32,
-    ) -> f32 {
-        if !self.gate {
-            triangle.set_volume(0.0);
-            return master_gain;
-        }
-
-        // 1. Software Volume — continuous floating-point pipeline for Triangle
-        //    to avoid integer step quantization aliasing.
-        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
-            self.vol_seq_player.value().clamp(0, 15) as f32
-        } else {
-            15.0
-        };
-
-        let hardware_scaled = vol_val * (self.hardware_volume as f32 / 15.0);
-        let vel_scaled_vol = hardware_scaled * (self.current_velocity as f32 / 127.0);
-        let tremolo_sub = self.lfo.tremolo_volume_delta() as f32;
-        let apu_vol = (vel_scaled_vol - tremolo_sub).clamp(0.0, 15.0);
-
-        // Turn off gate when release tail completes and volume reaches 0
-        if self.note_stack.is_empty()
-            && self.vol_seq_player.is_releasing
-            && self.vol_seq_player.state == SeqState::End
-            && apu_vol <= 0.0
-        {
-            self.gate = false;
-        }
-
-        triangle.set_volume_target(apu_vol);
-
-        // 2. Pitch application (same logic, AnyChannel dispatch).
-        self.apply_pitch_registers(&mut AnyChannel::Triangle(triangle));
-
-        master_gain
-    }
-
-    fn apply_vrc6_pulse_modulation(
-        &mut self,
-        vrc6_pulse: &mut Vrc6Pulse,
-        seqs: &ActiveSequences,
-        master_gain: f32,
-    ) -> f32 {
-        if !self.gate {
-            let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
-                self.duty_seq_player.value().clamp(0, 7) as u8
-            } else {
-                0
-            };
-            let ctrl_byte = duty_val << 4;
-            if self.ctrl_needs_write(ctrl_byte) {
-                vrc6_pulse.write_ctrl(ctrl_byte);
-            }
-            return master_gain;
-        }
-
-        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
-            self.vol_seq_player.value().clamp(0, 15) as u8
-        } else {
-            15
-        };
-
-        let hardware_scaled = vol_val as u32 * self.hardware_volume as u32 / 15;
-        let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
-        let tremolo_sub = self.lfo.tremolo_volume_delta();
-        let apu_vol = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
-
-        if self.note_stack.is_empty()
-            && self.vol_seq_player.is_releasing
-            && self.vol_seq_player.state == SeqState::End
-            && apu_vol == 0
-        {
-            self.gate = false;
-        }
-
-        let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
-            self.duty_seq_player.value().clamp(0, 7) as u8
-        } else {
-            0
-        };
-
-        let ctrl_byte = (duty_val << 4) | apu_vol;
-        if self.ctrl_needs_write(ctrl_byte) {
-            vrc6_pulse.write_ctrl(ctrl_byte);
-        }
-
-        self.apply_pitch_registers(&mut AnyChannel::Vrc6Pulse(vrc6_pulse));
-
-        master_gain
-    }
-
-    fn apply_vrc6_saw_modulation(
-        &mut self,
-        vrc6_saw: &mut Vrc6Saw,
-        seqs: &ActiveSequences,
-        master_gain: f32,
-    ) -> f32 {
-        // dn `CVRC6Sawtooth::RefreshChannel` writes $B000 = 0 to mute; the saw's
-        // rate register has no gate bit of its own.
-        if !self.gate {
-            vrc6_saw.write_rate(0);
-            return master_gain;
-        }
-
-        let vol_active = seqs.vol_enabled && !seqs.vol_seq.values.is_empty();
-        let duty_active = seqs.duty_enabled && !seqs.duty_seq.values.is_empty();
-
-        // dn stores the 16-step/64-step choice on the volume sequence itself
-        // (`CSequence::GetSetting`), latched by `CSeqInstHandlerSawtooth`.
-        let steps_64 = seqs.vol_seq.vol_mode == VolMode::Steps64;
-
-        // `level` is the volume-envelope contribution before the mode-specific
-        // register packing, and is what the release tail tests against — the packed
-        // byte carries the duty bit and would never reach 0.
-        let (level, rate_val) = if steps_64 {
-            let vol_val = if vol_active {
-                self.vol_seq_player.value().clamp(0, 63) as u8
-            } else {
-                63
-            };
-
-            let hardware_scaled = (vol_val as u32 * self.hardware_volume as u32 / 15).min(63);
-            let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
-            let tremolo_sub = self.lfo.tremolo_volume_delta() * 4;
-            let level = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 63);
-
-            // 64-step ignores the duty sequence entirely
-            // (dn `CSeqInstHandlerSawtooth::IsDutyIgnored`).
-            (level, level)
-        } else {
-            let vol_val = if vol_active {
-                self.vol_seq_player.value().clamp(0, 15) as u8
-            } else {
-                15
-            };
-
-            let hardware_scaled = vol_val as u32 * self.hardware_volume as u32 / 15;
-            let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
-            let tremolo_sub = self.lfo.tremolo_volume_delta();
-            let level = vel_scaled_vol.saturating_sub(tremolo_sub).clamp(0, 15);
-
-            // dn `CVRC6Sawtooth::CalculateVolume`:
-            //   (CChannelHandler::CalculateVolume() << 1) | ((m_iDutyPeriod & 0x01) << 5)
-            // The saw's duty is a single bit (`MAX_DUTY = 0x01`) acting as the rate MSB.
-            let duty_val = if duty_active {
-                self.duty_seq_player.value().clamp(0, 1) as u8
-            } else {
-                0
-            };
-
-            (level, (level << 1) | (duty_val << 5))
-        };
-
-        if self.note_stack.is_empty() {
-            if vol_active && self.vol_seq_player.is_releasing {
-                if self.vol_seq_player.state == SeqState::End && level == 0 {
-                    self.gate = false;
-                }
-            } else if !vol_active && duty_active && self.duty_seq_player.is_releasing {
-                // `note_off` keeps the gate alive when *either* the volume or the duty
-                // sequence has a release point. With no volume sequence, nothing above
-                // can ever clear it, so the duty release has to.
-                if self.duty_seq_player.state == SeqState::End {
-                    self.gate = false;
-                }
-            }
-        }
-
-        vrc6_saw.write_rate(rate_val);
-
-        self.apply_pitch_registers(&mut AnyChannel::Vrc6Saw(vrc6_saw));
-
-        master_gain
-    }
-
-    /// Sunsoft 5B: volume (16 or 32 steps per `VolMode5B`), duty/mode byte
-    /// (period + Envelope/Tone/Noise flags), and pitch. Follows
-    /// `CChannelHandlerS5B::RefreshChannel` / `CSeqInstHandlerS5B::ProcessSequence`
-    /// (see `.references/Implement-Plans-S5B/CoreHook.md` §3) with this
-    /// project's one-voice-one-chip shape: only channel 0 of the PSG is
-    /// driven, and gate-off silences via the tone/noise enable bits rather
-    /// than a separate no-gate branch, since dn's own "silence" is just
-    /// writing volume 0 every frame regardless of gate.
-    fn apply_s5b_modulation(
-        &mut self,
-        sunsoft: &mut Sunsoft,
-        seqs: &ActiveSequences,
-        master_gain: f32,
-    ) -> f32 {
-        if !self.gate {
-            sunsoft.set_tone_noise_enable(false, false);
-            return master_gain;
-        }
-
-        // 1. Volume: 16 or 32 steps depending on the volume sequence's own
-        //    `VolMode5B` setting (dn stores this per-sequence, same as the
-        //    VRC6 saw's `vol_mode`/`Steps64`).
-        //
-        //    The chip's volume table is a ~1.5 dB-per-entry analog ladder, so
-        //    lane position and loudness are not proportional: half-lane on the
-        //    raw ladder is about -21 dB, where the 2A03 pulse's linear 4-bit
-        //    DAC is -5.5 dB. The two modes resolve that differently.
-        //
-        //    `Steps16` maps its 16 values *linearly* onto the ladder
-        //    (`Psg::linear_volume_index`) so it behaves like the pulse's 16
-        //    steps, which is what a 16-step lane is expected to do here. That
-        //    is a deliberate divergence from the chip and from dn, both of
-        //    which pack a 4-bit volume as `(val << 1) | 1` and inherit the
-        //    logarithmic spacing.
-        //
-        //    `Steps32` drives the table index directly, so it is the raw
-        //    ladder at full resolution — every one of the 32 analog levels,
-        //    including the 16 the 4-bit register cannot address.
-        //    See `Psg::set_volume_level`.
-        let steps_32 = seqs.vol_seq.vol_mode_5b == VolMode5B::Steps32;
-        let vol_ceiling: u8 = if steps_32 { 31 } else { 15 };
-        let vol_val = if seqs.vol_enabled && !seqs.vol_seq.values.is_empty() {
-            self.vol_seq_player.value().clamp(0, i16::from(vol_ceiling)) as u8
-        } else {
-            vol_ceiling
-        };
-
-        let hardware_scaled =
-            (u32::from(vol_val) * self.hardware_volume as u32 / 15).min(u32::from(vol_ceiling));
-        let vel_scaled_vol = (hardware_scaled * self.current_velocity as u32 / 127) as u8;
-        // The tremolo delta is in 4-bit units, so it scales with the step
-        // range — same as the saw's `* 4` for its 64-step mode.
-        let tremolo_sub = self.lfo.tremolo_volume_delta() * if steps_32 { 2 } else { 1 };
-        let level = vel_scaled_vol.saturating_sub(tremolo_sub).min(vol_ceiling);
-
-        // Turn off gate when release tail completes and volume reaches 0.
-        if self.note_stack.is_empty()
-            && self.vol_seq_player.is_releasing
-            && self.vol_seq_player.state == SeqState::End
-            && level == 0
-        {
-            self.gate = false;
-        }
-
-        // 2. Duty/mode byte: low 5 bits are the noise period, the Tone/Noise
-        //    flags sit above them (`CSeqInstHandlerS5B::ProcessSequence`).
-        //    With no duty sequence the default is tone-on, matching dn's
-        //    `m_iDefaultDuty = S5B_MODE_SQUARE` — otherwise an instrument
-        //    without a duty sequence would have both mixer bits disabled and
-        //    play nothing at all.
-        let duty_val = if seqs.duty_enabled && !seqs.duty_seq.values.is_empty() {
-            self.duty_seq_player.value()
-        } else {
-            S5B_MODE_SQUARE
-        };
-        let noise_period = (duty_val & S5B_PERIOD_MASK) as u8;
-        let square_flag = duty_val & S5B_MODE_SQUARE != 0;
-        let noise_flag = duty_val & S5B_MODE_NOISE != 0;
-
-        // 3. Noise period, only written while the noise flag is set — mirrors
-        //    dn writing it conditionally in `HandleNote`. Every modulation
-        //    tick is a superset of dn's note-trigger-only write, converging
-        //    to the same steady state (see CoreHook.md §3, known simplification).
-        //
-        //    The value is inverted on the way to the register, exactly as dn's
-        //    `UpdateRegs` does (`WriteReg(0x06, s_iNoiseFreq ^ 0x1F)`), so a
-        //    higher bar in the editor is a *higher-pitched* noise. Register 6
-        //    itself runs the other way — it is a divider, so 0 is the fastest
-        //    LFSR and 0x1F the slowest — which is why writing it raw made a
-        //    bar at rest (0) land on the ~56 kHz end, ~15 dB down after
-        //    band-limiting, and made dragging the bar up walk the pitch down.
-        //    FamiStudio writes it raw instead; dn's direction is the one this
-        //    project follows.
-        if noise_flag {
-            sunsoft.write_noise_period(noise_period ^ S5B_PERIOD_MASK as u8);
-        }
-
-        // 3b. Tone duty width — same packed step value, bits 8-11 (signed
-        //     offset from index 4/50%, see `s5b_duty_index`). Independent of
-        //     the tone/noise mixer flags above; written every tick same as
-        //     the noise period so it stays current even without a note
-        //     retrigger.
-        sunsoft.write_duty_index(s5b_duty_index(duty_val) as u8);
-
-        // 4. Tone/noise enable bits, gated by the channel's own gate state.
-        sunsoft.set_tone_noise_enable(self.gate && square_flag, self.gate && noise_flag);
-
-        // 5. Constant volume, as a table index. `Steps32` is already one;
-        //    `Steps16` searches for the entry nearest `level/15` of full
-        //    scale so its lane tracks loudness linearly.
-        //
-        //    The hardware envelope is never selected: its period and shape
-        //    are only reachable through dn's effect columns, which a
-        //    DAW-hosted synth has no equivalent of, so it would only ever run
-        //    as an untunable free-running ramp. The duty/mode editor exposes
-        //    Tone and Noise alone for the same reason.
-        let vol_index = if steps_32 {
-            level
-        } else {
-            sunsoft.psg().linear_volume_index(level, vol_ceiling)
-        };
-        sunsoft.write_volume_level(vol_index);
-
-        // 6. Pitch application.
-        self.apply_pitch_registers(&mut AnyChannel::S5B(sunsoft));
-
-        master_gain
-    }
-
-    /// Shared pitch register write path for all channels.
-    fn apply_pitch_registers(&mut self, channel: &mut AnyChannel) {
-        let fine_pitch_offset = self.fine_pitch as i32;
-        let hi_pitch_offset = (self.hi_pitch as i32) << 4;
-        let vibrato_delta = self.lfo.vibrato_pitch_delta() as i32;
-
-        let bend_semitones = self.pitch_slide as f32 / 8192.0 * self.pitch_slide_range as f32;
+        let bend_semitones =
+            f32::from(self.pitch_slide) / 8192.0 * f32::from(self.pitch_slide_range);
         let bend_ratio = 2.0_f32.powf(bend_semitones / 12.0);
-        let slide_period = (((self.macro_period as f32 + 0.5) / bend_ratio) - 0.5).round() as i32;
 
-        let final_period = (slide_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta)
-            .clamp(0, self.max_macro_period());
+        let register = channel.period_register();
 
-        let final_period = if self.channel_mode == ChannelMode::Triangle {
-            (final_period - 1).max(0) / 2
+        let final_period = if register.inverted {
+            let slide_freq = (self.macro_period as f32 * bend_ratio).round() as i32;
+            (slide_freq + fine_pitch_offset + hi_pitch_offset + vibrato_delta)
+                .clamp(0, self.max_macro_period())
         } else {
-            final_period
+            let slide_period =
+                (((self.macro_period as f32 + 0.5) / bend_ratio) - 0.5).round() as i32;
+            (slide_period - fine_pitch_offset - hi_pitch_offset - vibrato_delta)
+                .clamp(0, self.max_macro_period())
         };
 
-        let final_period = final_period as u16;
+        let final_period = channel.fixup_final_period(final_period) as u16;
 
         let channel_switched = self.reg_channel != Some(self.channel_mode);
         if channel_switched {
@@ -1254,11 +547,7 @@ impl MidiHandler {
         }
 
         let timer_lo = (final_period & 0xFF) as u8;
-        let timer_hi_mask = match self.channel_mode {
-            ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw | ChannelMode::S5B => 0x0F,
-            _ => 0x07,
-        };
-        let timer_hi_bits = ((final_period >> 8) & timer_hi_mask) as u8;
+        let timer_hi_bits = ((final_period >> 8) & u16::from(register.hi_mask)) as u8;
 
         if channel_switched || timer_lo != self.prev_timer_lo {
             channel.write_timer_lo(timer_lo);
@@ -1267,15 +556,7 @@ impl MidiHandler {
 
         if channel_switched || timer_hi_bits != self.prev_timer_hi {
             if channel_switched || self.prev_timer_hi == 0xFF {
-                let hi_byte = match self.channel_mode {
-                    ChannelMode::Vrc6Pulse | ChannelMode::Vrc6Saw => 0x80 | timer_hi_bits,
-                    // S5B reg 1 is a plain 4-bit period-hi register with no
-                    // enable/other bits packed alongside it — `Psg::write_reg`
-                    // masks to `REG_MASK[1] = 0x0f` itself, so no OR-mask needed.
-                    ChannelMode::S5B => timer_hi_bits,
-                    _ => 0xF8 | timer_hi_bits,
-                };
-                channel.write_timer_hi(hi_byte);
+                channel.write_timer_hi(register.hi_control_bits | timer_hi_bits);
             } else {
                 channel.set_period_hi_soft(timer_hi_bits);
             }
@@ -1283,22 +564,31 @@ impl MidiHandler {
         }
     }
 
-    /// Update sequence playback, LFO modulation, and write updated parameters to APU channels.
-    /// Returns master gain multiplier (CC11 Expression).
-    #[cfg(test)]
-    pub fn update_modulation(
-        &mut self,
-        channel: &mut AnyChannel,
-        seqs: &ActiveSequences,
-        sample_rate: f32,
-        num_samples: usize,
-    ) -> f32 {
-        self.advance_frame_samples(seqs, sample_rate, num_samples);
-        self.apply_current_modulation(channel, seqs)
-    }
-
-    /// Check if gate is currently active.
+    #[must_use]
     pub fn gate(&self) -> bool {
         self.gate
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `note_period_in` must route VRC6 Pulse through its own 12-bit-ranged
+    /// formula, not the 2A03-shaped `freq_to_period` (11-bit ceiling) the
+    /// catch-all arm uses for the actual 2A03 chips.
+    #[test]
+    fn vrc6_pulse_period_is_not_truncated_to_the_2a03_elevenbit_ceiling() {
+        let mut handler = MidiHandler::new();
+        handler.channel_mode = ChannelMode::Vrc6Pulse;
+        handler.active_note = 20; // well below the ~54.6 Hz / period-2047 crossover
+
+        let period = handler.note_period_in(ChannelMode::Vrc6Pulse, 0);
+
+        assert!(
+            period > 2047,
+            "period {period} must exceed the 2A03-shaped ceiling for this low a note"
+        );
+        assert!(period <= 4095, "must stay inside the real 12-bit register");
     }
 }

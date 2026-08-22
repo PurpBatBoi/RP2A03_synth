@@ -1,14 +1,18 @@
-//! rp2a03_niceplug\src\plugin.rs
+//! `rp2a03_niceplug\src\plugin.rs`
 //! The `nice_plug::Plugin` implementation: lifecycle, parameter/GUI sync, and
 //! the block-splitting event loop that drives the voice bank.
 
 use nice_plug::prelude::*;
-use rp2a03_common::{HostAutomationSnapshot, MAX_SEQUENCES};
+use rp2a03_common::{HostAutomationSnapshot, MAX_SEQUENCES, SharedSequences};
 use std::sync::Arc;
+use triple_buffer::Output;
 
 use crate::editor;
 use crate::params::Rp2a03Params;
-use crate::sequences::{PlayheadPublisher, SequenceCache};
+use crate::sequences::{
+    PlayheadPublisher, ResolvedFdsWaves, SequenceCache, SequenceIndexPublisher,
+    SharedSequencesHandle,
+};
 use crate::voice::DEFAULT_SAMPLE_RATE;
 use crate::voice_bank::VoiceBank;
 
@@ -16,26 +20,38 @@ pub struct Rp2a03Plugin {
     pub(crate) params: Arc<Rp2a03Params>,
     pub(crate) voices: VoiceBank,
     pub(crate) sequences: SequenceCache,
+    sequences_output: Output<SharedSequences>,
+    fds_waves_output: Output<ResolvedFdsWaves>,
     pub(crate) playheads: PlayheadPublisher,
+    pub(crate) active_sequence_index: SequenceIndexPublisher,
     pub(crate) sample_rate: f32,
     /// Mono render bus, reused across blocks so `process` never allocates.
     mono_buf: Vec<f32>,
     /// Program Change selection remains active until the host changes the Index parameter.
     midi_program_index: Option<usize>,
     last_sequence_parameter: i32,
+    /// TEMPORARY diagnostic for an open, believed-CLAP-specific FL Studio
+    /// "replace file" export crash — remove alongside the logging in
+    /// `process_inner` once it's confirmed and fixed.
+    first_process_logged: bool,
 }
 
 impl Default for Rp2a03Plugin {
     fn default() -> Self {
+        let (shared_sequences, sequences_output, fds_waves_output) = SharedSequencesHandle::new();
         Self {
-            params: Arc::new(Rp2a03Params::default()),
+            params: Arc::new(Rp2a03Params::new(shared_sequences)),
             voices: VoiceBank::new(),
             sequences: SequenceCache::default(),
+            sequences_output,
+            fds_waves_output,
             playheads: PlayheadPublisher::new(),
+            active_sequence_index: SequenceIndexPublisher::new(),
             sample_rate: DEFAULT_SAMPLE_RATE,
             mono_buf: Vec::new(),
             midi_program_index: None,
             last_sequence_parameter: 0,
+            first_process_logged: false,
         }
     }
 }
@@ -47,6 +63,8 @@ impl Rp2a03Plugin {
         self.midi_program_index = None;
         self.last_sequence_parameter = self.params.sequence_number.value();
         self.playheads.clear();
+        self.active_sequence_index.clear();
+        self.first_process_logged = false;
     }
 
     /// The sequence slot to play this block. A Program Change overrides the
@@ -63,10 +81,11 @@ impl Rp2a03Plugin {
     }
 
     fn refresh_sequences(&mut self, sequence_index: usize) {
-        if let Some(reload) = self
-            .sequences
-            .refresh(&self.params.shared_sequences, sequence_index)
-        {
+        if let Some(reload) = self.sequences.refresh(
+            &mut self.sequences_output,
+            &mut self.fds_waves_output,
+            sequence_index,
+        ) {
             self.voices.reload_sequences(&self.sequences.active, reload);
         }
     }
@@ -143,11 +162,81 @@ impl Rp2a03Plugin {
 
         self.playheads
             .publish(&self.voices.primary().midi_handler, &self.sequences.active);
+        self.active_sequence_index.publish(sequence_index);
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "baseline")]
     pub(crate) fn mono_buf(&self) -> &[f32] {
         &self.mono_buf
+    }
+
+    /// `render_block`, wrapped so a test can assert the real render path
+    /// never allocates. Not used by `process` itself, and only ever called
+    /// from tests — the release allocator is never `AllocDisabler` (see
+    /// `lib.rs`) regardless.
+    #[cfg(test)]
+    pub(crate) fn no_alloc_render<E>(
+        &mut self,
+        num_samples: usize,
+        events: &mut E,
+        active_voice_count: usize,
+        host_controls: HostAutomationSnapshot,
+    ) where
+        E: Iterator<Item = NoteEvent<()>>,
+    {
+        assert_no_alloc::assert_no_alloc(|| {
+            self.render_block(num_samples, events, active_voice_count, host_controls);
+        });
+    }
+
+    fn process_inner(
+        &mut self,
+        buffer: &mut Buffer,
+        context: &mut impl ProcessContext<Self>,
+    ) -> ProcessStatus {
+        // TEMPORARY diagnostic for an open, believed-CLAP-specific export
+        // crash: logs only the first `process` call after each
+        // `initialize`/`reset` (the flag is cleared in `reset_state`), with
+        // the instance pointer and thread id, to line up against
+        // `initialize`/`reset`'s own instance+thread logging and confirm the
+        // FL Studio "replace file" export crash is one instance being
+        // reactivated on a thread other than the one still calling
+        // `process` on it. Remove once confirmed.
+        if !self.first_process_logged {
+            self.first_process_logged = true;
+            nice_log!(
+                "first process since last activate/reset on instance {:p}, thread {:?}, {} samples",
+                self,
+                std::thread::current().id(),
+                buffer.samples()
+            );
+        }
+
+        let host_controls = self.params.host_automation_snapshot();
+        self.voices.apply_host_automation(host_controls);
+        let channel_mode = self.params.channel_mode();
+        self.voices.set_channel_mode(channel_mode);
+
+        let num_samples = buffer.samples();
+        let active_voice_count = self.params.active_voice_count();
+        self.voices.retire_above(active_voice_count);
+
+        let mut events = std::iter::from_fn(|| context.next_event());
+        self.render_block(num_samples, &mut events, active_voice_count, host_controls);
+
+        // The host is a trust boundary: nice-plug fills any output port it
+        // could not resolve with an empty slice while leaving `num_samples`
+        // at the full block length (offline bounce with a muted/inactive
+        // track is the common case), so a channel's real length must be
+        // checked before every write rather than trusted to match.
+        for channel in buffer.as_slice() {
+            if channel.len() < num_samples {
+                continue;
+            }
+            channel[..num_samples].copy_from_slice(&self.mono_buf[..num_samples]);
+        }
+
+        ProcessStatus::KeepAlive
     }
 }
 
@@ -179,7 +268,11 @@ impl Plugin for Rp2a03Plugin {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        editor::create(self.params.clone(), self.playheads.handle())
+        editor::create(
+            self.params.clone(),
+            self.playheads.handle(),
+            self.active_sequence_index.handle(),
+        )
     }
 
     fn initialize(
@@ -199,16 +292,28 @@ impl Plugin for Rp2a03Plugin {
         self.mono_buf
             .resize(buffer_config.max_buffer_size as usize, 0.0);
         self.reset_state();
+        // TEMPORARY diagnostic for an open, believed-CLAP-specific export
+        // crash: instance pointer + thread id, to confirm the FL Studio
+        // "replace file"
+        // export crash is one instance being reactivated on a different
+        // thread than the one still running `process` on it. Remove once
+        // confirmed.
         nice_log!(
-            "activated at {} Hz, max buffer {} samples",
+            "activated at {} Hz, max buffer {} samples (instance {:p}, thread {:?})",
             self.sample_rate,
-            buffer_config.max_buffer_size
+            buffer_config.max_buffer_size,
+            self,
+            std::thread::current().id()
         );
         true
     }
 
     fn reset(&mut self) {
-        nice_log!("voice state reset");
+        nice_log!(
+            "voice state reset (instance {:p}, thread {:?})",
+            self,
+            std::thread::current().id()
+        );
         self.reset_state();
     }
 
@@ -218,37 +323,21 @@ impl Plugin for Rp2a03Plugin {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        let host_controls = self.params.host_automation_snapshot();
-        self.voices.apply_host_automation(host_controls);
+        // Last-resort insurance for a `cdylib`: a panic that reaches the host
+        // across the FFI boundary is undefined behavior, not a clean abort.
+        // `AssertUnwindSafe` is warranted here specifically because a caught
+        // panic is followed by silence, not by continued use of whatever
+        // partial state `self`/`buffer` were left in.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.process_inner(buffer, context)
+        }));
 
-        // Sync channel mode from host parameter (handles DAW automation / state recall).
-        let channel_mode = self.params.channel_mode();
-        self.voices.set_channel_mode(channel_mode);
-        // Sync editor-visible state so the GUI widgets reflect the current values.
-        //
-        // `try_lock`, never `lock`: the editor holds this same mutex for the
-        // whole egui frame it spends drawing the sequence editor, so blocking
-        // here would stall the audio thread behind a UI repaint. Skipping is
-        // free — this is a one-way mirror of parameters the GUI re-reads every
-        // repaint anyway, so the next block publishes the same values.
-        if let Some(mut data) = self.params.shared_sequences.try_lock() {
-            self.params.publish_to_gui(&mut data, channel_mode);
-        }
-
-        let num_samples = buffer.samples();
-        let active_voice_count = self.params.active_voice_count();
-        self.voices.retire_above(active_voice_count);
-
-        let mut events = std::iter::from_fn(|| context.next_event());
-        self.render_block(num_samples, &mut events, active_voice_count, host_controls);
-
-        for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
-            for out_sample in channel_samples {
-                *out_sample = self.mono_buf[sample_id];
+        outcome.unwrap_or_else(|_| {
+            for channel in buffer.as_slice() {
+                channel.fill(0.0);
             }
-        }
-
-        ProcessStatus::KeepAlive
+            ProcessStatus::Error("panic during processing; see crash.log")
+        })
     }
 }
 
