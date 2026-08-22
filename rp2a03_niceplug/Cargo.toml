@@ -13,10 +13,16 @@ crate-type = ["cdylib", "lib"]
 # `[profile.bench]`, which inherits release and so has debug_assertions
 # off) hits a real gap: `assert_no_alloc`'s `disable_release` feature
 # removes `AllocDisabler` under exactly that combination, but this crate's
-# `#[global_allocator]` static is gated on `cfg(any(test, debug_assertions))`
-# alone, so it still tries to reference the now-absent type. Not needed
-# anyway — the dedicated `[[bench]]` targets below have their own harness.
+# `#[global_allocator]` static is gated on `cfg(debug_assertions)` alone, so
+# it still tries to reference the now-absent type. Not needed anyway — the
+# dedicated `[[bench]]` targets below have their own harness.
 bench = false
+# No runnable doc examples exist in this crate, and rustdoc's doctest
+# harness recompiles the lib with its own default `cfg(debug_assertions)`
+# (true) independent of the profile actually used to build the already-
+# linked `assert_no_alloc` rlib (release, so false) — same `AllocDisabler`
+# gap as above, just triggered by a rustdoc quirk instead of a Cargo one.
+doctest = false
 
 # The rendered-audio baseline tool. `required-features` keeps it out of
 # `cargo test --all-targets`, so it costs the normal build nothing.

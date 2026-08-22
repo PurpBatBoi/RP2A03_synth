@@ -14,11 +14,15 @@
 use nice_plug::prelude::*;
 
 // Catches an audio-thread allocation the moment it happens, instead of
-// hoping a test exercises the right block size. Cfg'd out of release
-// entirely — `disable_release` on the crate is a second, redundant guard —
-// because this allocator aborts on violation, and an abort inside a host is
-// exactly the crash class M1 fixed.
-#[cfg(any(test, debug_assertions))]
+// hoping a test exercises the right block size. Gated on `debug_assertions`
+// alone, not `any(test, debug_assertions))`: `assert_no_alloc`'s
+// `disable_release` feature (enabled workspace-wide) removes `AllocDisabler`
+// itself whenever `debug_assertions` is off, independent of `cfg(test)` — so
+// a `--release` test build (as CI runs) has `test = true` but no type to
+// reference. This allocator aborts on violation, and an abort inside a host
+// is exactly the crash class M1 fixed, so it stays on for every non-release
+// build, test or not.
+#[cfg(debug_assertions)]
 #[global_allocator]
 static ALLOCATOR: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 

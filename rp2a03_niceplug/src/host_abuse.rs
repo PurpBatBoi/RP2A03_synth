@@ -387,9 +387,12 @@ fn the_real_render_path_does_not_allocate_on_a_capacity_sized_block() {
 /// abort — so the only honest way to prove the guard actually fires is to
 /// trigger it in a child process and confirm that child did not exit
 /// cleanly. The child re-invokes this same test binary (which already links
-/// `AllocDisabler` as its global allocator under `cfg(any(test,
-/// debug_assertions))`, see `lib.rs`), selecting the `#[ignore]`d probe
-/// below.
+/// `AllocDisabler` as its global allocator under `cfg(debug_assertions)`,
+/// see `lib.rs`), selecting the `#[ignore]`d probe below. Gated the same
+/// way: `assert_no_alloc`'s `disable_release` feature removes the type
+/// itself whenever `debug_assertions` is off, so under `--release` there is
+/// no guard left to prove.
+#[cfg(debug_assertions)]
 #[test]
 fn a_reintroduced_allocation_aborts_the_process() {
     let exe = std::env::current_exe().expect("test binary path");
@@ -413,6 +416,7 @@ fn a_reintroduced_allocation_aborts_the_process() {
 /// Only runs (and only allocates) when the parent test above asks for it via
 /// the env var — `#[ignore]`d so a normal `cargo test` run never triggers an
 /// intentional abort of its own test binary.
+#[cfg(debug_assertions)]
 #[test]
 #[ignore = "only meant to run as the child process spawned by the test above"]
 fn alloc_guard_child_process_probe() {
